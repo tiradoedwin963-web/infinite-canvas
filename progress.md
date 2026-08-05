@@ -55,3 +55,19 @@
 - `public/window.svg`：删除未使用的脚手架图标。
 - `progress.md`：追加本轮实现与验证记录。
 - 回滚方式：执行 `git revert $(git log --grep='feat: add empty infinite canvas' --format=%H -n 1)`。
+
+## 2026-08-05 - Task: 同步并验证画布 Agent 工作区
+
+### What was done
+- 创建 `codex/canvas-a` 与 `codex/canvas-b` 两个相邻 worktree，并将 B 快进到已验证的基础画布提交。
+- 确认 B 当前只继承基础画布与统一开发规范，不包含 Agent UI、接口或占位功能。
+
+### Testing
+- `git merge --ff-only codex/canvas-a`：通过，B 无冲突同步基础画布提交。
+- 在 B 执行 `npm ci --ignore-scripts --prefer-offline --no-audit --no-fund`：通过，安装 462 个依赖包。
+- 在 B 执行 `npm run lint`：通过，无 ESLint 错误。
+- 在 B 执行 `npm test`：通过，Vinext 构建成功，5 项测试全部通过。
+
+### Notes
+- `progress.md`：追加双 worktree 同步及 B 分支独立验证证据。
+- B 同步前回滚点：`fd12103b128b419059d05d9ae4031192895b61c9`。
