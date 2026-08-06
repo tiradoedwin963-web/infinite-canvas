@@ -38,3 +38,8 @@ export function zoomViewport(
     scale,
   };
 }
+
+export function wheelZoomFactor(deltaY: number, isPinch: boolean): number {
+  const boundedDelta = Math.min(100, Math.max(-100, deltaY));
+  return Math.exp(-boundedDelta * (isPinch ? 0.01 : 0.001));
+}

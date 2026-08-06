@@ -4,6 +4,7 @@ import {
   MAX_SCALE,
   MIN_SCALE,
   panViewport,
+  wheelZoomFactor,
   zoomViewport,
 } from "../app/canvas/viewport.ts";
 
@@ -34,4 +35,11 @@ test("keeps the world point under the zoom anchor fixed", () => {
 
   assert.ok(Math.abs(zoomed.x + worldPoint.x * zoomed.scale - anchor.x) < 1e-9);
   assert.ok(Math.abs(zoomed.y + worldPoint.y * zoomed.scale - anchor.y) < 1e-9);
+});
+
+test("supports smooth wheel and trackpad pinch zoom factors", () => {
+  assert.ok(wheelZoomFactor(-20, false) > 1);
+  assert.ok(wheelZoomFactor(20, false) < 1);
+  assert.ok(wheelZoomFactor(-20, true) > wheelZoomFactor(-20, false));
+  assert.equal(wheelZoomFactor(-1000, false), wheelZoomFactor(-100, false));
 });
