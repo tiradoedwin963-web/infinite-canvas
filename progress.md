@@ -633,3 +633,52 @@
 - `docs/canvas.md`：记录单节点无框、多选有框及节点上画布手势规则。
 - `progress.md`：追加本轮实施、验证、文件清单和回滚信息。
 - 回滚方式：将本轮改动形成独立提交后执行 `git revert <本轮提交哈希>`；提交前的业务回滚点为上一轮“增加触控板平移、框选与整组移动”记录对应的工作树状态。
+
+## 2026-08-06 - Task: 实现侧边栏画布 Agent
+
+### What was done
+- 将完整 LingkeAI 节点画布快进同步到 `codex/canvas-b`，新增右上角入口和覆盖式画布 Agent 侧栏；侧栏打开时底部创作输入向下退场且保留草稿，窄屏自动占满视口。
+- 接入固定 GPT-5.6 Sol 的结构化 Agent 对话接口，支持读取画布结构与按需图片、自动执行白名单普通编辑，并对删除节点和模型生成提供二次确认。
+- 将画布快照、操作校验和顺序执行拆为可测试纯函数；对话与操作摘要本地持久化，刷新后未确认操作失效，图片数据不进入聊天记录。
+
+### Testing
+- `git merge --ff-only main`：通过，`codex/canvas-b` 无冲突同步完整节点画布；`codex/canvas-a` 仍停留在 `fe1d0d4`。
+- `npm ci --ignore-scripts --prefer-offline --no-audit --no-fund`：通过，B 工作区依赖与同步后的锁文件一致。
+- `npm run lint`：通过，无 ESLint 错误。
+- `npm test`：通过，Vinext 构建成功，Agent、上游适配、画布图结构、服务端渲染和视口共 50 项测试全部通过。
+- 本地浏览器验收：通过；1280px 桌面视口侧栏覆盖宽度为 400px 且画布宽度不变，390px 窄屏侧栏占满视口，底部输入草稿在侧栏开关后保持，未配置密钥时显示清理后的 503 提示且控制台无错误。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `README.md`：补充画布 Agent 的能力入口与用途说明。
+- `app/ai/agent-provider.ts`：新增 Agent 请求校验、系统约束、LingkeAI 调用、图片限制和错误清理。
+- `app/ai/agent.ts`：定义版本化消息、画布快照、白名单操作、响应解析、危险操作分类和本地记录恢复。
+- `app/api/ai/agent/route.ts`：新增同源画布 Agent 服务端接口。
+- `app/canvas/agent.ts`：新增画布快照序列化和普通 Agent 操作纯函数执行器。
+- `app/page.tsx`：接入侧栏状态、节点引用、按需图片读取、操作应用以及删除与生成确认执行。
+- `components/canvas-agent-sidebar.tsx`：实现覆盖式对话侧栏、消息状态、确认卡、清空记录和本地持久化。
+- `components/ui/ai-chat-input.tsx`：增加受控退场动画，保持隐藏期间组件和草稿状态。
+- `docs/canvas.md`：记录 Agent 布局、权限、视觉读取、持久化、安全边界和当前限制。
+- `tests/agent-provider.test.mjs`：覆盖 Agent 请求、图片限制、固定模型、视觉输入和错误清理。
+- `tests/agent.test.mjs`：覆盖结构化响应、消息恢复、快照字段、白名单操作、危险操作和媒体尺寸约束。
+- `tests/rendered-html.test.mjs`：补充侧栏入口、退场接口和 Agent 组件的服务端渲染断言。
+- `progress.md`：追加本轮实现、验证证据、文件清单和回滚方式。
+- 回滚方式：在 `codex/canvas-b` 执行 `git restore --source=1b3a016 -- README.md app/page.tsx components/ui/ai-chat-input.tsx docs/canvas.md tests/rendered-html.test.mjs progress.md`，再执行 `git clean -f -- app/ai/agent-provider.ts app/ai/agent.ts app/api/ai/agent/route.ts app/canvas/agent.ts components/canvas-agent-sidebar.tsx tests/agent-provider.test.mjs tests/agent.test.mjs`。
+
+## 2026-08-07 - Task: 配置画布 Agent 并完成真实节点创建
+
+### What was done
+- 在 `codex/canvas-b` 的 Git 忽略环境文件中配置 LingkeAI 服务地址和服务端密钥，继续使用固定模型 `gpt-5.6-sol`；密钥未写入源码、文档、测试或进度记录。
+- 启动本地应用并通过侧边画布 Agent 发起真实对话，成功自动创建一个文本节点，内容为“Agent 已成功连接 GPT-5.6 Sol”，位置为画布坐标 `(100, 100)`。
+
+### Testing
+- `git check-ignore -q .env.local`：通过，环境配置不会进入 Git 变更。
+- `npm run dev`：通过，服务读取 `.env.local` 并启动于 `http://localhost:3000/`。
+- 真实 `POST /api/ai/agent`：返回 HTTP 200，耗时约 9.6 秒。
+- 本地浏览器验收：Agent 回复“已创建文本节点”；页面中匹配节点数量为 1，节点类型为文本、状态为就绪、位置为 `translate(100px, 100px)`，控制台无警告或错误。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `.env.local`：保存本机 LingkeAI 地址和服务端密钥；文件被 Git 忽略，本记录不包含敏感值。
+- `progress.md`：追加本轮配置、真实调用和节点落地验证证据。
+- 回滚方式：执行 `mv .env.local .env.local.disabled` 可停用并保留本地配置；测试节点可在画布中点击其删除按钮移除。
