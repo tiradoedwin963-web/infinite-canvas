@@ -42,4 +42,5 @@ test("supports smooth wheel and trackpad pinch zoom factors", () => {
   assert.ok(wheelZoomFactor(20, false) < 1);
   assert.ok(wheelZoomFactor(-20, true) > wheelZoomFactor(-20, false));
   assert.equal(wheelZoomFactor(-1000, false), wheelZoomFactor(-100, false));
+  assert.ok(Math.abs(wheelZoomFactor(-20, true) - Math.exp(0.25)) < 1e-12);
 });

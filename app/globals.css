@@ -22,9 +22,10 @@ body {
 }
 
 .infinite-canvas {
+  position: relative;
   width: 100vw;
   height: 100dvh;
-  cursor: grab;
+  cursor: crosshair;
   touch-action: none;
   user-select: none;
   overscroll-behavior: none;
@@ -36,10 +37,6 @@ body {
   );
   background-position: var(--canvas-x) var(--canvas-y);
   background-size: var(--canvas-grid-size) var(--canvas-grid-size);
-}
-
-.infinite-canvas:active {
-  cursor: grabbing;
 }
 
 .canvas-world {
@@ -72,6 +69,34 @@ body {
   stroke-dasharray: 7 5;
 }
 
+.canvas-selection-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-style: dashed;
+  border-color: rgba(92, 89, 83, 0.72);
+  border-radius: 8px;
+  background: rgba(92, 89, 83, 0.025);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.canvas-selection-frame:active {
+  cursor: grabbing;
+}
+
+.canvas-selection-marquee {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  border: 1px dashed rgba(92, 89, 83, 0.78);
+  border-radius: 5px;
+  background: rgba(92, 89, 83, 0.08);
+  pointer-events: none;
+}
+
 .canvas-node {
   position: absolute;
   top: 0;
@@ -89,11 +114,6 @@ body {
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
-}
-
-.canvas-node-selected {
-  outline: 2px solid rgba(80, 99, 185, 0.72);
-  outline-offset: 3px;
 }
 
 .canvas-node-connection-target {
@@ -148,15 +168,8 @@ body {
   border-radius: 12px;
 }
 
-.canvas-node-image-only.canvas-node-selected,
 .canvas-node-image-only.canvas-node-connection-target {
   outline: none;
-}
-
-.canvas-node-image-only.canvas-node-selected .canvas-node-image-content {
-  filter: drop-shadow(0 0 0 rgba(80, 99, 185, 0.72));
-  outline: 2px solid rgba(80, 99, 185, 0.72);
-  outline-offset: 3px;
 }
 
 .canvas-node-image-only.canvas-node-connection-target .canvas-node-image-content {
@@ -206,6 +219,7 @@ body {
 }
 
 .canvas-node-delete {
+  z-index: 18;
   display: grid;
   width: 28px;
   height: 28px;
@@ -480,70 +494,73 @@ body {
   pointer-events: none;
 }
 
-.canvas-node-resize-layer::before {
-  position: absolute;
-  inset: -3px;
-  opacity: 0;
-  border: 1px solid rgba(80, 99, 185, 0.48);
-  border-radius: 15px;
-  content: "";
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
 .canvas-node-resize-handle {
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 24px;
+  height: 24px;
   padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.canvas-node-resize-handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
   opacity: 0;
-  transform: scale(0.82);
-  border: 2px solid #fff;
+  transform: translate(-50%, -50%) scale(0.75);
+  border: 1px solid #fff;
   border-radius: 999px;
   background: #5063b9;
   box-shadow: 0 1px 5px rgba(39, 48, 91, 0.35);
-  pointer-events: auto;
-  touch-action: none;
+  content: "";
+  pointer-events: none;
   transition:
     opacity 120ms ease,
     transform 120ms ease;
 }
 
-.canvas-node-resize-visible::before,
-.canvas-node-resize-active::before,
-.canvas-node-resize-visible .canvas-node-resize-handle,
-.canvas-node-resize-active .canvas-node-resize-handle,
-.canvas-node-resize-handle:focus-visible {
+.canvas-node-resize-handle:hover::after,
+.canvas-node-resize-handle:focus-visible::after,
+.canvas-node-resize-handle:active::after {
   opacity: 1;
-  transform: scale(1);
+  transform: translate(-50%, -50%) scale(1);
 }
 
 .canvas-node-resize-handle:focus-visible {
-  outline: 2px solid rgba(80, 99, 185, 0.42);
-  outline-offset: 2px;
+  outline: none;
 }
 
 .canvas-node-resize-north-west {
-  top: -7px;
-  left: -7px;
+  top: -12px;
+  left: -12px;
   cursor: nwse-resize;
 }
 
 .canvas-node-resize-north-east {
-  top: -7px;
-  right: -7px;
+  top: -16px;
+  right: -16px;
   cursor: nesw-resize;
 }
 
+.canvas-node-resize-north-east::after {
+  top: calc(50% + 4px);
+  left: calc(50% - 4px);
+}
+
 .canvas-node-resize-south-west {
-  bottom: -7px;
-  left: -7px;
+  bottom: -12px;
+  left: -12px;
   cursor: nesw-resize;
 }
 
 .canvas-node-resize-south-east {
-  right: -7px;
-  bottom: -7px;
+  right: -12px;
+  bottom: -12px;
   cursor: nwse-resize;
 }
 

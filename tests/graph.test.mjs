@@ -11,11 +11,14 @@ import {
   emptyGraph,
   fitMediaNode,
   getNodeSize,
+  moveNodes,
+  nodesIntersectingBounds,
   parsePersistedGraph,
   removeNode,
   replaceOutputWithResults,
   resizeNode,
   resizedNodeBounds,
+  selectedNodesBounds,
   updateOutputNode,
 } from "../app/canvas/graph.ts";
 
@@ -262,7 +265,52 @@ test("fits loaded media to the existing visual box and centers it", () => {
   assert.equal(fitMediaNode(fitted, image.id, 400, 400), fitted);
 });
 
-test("recomputes edge attachment when nodes cross directions", () => {
+test("selects nodes whose actual bounds intersect a marquee", () => {
+  const first = { ...readyNode("first", 10, 20), width: 300, height: 160 };
+  const second = { ...readyNode("second", 500, 400), width: 120, height: 100 };
+  const graph = { version: 1, nodes: [first, second], edges: [] };
+
+  assert.deepEqual(
+    nodesIntersectingBounds(graph, { x: 300, y: 100, width: 40, height: 40 }),
+    ["first"],
+  );
+  assert.deepEqual(
+    nodesIntersectingBounds(graph, { x: 350, y: 200, width: 100, height: 100 }),
+    [],
+  );
+});
+
+test("computes selected bounds and moves only the selected nodes together", () => {
+  const first = { ...readyNode("first", 10, 20), width: 300, height: 160 };
+  const second = { ...readyNode("second", 500, 400), width: 120, height: 100 };
+  const third = readyNode("third", 900, 900);
+  const graph = {
+    version: 1,
+    nodes: [first, second, third],
+    edges: [{ id: "edge", sourceId: "first", targetId: "second" }],
+  };
+
+  assert.deepEqual(selectedNodesBounds(graph, ["first", "second"]), {
+    x: 10,
+    y: 20,
+    width: 610,
+    height: 480,
+  });
+  assert.equal(selectedNodesBounds(graph, ["missing"]), null);
+
+  const moved = moveNodes(graph, ["first", "second"], 25, -15);
+  assert.deepEqual(
+    moved.nodes.map(({ id, x, y }) => ({ id, x, y })),
+    [
+      { id: "first", x: 35, y: 5 },
+      { id: "second", x: 525, y: 385 },
+      { id: "third", x: 900, y: 900 },
+    ],
+  );
+  assert.deepEqual(moved.edges, graph.edges);
+});
+
+test("keeps settled edges fixed from the source right port to the target left port", () => {
   const base = {
     id: "a",
     kind: "text",
@@ -276,10 +324,17 @@ test("recomputes edge attachment when nodes cross directions", () => {
     error: "",
   };
   const right = edgePath(base, { ...base, id: "b", x: 500 });
+  const left = edgePath(base, { ...base, id: "c", x: -500 });
   const below = edgePath(base, { ...base, id: "c", y: 500 });
-  assert.notEqual(right, below);
+  const above = edgePath(base, { ...base, id: "d", y: -500 });
   assert.match(right, /^M 272 92 C/);
-  assert.match(below, /^M 136 184 C/);
+  assert.match(left, /^M 272 92 C/);
+  assert.match(below, /^M 272 92 C/);
+  assert.match(above, /^M 272 92 C/);
+  assert.match(right, /, 500 92$/);
+  assert.match(left, /, -500 92$/);
+  assert.match(below, /, 0 592$/);
+  assert.match(above, /, 0 -408$/);
 });
 
 test("uses actual node dimensions for settled and draft edge endpoints", () => {
@@ -294,7 +349,9 @@ test("uses actual node dimensions for settled and draft edge endpoints", () => {
     height: 100,
   };
   assert.match(edgePath(source, target), /^M 400 100 C/);
+  assert.match(edgePath(source, target), /, 600 100$/);
   assert.match(draftEdgePath(source, "right", { x: 700, y: 100 }), /^M 400 100 C/);
+  assert.match(draftEdgePath(source, "left", { x: -100, y: 100 }), /^M 0 100 C/);
 });
 
 test("creates typed manual nodes on the requested connection side", () => {

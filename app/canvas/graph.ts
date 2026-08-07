@@ -177,6 +177,44 @@ export function getNodeSize(node: CanvasNode) {
   };
 }
 
+export function getNodeBounds(node: CanvasNode): NodeBounds {
+  const size = getNodeSize(node);
+  return { x: node.x, y: node.y, ...size };
+}
+
+export function nodesIntersectingBounds(
+  graph: CanvasGraph,
+  bounds: NodeBounds,
+): string[] {
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  return graph.nodes
+    .filter((node) => {
+      const nodeBounds = getNodeBounds(node);
+      return (
+        nodeBounds.x <= right &&
+        nodeBounds.x + nodeBounds.width >= bounds.x &&
+        nodeBounds.y <= bottom &&
+        nodeBounds.y + nodeBounds.height >= bounds.y
+      );
+    })
+    .map((node) => node.id);
+}
+
+export function selectedNodesBounds(
+  graph: CanvasGraph,
+  nodeIds: readonly string[],
+): NodeBounds | null {
+  const selected = graph.nodes.filter((node) => nodeIds.includes(node.id));
+  if (selected.length === 0) return null;
+  const bounds = selected.map(getNodeBounds);
+  const x = Math.min(...bounds.map((item) => item.x));
+  const y = Math.min(...bounds.map((item) => item.y));
+  const right = Math.max(...bounds.map((item) => item.x + item.width));
+  const bottom = Math.max(...bounds.map((item) => item.y + item.height));
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -415,6 +453,23 @@ export function moveNode(
   };
 }
 
+export function moveNodes(
+  graph: CanvasGraph,
+  nodeIds: readonly string[],
+  deltaX: number,
+  deltaY: number,
+): CanvasGraph {
+  const selected = new Set(nodeIds);
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      selected.has(node.id)
+        ? { ...node, x: node.x + deltaX, y: node.y + deltaY }
+        : node,
+    ),
+  };
+}
+
 export function connectNodes(
   graph: CanvasGraph,
   sourceId: string,
@@ -624,32 +679,16 @@ export function replaceOutputWithResults(
 export function edgePath(source: CanvasNode, target: CanvasNode): string {
   const sourceSize = getNodeSize(source);
   const targetSize = getNodeSize(target);
-  const sourceCenter = {
-    x: source.x + sourceSize.width / 2,
+  const start = {
+    x: source.x + sourceSize.width,
     y: source.y + sourceSize.height / 2,
   };
-  const targetCenter = {
-    x: target.x + targetSize.width / 2,
+  const end = {
+    x: target.x,
     y: target.y + targetSize.height / 2,
   };
-  const horizontal = Math.abs(targetCenter.x - sourceCenter.x) >=
-    Math.abs(targetCenter.y - sourceCenter.y);
-
-  let start = sourceCenter;
-  let end = targetCenter;
-  if (horizontal) {
-    const direction = targetCenter.x >= sourceCenter.x ? 1 : -1;
-    start = { x: sourceCenter.x + (sourceSize.width / 2) * direction, y: sourceCenter.y };
-    end = { x: targetCenter.x - (targetSize.width / 2) * direction, y: targetCenter.y };
-    const control = Math.max(48, Math.abs(end.x - start.x) * 0.45);
-    return `M ${start.x} ${start.y} C ${start.x + control * direction} ${start.y}, ${end.x - control * direction} ${end.y}, ${end.x} ${end.y}`;
-  }
-
-  const direction = targetCenter.y >= sourceCenter.y ? 1 : -1;
-  start = { x: sourceCenter.x, y: sourceCenter.y + (sourceSize.height / 2) * direction };
-  end = { x: targetCenter.x, y: targetCenter.y - (targetSize.height / 2) * direction };
-  const control = Math.max(48, Math.abs(end.y - start.y) * 0.45);
-  return `M ${start.x} ${start.y} C ${start.x} ${start.y + control * direction}, ${end.x} ${end.y - control * direction}, ${end.x} ${end.y}`;
+  const control = Math.max(48, Math.abs(end.x - start.x) * 0.45);
+  return `M ${start.x} ${start.y} C ${start.x + control} ${start.y}, ${end.x - control} ${end.y}, ${end.x} ${end.y}`;
 }
 
 export function draftEdgePath(

@@ -33,12 +33,14 @@ import {
   fitMediaNode,
   getNodeSize,
   GRAPH_STORAGE_KEY,
-  moveNode,
+  moveNodes,
+  nodesIntersectingBounds,
   parsePersistedGraph,
   removeNode,
   resizeNode,
   resizedNodeBounds,
   screenToWorld,
+  selectedNodesBounds,
   updateOutputNode,
   type CanvasGraph,
   type CanvasNode,
@@ -57,19 +59,20 @@ const DOT_SPACING = 24;
 const MAX_REFERENCE_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_REFERENCE_TOTAL_BYTES = 30 * 1024 * 1024;
 
-type CanvasDragState = {
+type MarqueeDragState = {
   pointerId: number;
-  x: number;
-  y: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  moved: boolean;
 };
 
 type NodeDragState = {
   pointerId: number;
-  nodeId: string;
+  nodeIds: string[];
   clientX: number;
   clientY: number;
-  nodeX: number;
-  nodeY: number;
 };
 
 type NodeResizeState = {
@@ -145,13 +148,14 @@ export default function Home() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedManualNodeId, setSelectedManualNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectionMarquee, setSelectionMarquee] = useState<MarqueeDragState | null>(null);
   const [revealedNodeId, setRevealedNodeId] = useState<string | null>(null);
   const [addNodeMenu, setAddNodeMenu] = useState<AddNodeMenuState | null>(null);
   const [connectionDraft, setConnectionDraft] = useState<ConnectionDragState | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [detailTextDraft, setDetailTextDraft] = useState("");
-  const [resizingNodeId, setResizingNodeId] = useState<string | null>(null);
-  const canvasDrag = useRef<CanvasDragState | null>(null);
+  const marqueeDrag = useRef<MarqueeDragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
   const nodeResize = useRef<NodeResizeState | null>(null);
   const connectionDrag = useRef<ConnectionDragState | null>(null);
@@ -236,20 +240,33 @@ export default function Home() {
     if (!canvas) return;
 
     function handleCanvasWheel(event: globalThis.WheelEvent) {
-      if (event.target !== canvas) return;
+      const target = event.target as HTMLElement;
+      if (
+        target !== canvas &&
+        !target.closest("[data-node-id], .canvas-selection-frame")
+      ) {
+        return;
+      }
       event.preventDefault();
       const bounds = canvas!.getBoundingClientRect();
-      const deltaY =
+      const normalizeDelta = (delta: number, pageSize: number) =>
         event.deltaMode === globalThis.WheelEvent.DOM_DELTA_LINE
-          ? event.deltaY * 16
+          ? delta * 16
           : event.deltaMode === globalThis.WheelEvent.DOM_DELTA_PAGE
-            ? event.deltaY * bounds.height
-            : event.deltaY;
+            ? delta * pageSize
+            : delta;
+      const deltaX = normalizeDelta(event.deltaX, bounds.width);
+      const deltaY =
+        normalizeDelta(event.deltaY, bounds.height);
+      if (!event.ctrlKey) {
+        setViewport((current) => panViewport(current, -deltaX, -deltaY));
+        return;
+      }
       const anchor = {
         x: event.clientX - bounds.left,
         y: event.clientY - bounds.top,
       };
-      const zoomFactor = wheelZoomFactor(deltaY, event.ctrlKey);
+      const zoomFactor = wheelZoomFactor(deltaY, true);
       setViewport((current) =>
         zoomViewport(current, anchor, current.scale * zoomFactor),
       );
@@ -340,36 +357,75 @@ export default function Home() {
   }, [graph.nodes, isHydrated, pollTask]);
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLElement>) {
-    if (event.button !== 0) return;
-    if (event.target === event.currentTarget) {
-      setSelectedManualNodeId(null);
-      setRevealedNodeId(null);
-      setAddNodeMenu(null);
-    }
+    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setSelectedManualNodeId(null);
+    setSelectedNodeIds([]);
+    setRevealedNodeId(null);
+    setAddNodeMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
-    canvasDrag.current = {
+    const drag = {
       pointerId: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
+      startX: event.clientX - bounds.left,
+      startY: event.clientY - bounds.top,
+      currentX: event.clientX - bounds.left,
+      currentY: event.clientY - bounds.top,
+      moved: false,
     };
+    marqueeDrag.current = drag;
+    setSelectionMarquee(null);
   }
 
   function handleCanvasPointerMove(event: PointerEvent<HTMLElement>) {
-    if (!canvasDrag.current || canvasDrag.current.pointerId !== event.pointerId) {
+    const current = marqueeDrag.current;
+    if (!current || current.pointerId !== event.pointerId) {
       return;
     }
-    const deltaX = event.clientX - canvasDrag.current.x;
-    const deltaY = event.clientY - canvasDrag.current.y;
-    canvasDrag.current.x = event.clientX;
-    canvasDrag.current.y = event.clientY;
-    setViewport((current) => panViewport(current, deltaX, deltaY));
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const currentX = event.clientX - bounds.left;
+    const currentY = event.clientY - bounds.top;
+    const moved =
+      current.moved ||
+      Math.hypot(currentX - current.startX, currentY - current.startY) >= 6;
+    const next = { ...current, currentX, currentY, moved };
+    marqueeDrag.current = next;
+    setSelectionMarquee(moved ? next : null);
   }
 
-  function finishCanvasDrag(event: PointerEvent<HTMLElement>) {
-    if (!canvasDrag.current || canvasDrag.current.pointerId !== event.pointerId) {
+  function finishCanvasSelection(event: PointerEvent<HTMLElement>) {
+    const current = marqueeDrag.current;
+    if (!current || current.pointerId !== event.pointerId) {
       return;
     }
-    canvasDrag.current = null;
+    if (current.moved) {
+      const topLeft = screenToWorld(viewport, {
+        x: Math.min(current.startX, current.currentX),
+        y: Math.min(current.startY, current.currentY),
+      });
+      const bottomRight = screenToWorld(viewport, {
+        x: Math.max(current.startX, current.currentX),
+        y: Math.max(current.startY, current.currentY),
+      });
+      setSelectedNodeIds(
+        nodesIntersectingBounds(graph, {
+          x: topLeft.x,
+          y: topLeft.y,
+          width: bottomRight.x - topLeft.x,
+          height: bottomRight.y - topLeft.y,
+        }),
+      );
+    }
+    marqueeDrag.current = null;
+    setSelectionMarquee(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function cancelCanvasSelection(event: PointerEvent<HTMLElement>) {
+    if (marqueeDrag.current?.pointerId !== event.pointerId) return;
+    marqueeDrag.current = null;
+    setSelectionMarquee(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -379,29 +435,49 @@ export default function Home() {
     if (event.button !== 0) return;
     event.stopPropagation();
     setRevealedNodeId(node.id);
-    setSelectedManualNodeId(node.manual ? node.id : null);
+    const nodeIds = selectedNodeIds.includes(node.id)
+      ? selectedNodeIds
+      : [node.id];
+    setSelectedNodeIds(nodeIds);
+    setSelectedManualNodeId(
+      nodeIds.length === 1 && node.manual ? node.id : null,
+    );
     setAddNodeMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     nodeDrag.current = {
       pointerId: event.pointerId,
-      nodeId: node.id,
+      nodeIds,
       clientX: event.clientX,
       clientY: event.clientY,
-      nodeX: node.x,
-      nodeY: node.y,
+    };
+  }
+
+  function beginSelectionDrag(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || selectedNodeIds.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedManualNodeId(null);
+    setAddNodeMenu(null);
+    nodeDrag.current = {
+      pointerId: event.pointerId,
+      nodeIds: selectedNodeIds,
+      clientX: event.clientX,
+      clientY: event.clientY,
     };
   }
 
   function dragNode(event: PointerEvent<HTMLDivElement>) {
     if (!nodeDrag.current || nodeDrag.current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    const x =
-      nodeDrag.current.nodeX +
-      (event.clientX - nodeDrag.current.clientX) / viewport.scale;
-    const y =
-      nodeDrag.current.nodeY +
-      (event.clientY - nodeDrag.current.clientY) / viewport.scale;
-    setGraph((current) => moveNode(current, nodeDrag.current!.nodeId, x, y));
+    const current = nodeDrag.current;
+    const deltaX = (event.clientX - current.clientX) / viewport.scale;
+    const deltaY = (event.clientY - current.clientY) / viewport.scale;
+    current.clientX = event.clientX;
+    current.clientY = event.clientY;
+    setGraph((graphValue) =>
+      moveNodes(graphValue, current.nodeIds, deltaX, deltaY),
+    );
   }
 
   function finishNodeDrag(event: PointerEvent<HTMLDivElement>) {
@@ -423,6 +499,7 @@ export default function Home() {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     setRevealedNodeId(node.id);
+    setSelectedNodeIds([node.id]);
     setSelectedManualNodeId(node.manual ? node.id : null);
     setAddNodeMenu(null);
     nodeResize.current = {
@@ -431,7 +508,6 @@ export default function Home() {
       corner,
       startNode: { ...node },
     };
-    setResizingNodeId(node.id);
   }
 
   function resizeNodeFromPointer(event: PointerEvent<HTMLButtonElement>) {
@@ -468,7 +544,6 @@ export default function Home() {
     event.preventDefault();
     event.stopPropagation();
     nodeResize.current = null;
-    setResizingNodeId(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -593,6 +668,7 @@ export default function Home() {
       kind,
     );
     setGraph(created.graph);
+    setSelectedNodeIds(created.nodeId ? [created.nodeId] : []);
     setSelectedManualNodeId(created.nodeId);
     setAddNodeMenu(null);
   }
@@ -841,6 +917,7 @@ export default function Home() {
       return;
     }
     if (selectedManualNodeId === node.id) setSelectedManualNodeId(null);
+    setSelectedNodeIds((current) => current.filter((id) => id !== node.id));
     if (revealedNodeId === node.id) setRevealedNodeId(null);
     if (addNodeMenu?.nodeId === node.id) setAddNodeMenu(null);
     if (detailNodeId === node.id) closeNodeDetails();
@@ -889,6 +966,29 @@ export default function Home() {
   const addNodeMenuAnchorSize = addNodeMenuAnchor
     ? getNodeSize(addNodeMenuAnchor)
     : undefined;
+  const validSelectedNodeIds = selectedNodeIds.filter((id) =>
+    graph.nodes.some((node) => node.id === id),
+  );
+  const selectionBounds =
+    validSelectedNodeIds.length > 1
+      ? selectedNodesBounds(graph, validSelectedNodeIds)
+      : null;
+  const selectionFrameBounds = selectionBounds
+    ? {
+        x: selectionBounds.x - 8 / viewport.scale,
+        y: selectionBounds.y - 8 / viewport.scale,
+        width: selectionBounds.width + 16 / viewport.scale,
+        height: selectionBounds.height + 16 / viewport.scale,
+      }
+    : null;
+  const marqueeBounds = selectionMarquee
+    ? {
+        x: Math.min(selectionMarquee.startX, selectionMarquee.currentX),
+        y: Math.min(selectionMarquee.startY, selectionMarquee.currentY),
+        width: Math.abs(selectionMarquee.currentX - selectionMarquee.startX),
+        height: Math.abs(selectionMarquee.currentY - selectionMarquee.startY),
+      }
+    : null;
 
   const canvasStyle = {
     "--canvas-x": `${viewport.x}px`,
@@ -908,9 +1008,9 @@ export default function Home() {
       style={canvasStyle}
       onPointerDown={handleCanvasPointerDown}
       onPointerMove={handleCanvasPointerMove}
-      onPointerUp={finishCanvasDrag}
-      onPointerCancel={finishCanvasDrag}
-      onLostPointerCapture={finishCanvasDrag}
+      onPointerUp={finishCanvasSelection}
+      onPointerCancel={cancelCanvasSelection}
+      onLostPointerCapture={cancelCanvasSelection}
     >
       <div className="canvas-world" style={worldStyle}>
         <svg className="canvas-edges" aria-hidden="true">
@@ -938,13 +1038,29 @@ export default function Home() {
           ) : null}
         </svg>
 
+        {selectionFrameBounds ? (
+          <div
+            aria-label="移动已选节点"
+            className="canvas-selection-frame"
+            style={{
+              width: selectionFrameBounds.width,
+              height: selectionFrameBounds.height,
+              borderWidth: 1 / viewport.scale,
+              transform: `translate(${selectionFrameBounds.x}px, ${selectionFrameBounds.y}px)`,
+            }}
+            onPointerDown={beginSelectionDrag}
+            onPointerMove={dragNode}
+            onPointerUp={finishNodeDrag}
+            onPointerCancel={finishNodeDrag}
+          />
+        ) : null}
+
         {graph.nodes.map((node) => (
           <CanvasNodeCard
             key={node.id}
             node={node}
             assetUrl={node.assetId ? assetUrls[node.assetId] : undefined}
             assetError={node.assetId ? assetLoadErrors[node.assetId] : undefined}
-            selected={selectedManualNodeId === node.id}
             connectionTarget={connectionDraft?.targetId === node.id}
             onDelete={() => deleteNode(node)}
             onOpen={() => openNodeDetails(node)}
@@ -1005,16 +1121,6 @@ export default function Home() {
           <CanvasNodeResizeHandles
             key={`resize-${node.id}`}
             node={node}
-            visible={
-              revealedNodeId === node.id || resizingNodeId === node.id
-            }
-            active={resizingNodeId === node.id}
-            onPointerEnter={() => setRevealedNodeId(node.id)}
-            onPointerLeave={() => {
-              if (nodeResize.current?.nodeId !== node.id) {
-                setRevealedNodeId(null);
-              }
-            }}
             onResizePointerDown={(event, corner) =>
               beginNodeResize(event, node, corner)
             }
@@ -1039,6 +1145,18 @@ export default function Home() {
           />
         ) : null}
       </div>
+
+      {marqueeBounds ? (
+        <div
+          aria-hidden="true"
+          className="canvas-selection-marquee"
+          style={{
+            width: marqueeBounds.width,
+            height: marqueeBounds.height,
+            transform: `translate(${marqueeBounds.x}px, ${marqueeBounds.y}px)`,
+          }}
+        />
+      ) : null}
 
       {graph.nodes.length === 0 && isHydrated ? (
         <div className="canvas-empty-state" aria-hidden="true">
@@ -1085,7 +1203,6 @@ function CanvasNodeCard({
   node,
   assetUrl,
   assetError,
-  selected,
   connectionTarget,
   onDelete,
   onOpen,
@@ -1103,7 +1220,6 @@ function CanvasNodeCard({
   node: CanvasNode;
   assetUrl?: string;
   assetError?: string;
-  selected: boolean;
   connectionTarget: boolean;
   onDelete: () => void;
   onOpen: () => void;
@@ -1141,7 +1257,7 @@ function CanvasNodeCard({
 
   return (
     <div
-      className={`canvas-node canvas-node-${node.kind}${hasImageDisplay ? " canvas-node-image-only" : ""}${selected ? " canvas-node-selected" : ""}${connectionTarget ? " canvas-node-connection-target" : ""}`}
+      className={`canvas-node canvas-node-${node.kind}${hasImageDisplay ? " canvas-node-image-only" : ""}${connectionTarget ? " canvas-node-connection-target" : ""}`}
       style={{
         width: nodeSize.width,
         height: nodeSize.height,
@@ -1427,20 +1543,12 @@ function CanvasNodeHandles({
 
 function CanvasNodeResizeHandles({
   node,
-  visible,
-  active,
-  onPointerEnter,
-  onPointerLeave,
   onResizePointerDown,
   onResizePointerMove,
   onResizePointerUp,
   onResizePointerCancel,
 }: {
   node: CanvasNode;
-  visible: boolean;
-  active: boolean;
-  onPointerEnter: () => void;
-  onPointerLeave: () => void;
   onResizePointerDown: (
     event: PointerEvent<HTMLButtonElement>,
     corner: ResizeCorner,
@@ -1459,15 +1567,13 @@ function CanvasNodeResizeHandles({
 
   return (
     <div
-      className={`canvas-node-resize-layer${visible ? " canvas-node-resize-visible" : ""}${active ? " canvas-node-resize-active" : ""}`}
+      className="canvas-node-resize-layer"
       data-node-id={node.id}
       style={{
         width: nodeSize.width,
         height: nodeSize.height,
         transform: `translate(${node.x}px, ${node.y}px)`,
       }}
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
     >
       {corners.map((corner) => (
         <button

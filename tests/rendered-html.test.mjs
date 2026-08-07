@@ -102,6 +102,10 @@ test("removes the disposable starter surface", async () => {
   );
   assert.match(page, /resizedNodeBounds/);
   assert.match(page, /resizeNode\(value, current\.nodeId, nextBounds\)/);
+  assert.match(
+    page,
+    /connectionDraft\.side === "right"[\s\S]*?edgePath\(draftSourceNode, draftTargetNode\)[\s\S]*?edgePath\(draftTargetNode, draftSourceNode\)/,
+  );
   assert.match(page, /event\.currentTarget\.naturalWidth/);
   assert.match(page, /event\.currentTarget\.videoWidth/);
   assert.match(page, /width: nodeSize\.width/);
@@ -109,8 +113,15 @@ test("removes the disposable starter surface", async () => {
   assert.equal((page.match(/resolution: submission\.resolution/g) ?? []).length, 2);
   assert.match(page, /node\.role === "output" \|\| node\.manual/);
   assert.doesNotMatch(page, /toolbar|sidebar|canvas-agent/i);
-  assert.match(page, /event\.target !== canvas/);
+  assert.match(page, /!event\.ctrlKey[\s\S]*?panViewport\(current, -deltaX, -deltaY\)/);
+  assert.match(page, /wheelZoomFactor\(deltaY, true\)/);
+  assert.match(page, /target\.closest\("\[data-node-id\], \.canvas-selection-frame"\)/);
   assert.match(page, /addEventListener\("wheel", handleCanvasWheel, \{ passive: false \}\)/);
+  assert.match(page, /nodesIntersectingBounds/);
+  assert.match(page, /validSelectedNodeIds\.length > 1[\s\S]*?selectedNodesBounds\(graph, validSelectedNodeIds\)/);
+  assert.match(page, /className="canvas-selection-frame"/);
+  assert.match(page, /className="canvas-selection-marquee"/);
+  assert.match(page, /moveNodes\(graphValue, current\.nodeIds, deltaX, deltaY\)/);
   assert.doesNotMatch(page.match(/<main[\s\S]*?>/)?.[0] ?? "", /onWheel=\{/);
   assert.match(page, /canvas-node-image-only/);
   assert.match(styles, /\.canvas-node-image-only \{[\s\S]*?border: 0;/);
@@ -130,10 +141,30 @@ test("removes the disposable starter surface", async () => {
   assert.match(styles, /\.canvas-node-handle-left \{[\s\S]*?left: -42px;/);
   assert.match(styles, /\.canvas-node-handle-right \{[\s\S]*?right: -42px;/);
   assert.match(styles, /\.canvas-node-resize-layer \{/);
-  assert.match(styles, /\.canvas-node-resize-handle \{[\s\S]*?pointer-events: auto;/);
-  assert.match(styles, /\.canvas-node-resize-visible::before,[\s\S]*?opacity: 1;/);
+  assert.match(
+    styles,
+    /\.canvas-node-resize-handle \{[\s\S]*?width: 24px;[\s\S]*?height: 24px;[\s\S]*?background: transparent;[\s\S]*?pointer-events: auto;/,
+  );
+  assert.match(
+    styles,
+    /\.canvas-node-resize-handle::after \{[\s\S]*?width: 8px;[\s\S]*?height: 8px;[\s\S]*?opacity: 0;/,
+  );
+  assert.match(
+    styles,
+    /\.canvas-node-resize-handle:hover::after,[\s\S]*?\.canvas-node-resize-handle:active::after \{[\s\S]*?opacity: 1;/,
+  );
+  assert.doesNotMatch(styles, /\.canvas-node-resize-layer::before/);
+  assert.doesNotMatch(styles, /\.canvas-node-selected/);
+  assert.doesNotMatch(page, /canvas-node-selected|resizingNodeId|canvas-node-resize-visible/);
+  assert.match(styles, /\.canvas-node-delete \{[\s\S]*?z-index: 18;/);
   assert.match(styles, /\.canvas-node-resize-north-west \{[\s\S]*?cursor: nwse-resize;/);
+  assert.match(
+    styles,
+    /\.canvas-node-resize-north-east \{[\s\S]*?top: -16px;[\s\S]*?right: -16px;/,
+  );
   assert.match(styles, /\.canvas-node-resize-south-east \{[\s\S]*?cursor: nwse-resize;/);
+  assert.match(styles, /\.canvas-selection-frame \{[\s\S]*?border-style: dashed;[\s\S]*?pointer-events: auto;/);
+  assert.match(styles, /\.canvas-selection-marquee \{[\s\S]*?pointer-events: none;/);
   assert.match(styles, /\.canvas-node-add-menu \{/);
   assert.match(styles, /\.canvas-node-connection-target \{/);
   assert.match(graph, /export function connectNodes/);
@@ -146,6 +177,9 @@ test("removes the disposable starter surface", async () => {
   assert.match(graph, /export function getNodeSize/);
   assert.match(graph, /export function resizeNode/);
   assert.match(graph, /export function fitMediaNode/);
+  assert.match(graph, /export function nodesIntersectingBounds/);
+  assert.match(graph, /export function selectedNodesBounds/);
+  assert.match(graph, /export function moveNodes/);
   assert.match(
     composer,
     /MODEL_CONFIGS\[mode\]/,
