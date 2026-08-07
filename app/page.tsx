@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Bot,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -13,13 +14,26 @@ import {
 } from "lucide-react";
 import type { CSSProperties, PointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ALL_MODELS, type ComposerMode } from "@/app/ai/models";
+import type {
+  AgentDangerousOperation,
+  AgentInspectedImage,
+  AgentOperation,
+} from "@/app/ai/agent";
+import {
+  ALL_MODELS,
+  getModelConfig,
+  type ComposerMode,
+} from "@/app/ai/models";
 import type {
   GenerateReferenceImage,
   GenerateResponse,
   TaskStatusResponse,
 } from "@/app/ai/types";
 import { deleteAsset, readAsset, saveAsset } from "@/app/canvas/assets";
+import {
+  applyAgentOperations,
+  createAgentCanvasSnapshot,
+} from "@/app/canvas/agent";
 import {
   applyTaskStatus,
   autoPollDeadline,
@@ -46,6 +60,7 @@ import {
   type ResizeCorner,
 } from "@/app/canvas/graph";
 import { AIChatInput, type ComposerSubmission } from "@/components/ui/ai-chat-input";
+import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 import {
   panViewport,
   wheelZoomFactor,
@@ -144,6 +159,9 @@ export default function Home() {
   const [assetLoadErrors, setAssetLoadErrors] = useState<Record<string, string>>({});
   const [isHydrated, setIsHydrated] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAgentOpen, setIsAgentOpen] = useState(false);
+  const [agentContextNodeId, setAgentContextNodeId] = useState<string | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [selectedManualNodeId, setSelectedManualNodeId] = useState<string | null>(null);
   const [revealedNodeId, setRevealedNodeId] = useState<string | null>(null);
   const [addNodeMenu, setAddNodeMenu] = useState<AddNodeMenuState | null>(null);
@@ -260,11 +278,29 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const canvas = mainRef.current;
+    if (!canvas) return;
+    const updateSize = () => {
+      const bounds = canvas.getBoundingClientRect();
+      setCanvasSize({ width: bounds.width, height: bounds.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       if (detailNodeId) {
         setDetailNodeId(null);
         setDetailTextDraft("");
+        return;
+      }
+      if (isAgentOpen) {
+        setIsAgentOpen(false);
+        setAgentContextNodeId(null);
         return;
       }
       connectionDrag.current = null;
@@ -273,7 +309,7 @@ export default function Home() {
     }
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [detailNodeId]);
+  }, [detailNodeId, isAgentOpen]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -342,7 +378,11 @@ export default function Home() {
   function handleCanvasPointerDown(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
     if (event.target === event.currentTarget) {
-      setSelectedManualNodeId(null);
+      if (isAgentOpen) {
+        setAgentContextNodeId(null);
+      } else {
+        setSelectedManualNodeId(null);
+      }
       setRevealedNodeId(null);
       setAddNodeMenu(null);
     }
@@ -379,7 +419,11 @@ export default function Home() {
     if (event.button !== 0) return;
     event.stopPropagation();
     setRevealedNodeId(node.id);
-    setSelectedManualNodeId(node.manual ? node.id : null);
+    if (isAgentOpen) {
+      setAgentContextNodeId(node.id);
+    } else {
+      setSelectedManualNodeId(node.manual ? node.id : null);
+    }
     setAddNodeMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     nodeDrag.current = {
@@ -423,7 +467,11 @@ export default function Home() {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     setRevealedNodeId(node.id);
-    setSelectedManualNodeId(node.manual ? node.id : null);
+    if (isAgentOpen) {
+      setAgentContextNodeId(node.id);
+    } else {
+      setSelectedManualNodeId(node.manual ? node.id : null);
+    }
     setAddNodeMenu(null);
     nodeResize.current = {
       pointerId: event.pointerId,
@@ -708,11 +756,7 @@ export default function Home() {
     }
   }
 
-  async function submitGeneration(submission: ComposerSubmission) {
-    if (selectedManualNode) {
-      await submitManualNode(selectedManualNode, submission);
-      return;
-    }
+  async function submitStandaloneGeneration(submission: ComposerSubmission) {
     if (!mainRef.current) return;
     setIsSubmitting(true);
     let outputId = "";
@@ -806,6 +850,14 @@ export default function Home() {
     }
   }
 
+  async function submitGeneration(submission: ComposerSubmission) {
+    if (selectedManualNode) {
+      await submitManualNode(selectedManualNode, submission);
+      return;
+    }
+    await submitStandaloneGeneration(submission);
+  }
+
   function openNodeDetails(node: CanvasNode) {
     const mediaUrl =
       node.kind === "image"
@@ -833,14 +885,16 @@ export default function Home() {
     closeNodeDetails();
   }
 
-  function deleteNode(node: CanvasNode) {
+  function deleteNode(node: CanvasNode, confirmed = false) {
     if (
+      !confirmed &&
       (node.status === "pending" || node.status === "running") &&
       !window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")
     ) {
       return;
     }
     if (selectedManualNodeId === node.id) setSelectedManualNodeId(null);
+    if (agentContextNodeId === node.id) setAgentContextNodeId(null);
     if (revealedNodeId === node.id) setRevealedNodeId(null);
     if (addNodeMenu?.nodeId === node.id) setAddNodeMenu(null);
     if (detailNodeId === node.id) closeNodeDetails();
@@ -866,6 +920,99 @@ export default function Home() {
     }
   }
 
+  function applyCanvasAgentOperations(operations: AgentOperation[]) {
+    if (!operations.length) return [];
+    const outcome = applyAgentOperations(graph, operations);
+    setGraph(outcome.graph);
+    return outcome.results.map((result) => result.message);
+  }
+
+  async function readAgentImages(nodeIds: string[]): Promise<AgentInspectedImage[]> {
+    const uniqueIds = [...new Set(nodeIds)].slice(0, 5);
+    return Promise.all(
+      uniqueIds.map(async (nodeId) => {
+        const node = graph.nodes.find(
+          (candidate) => candidate.id === nodeId && candidate.kind === "image",
+        );
+        if (!node) throw new Error(`未找到可读取的图片节点 ${nodeId}。`);
+        const file = await imageNodeToFile(node);
+        return {
+          nodeId,
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+          dataUrl: await fileToDataUrl(file),
+        };
+      }),
+    );
+  }
+
+  async function confirmAgentOperation(operation: AgentDangerousOperation) {
+    if (operation.type === "delete_node") {
+      const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
+      if (!node) throw new Error("节点已不存在，未执行删除。");
+      deleteNode(node, true);
+      return node.status === "pending" || node.status === "running"
+        ? "已删除本地节点并停止查询；远端任务可能仍继续产生费用。"
+        : "已删除节点及其连线。";
+    }
+
+    const model = getModelConfig(operation.mode, operation.model);
+    if (!model) throw new Error("生成模型与模式不匹配，请重新提出生成要求。");
+    const referenceNodeIds = [...new Set(operation.referenceNodeIds)];
+    const references = referenceNodeIds
+      .map((nodeId) => graph.nodes.find((node) => node.id === nodeId))
+      .filter((node): node is CanvasNode => Boolean(node));
+    if (references.length !== referenceNodeIds.length) {
+      throw new Error("部分参考节点已不存在，请重新提出生成要求。");
+    }
+    const context = references
+      .map((node) => {
+        if (node.kind === "text") return node.text || node.prompt || "";
+        if (node.kind === "video") return node.prompt || "";
+        return "";
+      })
+      .filter(Boolean);
+    const files = await Promise.all(
+      references
+        .filter((node) => node.kind === "image")
+        .map((node) => imageNodeToFile(node)),
+    );
+    if (files.length > model.maxReferenceImages) {
+      throw new Error(`当前模型最多支持 ${model.maxReferenceImages} 张参考图。`);
+    }
+    if (files.some((file) => file.size > MAX_REFERENCE_FILE_BYTES)) {
+      throw new Error("单张参考图不能超过 10MB。");
+    }
+    if (files.reduce((total, file) => total + file.size, 0) > MAX_REFERENCE_TOTAL_BYTES) {
+      throw new Error("参考图合计不能超过 30MB。");
+    }
+    const aspectRatio = operation.aspectRatio || model.aspectRatios[0];
+    const duration = operation.duration || model.durations[0];
+    const resolution = operation.resolution || model.defaultResolution;
+    if (model.aspectRatios.length && !model.aspectRatios.includes(aspectRatio)) {
+      throw new Error("Agent 选择了当前模型不支持的画面比例。");
+    }
+    if (model.durations.length && !model.durations.includes(duration)) {
+      throw new Error("Agent 选择了当前模型不支持的视频时长。");
+    }
+    if (model.resolutions.length && !model.resolutions.includes(resolution)) {
+      throw new Error("Agent 选择了当前模型不支持的分辨率。");
+    }
+    await submitStandaloneGeneration({
+      mode: operation.mode,
+      model: operation.model,
+      prompt: [...context, operation.prompt].join("\n\n"),
+      files,
+      aspectRatio,
+      duration,
+      resolution,
+    });
+    return `已提交${
+      operation.mode === "text" ? "文本" : operation.mode === "image" ? "图片" : "视频"
+    }生成，结果会写入画布节点。`;
+  }
+
   const selectedManualNode = selectedManualNodeId
     ? graph.nodes.find(
         (node) => node.id === selectedManualNodeId && node.manual,
@@ -889,6 +1036,7 @@ export default function Home() {
   const addNodeMenuAnchorSize = addNodeMenuAnchor
     ? getNodeSize(addNodeMenuAnchor)
     : undefined;
+  const agentSnapshot = createAgentCanvasSnapshot(graph, viewport, canvasSize);
 
   const canvasStyle = {
     "--canvas-x": `${viewport.x}px`,
@@ -944,7 +1092,9 @@ export default function Home() {
             node={node}
             assetUrl={node.assetId ? assetUrls[node.assetId] : undefined}
             assetError={node.assetId ? assetLoadErrors[node.assetId] : undefined}
-            selected={selectedManualNodeId === node.id}
+            selected={
+              selectedManualNodeId === node.id || agentContextNodeId === node.id
+            }
             connectionTarget={connectionDraft?.targetId === node.id}
             onDelete={() => deleteNode(node)}
             onOpen={() => openNodeDetails(node)}
@@ -1071,11 +1221,39 @@ export default function Home() {
         />
       ) : null}
 
+      {!isAgentOpen ? (
+        <button
+          aria-label="打开画布 Agent"
+          className="fixed top-4 right-4 z-40 inline-flex h-10 items-center gap-2 rounded-full border border-black/8 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => setIsAgentOpen(true)}
+        >
+          <Bot aria-hidden="true" size={16} />
+          画布 Agent
+        </button>
+      ) : null}
+
+      <CanvasAgentSidebar
+        open={isAgentOpen}
+        snapshot={agentSnapshot}
+        focusedNodeId={agentContextNodeId ?? undefined}
+        onClose={() => {
+          setIsAgentOpen(false);
+          setAgentContextNodeId(null);
+        }}
+        onClearFocus={() => setAgentContextNodeId(null)}
+        onApplyOperations={applyCanvasAgentOperations}
+        onConfirmOperation={confirmAgentOperation}
+        onReadImages={readAgentImages}
+      />
+
       <AIChatInput
         key={selectedManualNode?.id ?? "standalone-composer"}
         lockedMode={selectedManualNode?.kind}
         onSubmit={submitGeneration}
         isSubmitting={isSubmitting}
+        hidden={isAgentOpen}
       />
     </main>
   );

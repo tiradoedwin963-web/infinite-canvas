@@ -41,16 +41,21 @@ test("server-renders the infinite canvas with the LingkeAI composer", async () =
   assert.match(html, />GPT-5\.6 Sol<\/option>/);
   assert.match(html, />Claude Sonnet 5<\/option>/);
   assert.match(html, /aria-label="生成"/);
+  assert.match(html, /aria-label="打开画布 Agent"/);
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
 });
 
 test("removes the disposable starter surface", async () => {
-  const [page, graph, packageJson, composer, styles] = await Promise.all([
+  const [page, graph, packageJson, composer, agentSidebar, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/canvas/graph.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(
       new URL("../components/ui/ai-chat-input.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../components/canvas-agent-sidebar.tsx", import.meta.url),
       "utf8",
     ),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -108,7 +113,9 @@ test("removes the disposable starter surface", async () => {
   assert.match(page, /height: nodeSize\.height/);
   assert.equal((page.match(/resolution: submission\.resolution/g) ?? []).length, 2);
   assert.match(page, /node\.role === "output" \|\| node\.manual/);
-  assert.doesNotMatch(page, /toolbar|sidebar|canvas-agent/i);
+  assert.match(page, /<CanvasAgentSidebar/);
+  assert.match(page, /hidden={isAgentOpen}/);
+  assert.match(page, /aria-label="打开画布 Agent"/);
   assert.match(page, /event\.target !== canvas/);
   assert.match(page, /addEventListener\("wheel", handleCanvasWheel, \{ passive: false \}\)/);
   assert.doesNotMatch(page.match(/<main[\s\S]*?>/)?.[0] ?? "", /onWheel=\{/);
@@ -159,6 +166,8 @@ test("removes the disposable starter surface", async () => {
   assert.match(composer, /selectedModel\.resolutions\.map/);
   assert.match(composer, /mode === "text" \? undefined : resolution \|\| undefined/);
   assert.match(composer, /lockedMode\?: ComposerMode/);
+  assert.match(composer, /hidden\?: boolean/);
+  assert.match(composer, /y: hidden \? "calc\(100% \+ 24px\)" : 0/);
   assert.match(composer, /disabled=\{Boolean\(lockedMode\)\}/);
   assert.match(composer, /initial=\{\{ height: 54 \}\}/);
   assert.match(composer, /w-\[614px\] max-w-full/);
@@ -201,4 +210,9 @@ test("removes the disposable starter surface", async () => {
   assert.match(composer, /staggerChildren:\s*0\.025/);
   assert.match(composer, /\.split\(""\)/);
   assert.doesNotMatch(composer, /\bfetch\s*\(|axios/);
+  assert.match(agentSidebar, /aria-label="画布 Agent"/);
+  assert.match(agentSidebar, /w-\[400px\] max-w-full/);
+  assert.match(agentSidebar, /AGENT_CHAT_STORAGE_KEY/);
+  assert.match(agentSidebar, /isDangerousAgentOperation/);
+  assert.match(agentSidebar, /正在读取画布并思考/);
 });

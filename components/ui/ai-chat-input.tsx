@@ -33,6 +33,7 @@ type AIChatInputProps = {
   onSubmit: (submission: ComposerSubmission) => Promise<void>;
   isSubmitting: boolean;
   lockedMode?: ComposerMode;
+  hidden?: boolean;
 };
 
 type DraftImage = {
@@ -102,6 +103,7 @@ export function AIChatInput({
   onSubmit,
   isSubmitting,
   lockedMode,
+  hidden = false,
 }: AIChatInputProps) {
   const startingMode = lockedMode ?? "text";
   const startingModel = DEFAULT_MODEL_BY_MODE[startingMode];
@@ -278,7 +280,17 @@ export function AIChatInput({
     102 + (images.length > 0 ? 51 : 0) + (hasVisibleError ? 19 : 0);
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-5 pb-5 text-black">
+    <motion.div
+      aria-hidden={hidden}
+      className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-5 pb-5 text-black"
+      inert={hidden}
+      initial={false}
+      animate={{
+        y: hidden ? "calc(100% + 24px)" : 0,
+        opacity: hidden ? 0 : 1,
+      }}
+      transition={{ type: "spring", stiffness: 220, damping: 28 }}
+    >
       <motion.div
         ref={wrapperRef}
         aria-label="AI 创作输入"
@@ -523,7 +535,7 @@ export function AIChatInput({
           </motion.div>
         </div>
       </motion.div>
-    </div>
+    </motion.div>
   );
 }
 
