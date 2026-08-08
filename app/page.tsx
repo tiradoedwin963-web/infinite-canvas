@@ -3,12 +3,14 @@
 import {
   FileText,
   Image as ImageIcon,
+  LayoutGrid,
   LoaderCircle,
   Play,
   Plus,
   RotateCcw,
   Trash2,
   Video,
+  Workflow as WorkflowIcon,
   X,
 } from "lucide-react";
 import type { CSSProperties, PointerEvent } from "react";
@@ -48,6 +50,7 @@ import {
   type ResizeCorner,
 } from "@/app/canvas/graph";
 import { AIChatInput, type ComposerSubmission } from "@/components/ui/ai-chat-input";
+import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import {
   panViewport,
   wheelZoomFactor,
@@ -58,6 +61,9 @@ import {
 const DOT_SPACING = 24;
 const MAX_REFERENCE_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_REFERENCE_TOTAL_BYTES = 30 * 1024 * 1024;
+const EXPERIENCE_MODE_KEY = "lingke-canvas-experience-mode";
+
+export type CanvasExperienceMode = "creation" | "workflow";
 
 type MarqueeDragState = {
   pointerId: number;
@@ -141,6 +147,48 @@ async function imageNodeToFile(node: CanvasNode): Promise<File> {
 }
 
 export default function Home() {
+  const [experienceMode, setExperienceMode] = useState<CanvasExperienceMode>("creation");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(EXPERIENCE_MODE_KEY);
+    if (stored !== "creation" && stored !== "workflow") return;
+    const timer = window.setTimeout(() => setExperienceMode(stored), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function switchExperienceMode(mode: CanvasExperienceMode) {
+    setExperienceMode(mode);
+    window.localStorage.setItem(EXPERIENCE_MODE_KEY, mode);
+  }
+
+  return (
+    <>
+      <nav aria-label="画布模式" className="canvas-mode-switch" data-workflow-isolated>
+        <button
+          aria-pressed={experienceMode === "creation"}
+          className={experienceMode === "creation" ? "is-active" : ""}
+          type="button"
+          onClick={() => switchExperienceMode("creation")}
+        >
+          <LayoutGrid aria-hidden="true" size={15} />
+          创作
+        </button>
+        <button
+          aria-pressed={experienceMode === "workflow"}
+          className={experienceMode === "workflow" ? "is-active" : ""}
+          type="button"
+          onClick={() => switchExperienceMode("workflow")}
+        >
+          <WorkflowIcon aria-hidden="true" size={15} />
+          工作流
+        </button>
+      </nav>
+      {experienceMode === "creation" ? <CreationCanvas /> : <WorkflowCanvas />}
+    </>
+  );
+}
+
+function CreationCanvas() {
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const [graph, setGraph] = useState<CanvasGraph>(emptyGraph);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});

@@ -1,0 +1,663 @@
+import {
+  DEFAULT_MODEL_BY_MODE,
+  getModelConfig,
+  isComposerMode,
+  type ComposerMode,
+} from "../ai/models.ts";
+import type { TaskStatusResponse } from "../ai/types";
+
+export const WORKFLOW_STORAGE_KEY = "lingke-workflow-canvas-v1";
+export const WORKFLOW_VERSION = 1;
+export const WORKFLOW_NODE_WIDTH = 288;
+export const WORKFLOW_NODE_HEIGHT = 200;
+
+export type WorkflowNodeStatus =
+  | "ready"
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "paused";
+
+type WorkflowNodeBase = {
+  id: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+};
+
+export type WorkflowSourceNode = WorkflowNodeBase & {
+  type: "source";
+  kind: ComposerMode;
+  text: string;
+  assetId?: string;
+  assetName?: string;
+  assetMimeType?: string;
+};
+
+export type WorkflowSchedulerNode = WorkflowNodeBase & {
+  type: "scheduler";
+  outputKind: ComposerMode;
+  model: string;
+  prompt: string;
+  aspectRatio: string;
+  resolution: string;
+  duration: string;
+  outputCount: number;
+  error: string;
+};
+
+export type WorkflowResultNode = WorkflowNodeBase & {
+  type: "result";
+  kind: ComposerMode;
+  schedulerId: string;
+  text: string;
+  model: string;
+  status: WorkflowNodeStatus;
+  progress: string;
+  error: string;
+  resultUrl?: string;
+  taskId?: string;
+  startedAt?: number;
+};
+
+export type WorkflowNode =
+  | WorkflowSourceNode
+  | WorkflowSchedulerNode
+  | WorkflowResultNode;
+
+export type WorkflowEdge = {
+  id: string;
+  sourceId: string;
+  targetId: string;
+};
+
+export type WorkflowGraph = {
+  version: 1;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
+export type WorkflowBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type WorkflowResizeCorner =
+  | "north-west"
+  | "north-east"
+  | "south-west"
+  | "south-east";
+
+export type WorkflowInputs = {
+  text: string[];
+  images: Array<WorkflowSourceNode | WorkflowResultNode>;
+  videos: Array<WorkflowSourceNode | WorkflowResultNode>;
+};
+
+type IdFactory = () => string;
+
+export function emptyWorkflowGraph(): WorkflowGraph {
+  return { version: WORKFLOW_VERSION, nodes: [], edges: [] };
+}
+
+function validBase(node: Partial<WorkflowNode>) {
+  return (
+    typeof node.id === "string" &&
+    typeof node.x === "number" &&
+    Number.isFinite(node.x) &&
+    typeof node.y === "number" &&
+    Number.isFinite(node.y) &&
+    ((node.width === undefined && node.height === undefined) ||
+      (typeof node.width === "number" &&
+        Number.isFinite(node.width) &&
+        node.width > 0 &&
+        typeof node.height === "number" &&
+        Number.isFinite(node.height) &&
+        node.height > 0))
+  );
+}
+
+function isWorkflowNode(value: unknown): value is WorkflowNode {
+  if (!value || typeof value !== "object") return false;
+  const node = value as Partial<WorkflowNode>;
+  if (!validBase(node)) return false;
+  if (node.type === "source") {
+    return (
+      isComposerMode(node.kind) &&
+      typeof node.text === "string" &&
+      (node.assetId === undefined || typeof node.assetId === "string")
+    );
+  }
+  if (node.type === "scheduler") {
+    return (
+      isComposerMode(node.outputKind) &&
+      typeof node.model === "string" &&
+      typeof node.prompt === "string" &&
+      typeof node.aspectRatio === "string" &&
+      typeof node.resolution === "string" &&
+      typeof node.duration === "string" &&
+      typeof node.outputCount === "number" &&
+      Number.isInteger(node.outputCount) &&
+      node.outputCount >= 1 &&
+      node.outputCount <= 4 &&
+      typeof node.error === "string"
+    );
+  }
+  if (node.type === "result") {
+    return (
+      isComposerMode(node.kind) &&
+      typeof node.schedulerId === "string" &&
+      typeof node.text === "string" &&
+      typeof node.model === "string" &&
+      ["ready", "pending", "running", "success", "failed", "paused"].includes(
+        String(node.status),
+      ) &&
+      typeof node.progress === "string" &&
+      typeof node.error === "string"
+    );
+  }
+  return false;
+}
+
+function isWorkflowEdge(value: unknown): value is WorkflowEdge {
+  if (!value || typeof value !== "object") return false;
+  const edge = value as Partial<WorkflowEdge>;
+  return (
+    typeof edge.id === "string" &&
+    typeof edge.sourceId === "string" &&
+    typeof edge.targetId === "string"
+  );
+}
+
+export function parseWorkflowGraph(raw: string | null): WorkflowGraph {
+  if (!raw) return emptyWorkflowGraph();
+  try {
+    const value = JSON.parse(raw) as Partial<WorkflowGraph>;
+    if (
+      value.version !== WORKFLOW_VERSION ||
+      !Array.isArray(value.nodes) ||
+      !value.nodes.every(isWorkflowNode) ||
+      !Array.isArray(value.edges) ||
+      !value.edges.every(isWorkflowEdge)
+    ) {
+      return emptyWorkflowGraph();
+    }
+    const ids = new Set(value.nodes.map((node) => node.id));
+    return {
+      version: WORKFLOW_VERSION,
+      nodes: value.nodes,
+      edges: value.edges.filter(
+        (edge) => ids.has(edge.sourceId) && ids.has(edge.targetId),
+      ),
+    };
+  } catch {
+    return emptyWorkflowGraph();
+  }
+}
+
+export function schedulerDefaults(outputKind: ComposerMode) {
+  const model = DEFAULT_MODEL_BY_MODE[outputKind];
+  const config = getModelConfig(outputKind, model);
+  return {
+    outputKind,
+    model,
+    aspectRatio: config?.aspectRatios[0] ?? "",
+    resolution: config?.defaultResolution ?? config?.resolutions[0] ?? "",
+    duration: config?.durations[0] ?? "",
+    outputCount: 1,
+  };
+}
+
+export function createWorkflowNode(
+  graph: WorkflowGraph,
+  type: ComposerMode | "scheduler",
+  point: { x: number; y: number },
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): { graph: WorkflowGraph; nodeId: string } {
+  const id = idFactory();
+  const base = { id, x: point.x, y: point.y };
+  const node: WorkflowNode =
+    type === "scheduler"
+      ? {
+          ...base,
+          type: "scheduler",
+          ...schedulerDefaults("image"),
+          prompt: "",
+          error: "",
+          height: 360,
+        }
+      : { ...base, type: "source", kind: type, text: "" };
+  return {
+    graph: { ...graph, nodes: [...graph.nodes, node] },
+    nodeId: id,
+  };
+}
+
+export function getWorkflowNodeSize(node: WorkflowNode) {
+  return {
+    width: node.width ?? WORKFLOW_NODE_WIDTH,
+    height:
+      node.height ?? (node.type === "scheduler" ? 360 : WORKFLOW_NODE_HEIGHT),
+  };
+}
+
+export function getWorkflowNodeBounds(node: WorkflowNode): WorkflowBounds {
+  return { x: node.x, y: node.y, ...getWorkflowNodeSize(node) };
+}
+
+export function workflowNodesIntersecting(
+  graph: WorkflowGraph,
+  bounds: WorkflowBounds,
+): string[] {
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  return graph.nodes
+    .filter((node) => {
+      const item = getWorkflowNodeBounds(node);
+      return (
+        item.x <= right &&
+        item.x + item.width >= bounds.x &&
+        item.y <= bottom &&
+        item.y + item.height >= bounds.y
+      );
+    })
+    .map((node) => node.id);
+}
+
+export function workflowSelectionBounds(
+  graph: WorkflowGraph,
+  ids: readonly string[],
+): WorkflowBounds | null {
+  const selected = graph.nodes.filter((node) => ids.includes(node.id));
+  if (!selected.length) return null;
+  const bounds = selected.map(getWorkflowNodeBounds);
+  const x = Math.min(...bounds.map((item) => item.x));
+  const y = Math.min(...bounds.map((item) => item.y));
+  const right = Math.max(...bounds.map((item) => item.x + item.width));
+  const bottom = Math.max(...bounds.map((item) => item.y + item.height));
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+export function moveWorkflowNodes(
+  graph: WorkflowGraph,
+  ids: readonly string[],
+  deltaX: number,
+  deltaY: number,
+): WorkflowGraph {
+  const selected = new Set(ids);
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      selected.has(node.id)
+        ? { ...node, x: node.x + deltaX, y: node.y + deltaY }
+        : node,
+    ),
+  };
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+export function resizedWorkflowNodeBounds(
+  node: WorkflowNode,
+  corner: WorkflowResizeCorner,
+  point: { x: number; y: number },
+): WorkflowBounds {
+  const size = getWorkflowNodeSize(node);
+  const west = corner.endsWith("west");
+  const north = corner.startsWith("north");
+  const oppositeX = west ? node.x + size.width : node.x;
+  const oppositeY = north ? node.y + size.height : node.y;
+  const rawWidth = Math.max(1, west ? oppositeX - point.x : point.x - oppositeX);
+  const rawHeight = Math.max(1, north ? oppositeY - point.y : point.y - oppositeY);
+  const media =
+    node.type !== "scheduler" &&
+    (node.kind === "image" || node.kind === "video");
+  let width: number;
+  let height: number;
+  if (media) {
+    const scale = Math.max(rawWidth / size.width, rawHeight / size.height);
+    const requestedWidth = size.width * scale;
+    const requestedHeight = size.height * scale;
+    const minimumScale = 96 / Math.min(requestedWidth, requestedHeight);
+    const maximumScale = 1200 / Math.max(requestedWidth, requestedHeight);
+    const constrainedScale =
+      minimumScale > maximumScale
+        ? maximumScale
+        : clamp(1, minimumScale, maximumScale);
+    width = requestedWidth * constrainedScale;
+    height = requestedHeight * constrainedScale;
+  } else {
+    width = clamp(rawWidth, 180, 1200);
+    height = clamp(rawHeight, 120, 1200);
+  }
+  return {
+    x: west ? oppositeX - width : oppositeX,
+    y: north ? oppositeY - height : oppositeY,
+    width,
+    height,
+  };
+}
+
+export function resizeWorkflowNode(
+  graph: WorkflowGraph,
+  nodeId: string,
+  bounds: WorkflowBounds,
+): WorkflowGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === nodeId ? { ...node, ...bounds } : node,
+    ),
+  };
+}
+
+export function updateWorkflowNode(
+  graph: WorkflowGraph,
+  nodeId: string,
+  update: Partial<WorkflowNode>,
+): WorkflowGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === nodeId ? ({ ...node, ...update } as WorkflowNode) : node,
+    ),
+  };
+}
+
+export function connectWorkflowNodes(
+  graph: WorkflowGraph,
+  sourceId: string,
+  targetId: string,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): WorkflowGraph {
+  const source = graph.nodes.find((node) => node.id === sourceId);
+  const target = graph.nodes.find((node) => node.id === targetId);
+  if (
+    !source ||
+    !target ||
+    sourceId === targetId ||
+    source.type === "scheduler" ||
+    target.type !== "scheduler" ||
+    graph.edges.some(
+      (edge) => edge.sourceId === sourceId && edge.targetId === targetId,
+    )
+  ) {
+    return graph;
+  }
+  return {
+    ...graph,
+    edges: [...graph.edges, { id: idFactory(), sourceId, targetId }],
+  };
+}
+
+export function createConnectedScheduler(
+  graph: WorkflowGraph,
+  anchorId: string,
+  outputKind: ComposerMode,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): { graph: WorkflowGraph; nodeId: string | null } {
+  const anchor = graph.nodes.find((node) => node.id === anchorId);
+  if (!anchor || anchor.type === "scheduler") return { graph, nodeId: null };
+
+  const anchorSize = getWorkflowNodeSize(anchor);
+  const width = WORKFLOW_NODE_WIDTH;
+  const height = 360;
+  const x = anchor.x + anchorSize.width + 120;
+  const baseY = anchor.y + anchorSize.height / 2 - height / 2;
+  let y = baseY;
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const direction = attempt === 0 ? 0 : attempt % 2 === 1 ? 1 : -1;
+    const distance = Math.ceil(attempt / 2) * (height + 24);
+    const candidateY = baseY + direction * distance;
+    const occupied = graph.nodes.some((node) => {
+      const size = getWorkflowNodeSize(node);
+      return (
+        x < node.x + size.width + 24 &&
+        x + width + 24 > node.x &&
+        candidateY < node.y + size.height + 24 &&
+        candidateY + height + 24 > node.y
+      );
+    });
+    if (!occupied) {
+      y = candidateY;
+      break;
+    }
+  }
+
+  const nodeId = idFactory();
+  const scheduler: WorkflowSchedulerNode = {
+    id: nodeId,
+    x,
+    y,
+    width,
+    height,
+    type: "scheduler",
+    ...schedulerDefaults(outputKind),
+    prompt: "",
+    error: "",
+  };
+  return {
+    graph: {
+      ...graph,
+      nodes: [...graph.nodes, scheduler],
+      edges: [
+        ...graph.edges,
+        { id: idFactory(), sourceId: anchor.id, targetId: nodeId },
+      ],
+    },
+    nodeId,
+  };
+}
+
+export function readWorkflowInputs(
+  graph: WorkflowGraph,
+  schedulerId: string,
+): WorkflowInputs {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const text: string[] = [];
+  const images: WorkflowInputs["images"] = [];
+  const videos: WorkflowInputs["videos"] = [];
+  graph.edges
+    .filter((edge) => edge.targetId === schedulerId)
+    .forEach((edge) => {
+      const node = nodes.get(edge.sourceId);
+      if (!node || node.type === "scheduler") return;
+      const kind = node.kind;
+      if (kind === "text" && node.text.trim()) text.push(node.text.trim());
+      if (kind === "image") images.push(node);
+      if (kind === "video") videos.push(node);
+    });
+  return { text, images, videos };
+}
+
+export function buildWorkflowPrompt(
+  inputs: WorkflowInputs,
+  ownPrompt: string,
+): string {
+  return [...inputs.text, ownPrompt.trim()].filter(Boolean).join("\n\n");
+}
+
+function availableResultPosition(
+  graph: WorkflowGraph,
+  scheduler: WorkflowSchedulerNode,
+  index: number,
+) {
+  const schedulerSize = getWorkflowNodeSize(scheduler);
+  const x = scheduler.x + schedulerSize.width + 120;
+  const baseY = scheduler.y + index * (WORKFLOW_NODE_HEIGHT + 24);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const y = baseY + attempt * (WORKFLOW_NODE_HEIGHT + 24);
+    const occupied = graph.nodes.some((node) => {
+      const size = getWorkflowNodeSize(node);
+      return (
+        x < node.x + size.width + 24 &&
+        x + WORKFLOW_NODE_WIDTH + 24 > node.x &&
+        y < node.y + size.height + 24 &&
+        y + WORKFLOW_NODE_HEIGHT + 24 > node.y
+      );
+    });
+    if (!occupied) return { x, y };
+  }
+  return { x, y: baseY };
+}
+
+export function createWorkflowRun(
+  graph: WorkflowGraph,
+  schedulerId: string,
+  now: number,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): { graph: WorkflowGraph; resultIds: string[] } {
+  const scheduler = graph.nodes.find(
+    (node): node is WorkflowSchedulerNode =>
+      node.id === schedulerId && node.type === "scheduler",
+  );
+  if (!scheduler) return { graph, resultIds: [] };
+  const count = scheduler.outputKind === "text" ? 1 : scheduler.outputCount;
+  let next = graph;
+  const resultIds: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const id = idFactory();
+    const point = availableResultPosition(next, scheduler, index);
+    const result: WorkflowResultNode = {
+      id,
+      ...point,
+      type: "result",
+      kind: scheduler.outputKind,
+      schedulerId,
+      text: "",
+      model: scheduler.model,
+      status: "pending",
+      progress: "等待提交",
+      error: "",
+      startedAt: now,
+    };
+    next = {
+      ...next,
+      nodes: [...next.nodes, result],
+      edges: [
+        ...next.edges,
+        { id: idFactory(), sourceId: schedulerId, targetId: id },
+      ],
+    };
+    resultIds.push(id);
+  }
+  return { graph: next, resultIds };
+}
+
+export function updateWorkflowResult(
+  graph: WorkflowGraph,
+  resultId: string,
+  update: Partial<WorkflowResultNode>,
+): WorkflowGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === resultId && node.type === "result"
+        ? { ...node, ...update }
+        : node,
+    ),
+  };
+}
+
+export function applyWorkflowTaskStatus(
+  graph: WorkflowGraph,
+  resultId: string,
+  status: TaskStatusResponse,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): WorkflowGraph {
+  const result = graph.nodes.find(
+    (node): node is WorkflowResultNode =>
+      node.id === resultId && node.type === "result",
+  );
+  if (!result) return graph;
+  const first = status.results[0];
+  let next = updateWorkflowResult(graph, resultId, {
+    status:
+      status.state === "success"
+        ? "success"
+        : status.state === "failed"
+          ? "failed"
+          : status.state,
+    progress: status.progress,
+    error: status.error,
+    resultUrl: first?.url ?? result.resultUrl,
+  });
+  if (status.state !== "success" || status.results.length <= 1) return next;
+  const scheduler = next.nodes.find(
+    (node): node is WorkflowSchedulerNode =>
+      node.id === result.schedulerId && node.type === "scheduler",
+  );
+  if (!scheduler) return next;
+  status.results.slice(1).forEach((taskResult, index) => {
+    const id = idFactory();
+    const point = availableResultPosition(next, scheduler, index + 1);
+    next = {
+      ...next,
+      nodes: [
+        ...next.nodes,
+        {
+          ...result,
+          id,
+          ...point,
+          status: "success",
+          progress: "",
+          error: "",
+          resultUrl: taskResult.url,
+          taskId: undefined,
+        },
+      ],
+      edges: [
+        ...next.edges,
+        { id: idFactory(), sourceId: scheduler.id, targetId: id },
+      ],
+    };
+  });
+  return next;
+}
+
+export function removeWorkflowNode(
+  graph: WorkflowGraph,
+  nodeId: string,
+): WorkflowGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((node) => node.id !== nodeId),
+    edges: graph.edges.filter(
+      (edge) => edge.sourceId !== nodeId && edge.targetId !== nodeId,
+    ),
+  };
+}
+
+export function workflowEdgePath(
+  source: WorkflowNode,
+  target: WorkflowNode,
+): string {
+  const sourceSize = getWorkflowNodeSize(source);
+  const targetSize = getWorkflowNodeSize(target);
+  const start = { x: source.x + sourceSize.width, y: source.y + sourceSize.height / 2 };
+  const end = { x: target.x, y: target.y + targetSize.height / 2 };
+  const bend = Math.max(72, Math.abs(end.x - start.x) * 0.45);
+  return `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${end.x - bend} ${end.y}, ${end.x} ${end.y}`;
+}
+
+export function workflowDraftPath(
+  source: WorkflowNode,
+  point: { x: number; y: number },
+): string {
+  const size = getWorkflowNodeSize(source);
+  const start = { x: source.x + size.width, y: source.y + size.height / 2 };
+  const bend = Math.max(72, Math.abs(point.x - start.x) * 0.45);
+  return `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${point.x - bend} ${point.y}, ${point.x} ${point.y}`;
+}
+
+export function workflowAutoPollDeadline(node: WorkflowResultNode): number {
+  if (!node.startedAt) return 0;
+  return node.startedAt + (node.kind === "video" ? 70 : 10) * 60 * 1000;
+}
