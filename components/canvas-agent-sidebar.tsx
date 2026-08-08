@@ -4,25 +4,47 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   CircleX,
+  History,
   LoaderCircle,
+  MessageSquarePlus,
   Send,
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_CHAT_STORAGE_KEY,
+  AGENT_CONVERSATIONS_STORAGE_KEY,
+  MAX_AGENT_CONVERSATIONS,
+  MAX_AGENT_MESSAGES,
+  createAgentConversation,
+  createAgentConversationTitle,
   describeDangerousOperation,
   isDangerousAgentOperation,
-  parseAgentMessages,
-  serializeAgentMessages,
+  parseAgentConversationStore,
+  serializeAgentConversationStore,
   type AgentCanvasSnapshot,
+  type AgentConversation,
+  type AgentConversationPhase,
+  type AgentConversationStore,
   type AgentDangerousOperation,
   type AgentInspectedImage,
   type AgentMessage,
   type AgentOperation,
   type AgentResponse,
 } from "@/app/ai/agent";
+
+const EMPTY_CONVERSATION_STORE: AgentConversationStore = {
+  version: 2,
+  activeConversationId: "",
+  conversations: [],
+};
+
+function sortAndLimitConversations(conversations: AgentConversation[]) {
+  return [...conversations]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_AGENT_CONVERSATIONS);
+}
 
 type CanvasAgentSidebarProps = {
   open: boolean;
@@ -55,26 +77,46 @@ export function CanvasAgentSidebar({
   onConfirmOperation,
   onReadImages,
 }: CanvasAgentSidebarProps) {
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [conversationStore, setConversationStore] = useState<AgentConversationStore>(
+    EMPTY_CONVERSATION_STORE,
+  );
   const [draft, setDraft] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeConversation = conversationStore.conversations.find(
+    (conversation) => conversation.id === conversationStore.activeConversationId,
+  );
+  const messages = useMemo(
+    () => activeConversation?.messages ?? [],
+    [activeConversation],
+  );
   const focusedNode = focusedNodeId
     ? snapshot.nodes.find((node) => node.id === focusedNodeId)
     : undefined;
 
   useEffect(() => {
-    setMessages(parseAgentMessages(window.localStorage.getItem(AGENT_CHAT_STORAGE_KEY)));
+    setConversationStore(
+      parseAgentConversationStore(
+        window.localStorage.getItem(AGENT_CONVERSATIONS_STORAGE_KEY),
+        window.localStorage.getItem(AGENT_CHAT_STORAGE_KEY),
+        () => crypto.randomUUID(),
+      ),
+    );
     setIsHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!isHydrated) return;
-    window.localStorage.setItem(AGENT_CHAT_STORAGE_KEY, serializeAgentMessages(messages));
-  }, [isHydrated, messages]);
+    window.localStorage.setItem(
+      AGENT_CONVERSATIONS_STORAGE_KEY,
+      serializeAgentConversationStore(conversationStore),
+    );
+    window.localStorage.removeItem(AGENT_CHAT_STORAGE_KEY);
+  }, [conversationStore, isHydrated]);
 
   useEffect(() => {
     if (open) window.setTimeout(() => inputRef.current?.focus(), 180);
@@ -82,10 +124,25 @@ export function CanvasAgentSidebar({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, isSending]);
+  }, [conversationStore.activeConversationId, messages, isSending]);
+
+  function updateConversation(
+    conversationId: string,
+    updater: (conversation: AgentConversation) => AgentConversation,
+  ) {
+    setConversationStore((current) => ({
+      ...current,
+      conversations: sortAndLimitConversations(
+        current.conversations.map((conversation) =>
+          conversation.id === conversationId ? updater(conversation) : conversation,
+        ),
+      ),
+    }));
+  }
 
   async function requestAgent(
     history: AgentMessage[],
+    phase: AgentConversationPhase,
     inspectedImages?: AgentInspectedImage[],
   ): Promise<AgentResponse> {
     const response = await fetch("/api/ai/agent", {
@@ -97,6 +154,7 @@ export function CanvasAgentSidebar({
           .slice(-20)
           .map(({ role, content }) => ({ role, content })),
         canvas: snapshot,
+        phase,
         focusedNodeId,
         inspectedImages,
       }),
@@ -107,7 +165,9 @@ export function CanvasAgentSidebar({
 
   async function submit() {
     const content = draft.trim();
-    if (!content || isSending) return;
+    if (!content || isSending || !activeConversation) return;
+    const conversationId = activeConversation.id;
+    const phase = activeConversation.phase;
     const userMessage: AgentMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -115,15 +175,23 @@ export function CanvasAgentSidebar({
       createdAt: Date.now(),
     };
     const history = [...messages, userMessage];
-    setMessages(history);
+    updateConversation(conversationId, (conversation) => ({
+      ...conversation,
+      title: conversation.messages.some((message) => message.role === "user")
+        ? conversation.title
+        : createAgentConversationTitle(content),
+      messages: history.slice(-MAX_AGENT_MESSAGES),
+      updatedAt: Date.now(),
+    }));
     setDraft("");
+    setIsHistoryOpen(false);
     setIsSending(true);
     try {
-      let response = await requestAgent(history);
+      let response = await requestAgent(history, phase);
       if (response.inspectImageNodeIds.length) {
         const images = await onReadImages(response.inspectImageNodeIds);
         if (!images.length) throw new Error("Agent 无法读取请求的画布图片。");
-        response = await requestAgent(history, images);
+        response = await requestAgent(history, phase, images);
         if (response.inspectImageNodeIds.length) {
           throw new Error("Agent 在单轮对话中重复请求图片，请换一种说法重试。");
         }
@@ -153,29 +221,46 @@ export function CanvasAgentSidebar({
           },
         }),
       );
-      setMessages((current) => [...current, assistantMessage, ...confirmations]);
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        phase: response.workflowState,
+        messages: [...conversation.messages, assistantMessage, ...confirmations].slice(
+          -MAX_AGENT_MESSAGES,
+        ),
+        updatedAt: Date.now(),
+      }));
     } catch (error) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: error instanceof Error ? error.message : "画布 Agent 请求失败。",
-          createdAt: Date.now(),
-        },
-      ]);
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        messages: [
+          ...conversation.messages,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: error instanceof Error ? error.message : "画布 Agent 请求失败。",
+            createdAt: Date.now(),
+          },
+        ].slice(-MAX_AGENT_MESSAGES),
+        updatedAt: Date.now(),
+      }));
     } finally {
       setIsSending(false);
     }
   }
 
   async function confirm(message: AgentMessage) {
-    if (!message.action?.operation || message.action.status !== "pending") return;
+    if (
+      !activeConversation ||
+      !message.action?.operation ||
+      message.action.status !== "pending"
+    ) return;
+    const conversationId = activeConversation.id;
     setConfirmingId(message.id);
     try {
       const detail = await onConfirmOperation(message.action.operation);
-      setMessages((current) =>
-        current.map((item) =>
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((item) =>
           item.id === message.id
             ? {
                 ...item,
@@ -184,10 +269,12 @@ export function CanvasAgentSidebar({
               }
             : item,
         ),
-      );
+        updatedAt: Date.now(),
+      }));
     } catch (error) {
-      setMessages((current) =>
-        current.map((item) =>
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((item) =>
           item.id === message.id
             ? {
                 ...item,
@@ -195,25 +282,80 @@ export function CanvasAgentSidebar({
               }
             : item,
         ),
-      );
+        updatedAt: Date.now(),
+      }));
     } finally {
       setConfirmingId(null);
     }
   }
 
   function cancel(messageId: string) {
-    setMessages((current) =>
-      current.map((message) =>
+    if (!activeConversation) return;
+    updateConversation(activeConversation.id, (conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) =>
         message.id === messageId && message.action
           ? { ...message, action: { ...message.action, status: "cancelled", operation: undefined } }
           : message,
       ),
-    );
+      updatedAt: Date.now(),
+    }));
   }
 
-  function clearHistory() {
-    setMessages([]);
-    window.localStorage.removeItem(AGENT_CHAT_STORAGE_KEY);
+  function startNewConversation() {
+    if (isSending || confirmingId) return;
+    if (activeConversation && !activeConversation.messages.length) {
+      setIsHistoryOpen(false);
+      inputRef.current?.focus();
+      return;
+    }
+    const conversation = createAgentConversation(crypto.randomUUID());
+    setConversationStore((current) => ({
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: sortAndLimitConversations([
+        conversation,
+        ...current.conversations,
+      ]),
+    }));
+    setDraft("");
+    setIsHistoryOpen(false);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function selectConversation(conversationId: string) {
+    if (isSending || confirmingId) return;
+    setConversationStore((current) => ({
+      ...current,
+      activeConversationId: conversationId,
+    }));
+    setDraft("");
+    setIsHistoryOpen(false);
+  }
+
+  function deleteConversation(conversationId: string) {
+    if (isSending || confirmingId) return;
+    setConversationStore((current) => {
+      const remaining = current.conversations.filter(
+        (conversation) => conversation.id !== conversationId,
+      );
+      if (!remaining.length) {
+        const conversation = createAgentConversation(crypto.randomUUID());
+        return {
+          version: 2,
+          activeConversationId: conversation.id,
+          conversations: [conversation],
+        };
+      }
+      return {
+        ...current,
+        activeConversationId:
+          current.activeConversationId === conversationId
+            ? remaining[0].id
+            : current.activeConversationId,
+        conversations: remaining,
+      };
+    });
   }
 
   return (
@@ -248,23 +390,81 @@ export function CanvasAgentSidebar({
             </div>
             <div className="flex items-center gap-1">
               <button
-                aria-label="清空 Agent 对话"
+                aria-label="Agent 历史对话"
                 className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900"
+                disabled={isSending || Boolean(confirmingId)}
                 type="button"
-                onClick={clearHistory}
+                onClick={() => setIsHistoryOpen((current) => !current)}
               >
-                <Trash2 aria-hidden="true" size={15} />
+                <History aria-hidden="true" size={15} />
+              </button>
+              <button
+                aria-label="新建 Agent 对话"
+                className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-30"
+                disabled={isSending || Boolean(confirmingId)}
+                type="button"
+                onClick={startNewConversation}
+              >
+                <MessageSquarePlus aria-hidden="true" size={16} />
               </button>
               <button
                 aria-label="关闭画布 Agent"
                 className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900"
                 type="button"
-                onClick={onClose}
+                onClick={() => {
+                  setIsHistoryOpen(false);
+                  onClose();
+                }}
               >
                 <X aria-hidden="true" size={17} />
               </button>
             </div>
           </header>
+
+          {isHistoryOpen ? (
+            <div
+              aria-label="Agent 历史对话列表"
+              className="absolute top-[70px] right-3 left-3 z-20 max-h-[min(420px,70vh)] overflow-y-auto rounded-2xl border border-black/10 bg-white p-2 shadow-[0_18px_54px_rgba(35,32,28,0.2)]"
+            >
+              <div className="flex items-center justify-between px-2 py-1.5">
+                <span className="text-xs font-semibold text-zinc-700">历史对话</span>
+                <span className="text-[10px] text-zinc-400">最多 20 个</span>
+              </div>
+              <div className="space-y-1">
+                {conversationStore.conversations.map((conversation) => (
+                  <div
+                    key={conversation.id}
+                    className={`flex items-center gap-1 rounded-xl ${
+                      conversation.id === conversationStore.activeConversationId
+                        ? "bg-zinc-100"
+                        : "hover:bg-zinc-50"
+                    }`}
+                  >
+                    <button
+                      className="min-w-0 flex-1 px-3 py-2 text-left"
+                      type="button"
+                      onClick={() => selectConversation(conversation.id)}
+                    >
+                      <span className="block truncate text-xs font-medium text-zinc-700">
+                        {conversation.title}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-zinc-400">
+                        {new Date(conversation.updatedAt).toLocaleString("zh-CN")}
+                      </span>
+                    </button>
+                    <button
+                      aria-label={`删除对话 ${conversation.title}`}
+                      className="mr-1 grid h-8 w-8 shrink-0 place-items-center rounded-full text-zinc-400 hover:bg-white hover:text-red-500"
+                      type="button"
+                      onClick={() => deleteConversation(conversation.id)}
+                    >
+                      <Trash2 aria-hidden="true" size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {focusedNode ? (
             <div className="flex shrink-0 items-center gap-2 border-b border-black/6 bg-zinc-50 px-4 py-2 text-xs">
@@ -280,7 +480,7 @@ export function CanvasAgentSidebar({
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
             {messages.length === 0 ? (
               <div className="mx-auto mt-[28vh] max-w-[270px] text-center text-sm leading-6 text-zinc-500">
-                告诉我你想如何整理或修改画布。点击画布节点可以把它作为当前引用。
+                告诉我你想完成什么。我会先提问确认需求，再编辑画布。
               </div>
             ) : (
               <div className="flex flex-col gap-3">
@@ -343,7 +543,9 @@ export function CanvasAgentSidebar({
                 {isSending ? (
                   <div className="mr-auto inline-flex items-center gap-2 rounded-2xl border border-black/7 bg-zinc-50 px-3.5 py-2.5 text-xs text-zinc-500">
                     <LoaderCircle className="animate-spin" aria-hidden="true" size={14} />
-                    正在读取画布并思考…
+                    {activeConversation?.phase === "active"
+                      ? "正在读取画布并思考…"
+                      : "正在梳理需求…"}
                   </div>
                 ) : null}
               </div>
@@ -356,7 +558,11 @@ export function CanvasAgentSidebar({
                 ref={inputRef}
                 aria-label="给画布 Agent 发送消息"
                 className="block max-h-32 min-h-12 w-full resize-none border-0 bg-transparent py-1 text-[13px] leading-5 outline-none"
-                placeholder="描述你想对画布做什么…"
+                placeholder={
+                  activeConversation?.phase === "active"
+                    ? "描述你想对画布做什么…"
+                    : "先告诉我你想完成什么…"
+                }
                 rows={2}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}

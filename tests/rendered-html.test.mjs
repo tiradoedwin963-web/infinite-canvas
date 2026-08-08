@@ -262,6 +262,10 @@ test("removes the disposable starter surface", async () => {
   assert.match(page, /src="\/agent-icon\.png"/);
   assert.match(agentSidebar, /src="\/agent-icon\.png"/);
   assert.match(agentSidebar, /AGENT_CHAT_STORAGE_KEY/);
+  assert.match(agentSidebar, /AGENT_CONVERSATIONS_STORAGE_KEY/);
+  assert.match(agentSidebar, /aria-label="Agent 历史对话"/);
+  assert.match(agentSidebar, /aria-label="新建 Agent 对话"/);
+  assert.match(agentSidebar, /Agent 历史对话列表/);
   assert.match(agentSidebar, /isDangerousAgentOperation/);
   assert.match(agentSidebar, /正在读取画布并思考/);
 });

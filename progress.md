@@ -864,3 +864,73 @@
 - `docs/canvas.md`：合并创作模式 Agent、自由端口和工作流模式使用说明。
 - `progress.md`：保留双方历史并追加本次合并、验证和回滚记录。
 - 回滚方式：对本次合并提交执行 `git revert -m 1 <本次合并提交哈希>`；合并前 `main` 回滚点为 `91225f2`。
+## 2026-08-08 - Task: 实现画布 Agent 先问后做与历史对话
+
+### What was done
+- 将画布 Agent 运行指令迁移到根目录 `agent.md`，并在服务端按当前会话阶段和实时模型清单组装完整系统指令。
+- 新增 `intake → clarifying → active` 对话工作流；新对话首轮只能提问，澄清阶段不得读图或夹带画布操作，需求清楚后继续自动执行安全操作并保留删除、生成确认。
+- 将单对话存储升级为本地多对话历史，支持新建、切换和删除；旧数据自动迁移，标题取首条用户消息前 24 个字符，最多保留 20 个对话且每个对话最多 100 条消息。
+
+### Testing
+- `npm ci --ignore-scripts --prefer-offline --no-audit --no-fund`：通过，按锁文件恢复 467 个依赖包。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段构建成功，全部 53 项测试通过。新增覆盖首轮强制提问、澄清操作拒绝、运行指令与动态模型清单、旧记录迁移、标题裁剪、数量上限和确认载荷清理。
+- 本地浏览器验收：通过旧记录迁移、新对话空状态、首条消息标题、历史列表打开、对话切换和删除，控制台无警告或错误。当前工作区未配置 `.env.local`，真实 Agent 请求按预期显示经清理的 503，未执行付费上游验收。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `agent.md`：新增画布 Agent 角色、先问后做工作流、JSON 输出和白名单操作指令。
+- `types/raw.d.ts`：声明 Markdown 原文导入类型。
+- `app/ai/agent.ts`：新增对话阶段、响应状态、多对话数据结构及序列化、迁移和裁剪函数。
+- `app/ai/agent-provider.ts`：接入外部运行指令，验证对话阶段并强制新对话首轮澄清。
+- `app/api/ai/agent/route.ts`：将构建时导入的 `agent.md` 传入 Agent 客户端。
+- `components/canvas-agent-sidebar.tsx`：接入多对话状态、本地迁移、新建/历史入口以及对话切换和删除弹层。
+- `tests/agent-provider.test.mjs`：新增阶段验证、运行指令组装和首轮越权操作拒绝测试。
+- `tests/agent.test.mjs`：新增澄清状态、旧记录迁移和多对话容量规则测试。
+- `tests/rendered-html.test.mjs`：新增历史、新对话与多对话存储接口的静态回归断言。
+- `README.md`：更新 Agent 先问后做和本地历史对话能力摘要。
+- `docs/canvas.md`：记录运行指令、会话阶段、存储上限、旧数据迁移与服务端安全边界。
+- `progress.md`：追加本轮实施、验证、文件清单和回滚方式。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；提交前可执行 `git restore --source=6717de5 -- README.md app/ai/agent-provider.ts app/ai/agent.ts app/api/ai/agent/route.ts components/canvas-agent-sidebar.tsx docs/canvas.md progress.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs`，再执行 `git clean -f -- agent.md types/raw.d.ts`。
+
+## 2026-08-08 - Task: 配置并启动本地画布 Agent
+
+### What was done
+- 在 Git 忽略的本地环境文件中配置 LingkeAI 服务地址和密钥，未将敏感值写入源码、文档或进度记录。
+- 启动本地 Vinext 开发服务，并通过真实 Agent 请求确认上游连接与“先问后做”首轮限制同时生效。
+
+### Testing
+- `git check-ignore -v .env.local`：通过，本地环境文件由 `.gitignore` 中的 `.env*` 规则排除。
+- `npm run dev`：通过，服务读取 `.env.local` 并启动于 `http://localhost:3000/`。
+- 真实 `POST /api/ai/agent`：返回 HTTP 200，工作流状态为 `clarifying`，图片读取和画布操作均为空。
+
+### Notes
+- `.env.local`：保存用户提供的本机 LingkeAI 服务地址和密钥，文件被 Git 忽略。
+- `progress.md`：追加本轮配置、启动、真实请求验证和回滚方式。
+- 回滚方式：执行 `mv .env.local .env.local.disabled` 停用并保留本地配置；使用 `Ctrl+C` 停止当前开发服务。
+
+## 2026-08-08 - Task: 将 Agent 先问后做与历史对话提交到 main
+
+### What was done
+- 将独立提交 `8d13192` 应用到已包含工作流画布和自由端口连线的 `main`，保留主分支新功能并叠加 Agent 先问后做、运行指令和多对话历史。
+- 合并画布说明与追加式进度记录，未覆盖 `main` 已有的双画布、320px Agent 侧栏、连线端口侧别和工作流持久化说明。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，Agent、创作画布、自由端口和工作流共 70 项测试全部通过。
+- `git diff --cached --check`：通过，冲突解决后无空白符错误。
+
+### Notes
+- `agent.md`：合入 Agent 先问后做、结构化响应和白名单操作指令。
+- `types/raw.d.ts`：合入 Markdown 原文导入声明。
+- `app/ai/agent.ts`：在主分支端口侧别快照基础上合入会话阶段与多对话存储。
+- `app/ai/agent-provider.ts`：合入运行指令组装和首轮澄清强制。
+- `app/api/ai/agent/route.ts`：合入 `agent.md` 构建时载入。
+- `components/canvas-agent-sidebar.tsx`：保留主分支图标与 320px 布局，合入历史对话与新对话交互。
+- `README.md`：合入 Agent 先问后做与历史对话能力摘要。
+- `docs/canvas.md`：合并双画布、自由端口与 Agent 会话工作流说明。
+- `tests/agent-provider.test.mjs`：合入运行指令和首轮越权拒绝测试。
+- `tests/agent.test.mjs`：保留端口侧别覆盖并合入多对话测试。
+- `tests/rendered-html.test.mjs`：保留双画布与连线回归，合入历史对话入口断言。
+- `progress.md`：保留双方历史并追加本次 `main` 集成记录。
+- 回滚方式：对本次 `main` 上的 cherry-pick 提交执行 `git revert <本轮 main 提交哈希>`；集成前 `main` 回滚点为 `73e5d19`。

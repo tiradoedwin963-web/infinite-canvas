@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createAgentConversation,
+  createAgentConversationTitle,
   isDangerousAgentOperation,
+  parseAgentConversationStore,
   parseAgentMessages,
   parseAgentModelResponse,
+  serializeAgentConversationStore,
   serializeAgentMessages,
 } from "../app/ai/agent.ts";
 import {
@@ -30,6 +34,7 @@ function textNode(id, overrides = {}) {
 test("parses the strict agent response and all operation names", () => {
   const response = parseAgentModelResponse(JSON.stringify({
     message: "已经整理好了。",
+    workflow_state: "active",
     inspect_image_node_ids: [],
     operations: [
       { type: "create_node", ref: "new-1", kind: "text", text: "标题", x: 1, y: 2 },
@@ -66,10 +71,14 @@ test("parses the strict agent response and all operation names", () => {
 
 test("rejects unknown or malformed model operations without partial application", () => {
   assert.throws(
-    () => parseAgentModelResponse('{"message":"ok","operations":[{"type":"eval"}]}'),
+    () => parseAgentModelResponse('{"message":"ok","workflow_state":"active","operations":[{"type":"eval"}]}'),
     /不受支持/,
   );
   assert.throws(() => parseAgentModelResponse("not-json"), /无法识别/);
+  assert.throws(
+    () => parseAgentModelResponse('{"message":"请确认？","workflow_state":"clarifying","operations":[{"type":"move_node","node_id":"a","x":1,"y":2}]}'),
+    /澄清阶段/,
+  );
 });
 
 test("persists text history but expires pending confirmations and strips payloads", () => {
@@ -88,6 +97,50 @@ test("persists text history but expires pending confirmations and strips payload
   ]);
   assert.doesNotMatch(serialized, /delete_node|nodeId/);
   assert.equal(parseAgentMessages(serialized)[0].action.status, "expired");
+});
+
+test("migrates legacy messages into one active conversation", () => {
+  const legacy = serializeAgentMessages([
+    { id: "u1", role: "user", content: "  请  整理画布  ", createdAt: 10 },
+    { id: "a1", role: "assistant", content: "好", createdAt: 20 },
+  ]);
+  const store = parseAgentConversationStore(null, legacy, () => "conversation-1", 30);
+  assert.equal(store.activeConversationId, "conversation-1");
+  assert.equal(store.conversations[0].phase, "active");
+  assert.equal(store.conversations[0].title, "请 整理画布");
+});
+
+test("limits conversation titles, histories, and pending action payloads", () => {
+  assert.equal(createAgentConversationTitle("a".repeat(30)).length, 24);
+  const conversations = Array.from({ length: 22 }, (_, index) => {
+    const conversation = createAgentConversation(`c-${index}`, index);
+    conversation.messages = Array.from({ length: 105 }, (__, messageIndex) => ({
+      id: `m-${index}-${messageIndex}`,
+      role: "assistant",
+      content: "message",
+      createdAt: messageIndex,
+      ...(messageIndex === 104
+        ? {
+            action: {
+              label: "删除节点 a",
+              status: "pending",
+              operation: { type: "delete_node", nodeId: "a" },
+            },
+          }
+        : {}),
+    }));
+    return conversation;
+  });
+  const serialized = serializeAgentConversationStore({
+    version: 2,
+    activeConversationId: "c-21",
+    conversations,
+  });
+  const raw = JSON.parse(serialized);
+  assert.equal(raw.conversations.length, 20);
+  assert.equal(raw.conversations[0].messages.length, 100);
+  assert.equal(raw.conversations[0].messages.at(-1).action.status, "expired");
+  assert.doesNotMatch(serialized, /delete_node|nodeId/);
 });
 
 test("serializes only the canvas fields the agent needs", () => {

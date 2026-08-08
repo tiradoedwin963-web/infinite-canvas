@@ -2,11 +2,15 @@ import type { ComposerMode } from "./models.ts";
 
 export const AGENT_MODEL = "gpt-5.6-sol";
 export const AGENT_CHAT_STORAGE_KEY = "canvas-agent-chat-v1";
+export const AGENT_CONVERSATIONS_STORAGE_KEY = "canvas-agent-conversations-v2";
 export const MAX_AGENT_MESSAGES = 100;
+export const MAX_AGENT_CONVERSATIONS = 20;
 export const MAX_AGENT_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_AGENT_IMAGE_TOTAL_BYTES = 30 * 1024 * 1024;
 
 export type AgentMessageRole = "user" | "assistant";
+export type AgentConversationPhase = "intake" | "clarifying" | "active";
+export type AgentWorkflowState = "clarifying" | "active";
 
 export type AgentStoredAction = {
   label: string;
@@ -21,6 +25,21 @@ export type AgentMessage = {
   createdAt: number;
   details?: string[];
   action?: AgentStoredAction;
+};
+
+export type AgentConversation = {
+  id: string;
+  title: string;
+  phase: AgentConversationPhase;
+  messages: AgentMessage[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AgentConversationStore = {
+  version: 2;
+  activeConversationId: string;
+  conversations: AgentConversation[];
 };
 
 export type AgentCanvasNodeSnapshot = {
@@ -94,12 +113,14 @@ export type AgentDangerousOperation = Extract<
 export type AgentRequest = {
   messages: Array<{ role: AgentMessageRole; content: string }>;
   canvas: AgentCanvasSnapshot;
+  phase: AgentConversationPhase;
   focusedNodeId?: string;
   inspectedImages?: AgentInspectedImage[];
 };
 
 export type AgentResponse = {
   message: string;
+  workflowState: AgentWorkflowState;
   inspectImageNodeIds: string[];
   operations: AgentOperation[];
 };
@@ -222,16 +243,30 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
   if (!isRecord(value)) throw new Error("Agent 返回了无法识别的操作格式。");
   const message = readString(value.message).trim();
   if (!message) throw new Error("Agent 未返回可显示的回复。");
+  const workflowState = readString(
+    value.workflow_state ?? value.workflowState,
+  );
+  if (workflowState !== "clarifying" && workflowState !== "active") {
+    throw new Error("Agent 未返回有效的工作流状态。");
+  }
   const rawOperations = Array.isArray(value.operations) ? value.operations : [];
   const operations = rawOperations.map(parseOperation);
   if (operations.some((operation) => operation === null)) {
     throw new Error("Agent 返回了不受支持的画布操作。");
   }
+  const inspectImageNodeIds = readNodeIds(
+    value.inspect_image_node_ids ?? value.inspectImageNodeIds,
+  ).slice(0, 5);
+  if (
+    workflowState === "clarifying" &&
+    (operations.length || inspectImageNodeIds.length)
+  ) {
+    throw new Error("Agent 在需求澄清阶段不得执行画布操作。");
+  }
   return {
     message,
-    inspectImageNodeIds: readNodeIds(
-      value.inspect_image_node_ids ?? value.inspectImageNodeIds,
-    ).slice(0, 5),
+    workflowState,
+    inspectImageNodeIds,
     operations: operations as AgentOperation[],
   };
 }
@@ -298,6 +333,135 @@ export function parseAgentMessages(raw: string | null): AgentMessage[] {
   } catch {
     return [];
   }
+}
+
+export function createAgentConversation(
+  id: string,
+  now = Date.now(),
+): AgentConversation {
+  return {
+    id,
+    title: "新对话",
+    phase: "intake",
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function createAgentConversationTitle(content: string) {
+  return content.replace(/\s+/g, " ").trim().slice(0, 24) || "新对话";
+}
+
+function serializeMessages(messages: AgentMessage[]) {
+  return messages.slice(-MAX_AGENT_MESSAGES).map((message) => ({
+    ...message,
+    action: message.action
+      ? {
+          label: message.action.label,
+          status:
+            message.action.status === "pending"
+              ? ("expired" as const)
+              : message.action.status,
+        }
+      : undefined,
+  }));
+}
+
+function sortAndLimitConversations(conversations: AgentConversation[]) {
+  return [...conversations]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_AGENT_CONVERSATIONS);
+}
+
+export function serializeAgentConversationStore(store: AgentConversationStore) {
+  const conversations = sortAndLimitConversations(store.conversations).map(
+    (conversation) => ({
+      ...conversation,
+      title: createAgentConversationTitle(conversation.title),
+      messages: serializeMessages(conversation.messages),
+    }),
+  );
+  const activeConversationId = conversations.some(
+    (conversation) => conversation.id === store.activeConversationId,
+  )
+    ? store.activeConversationId
+    : conversations[0]?.id ?? "";
+  return JSON.stringify({ version: 2, activeConversationId, conversations });
+}
+
+function readConversation(value: unknown): AgentConversation | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const phase = value.phase;
+  if (phase !== "intake" && phase !== "clarifying" && phase !== "active") {
+    return null;
+  }
+  const messages = parseAgentMessages(
+    Array.isArray(value.messages) ? JSON.stringify(value.messages) : null,
+  );
+  const createdAt = readFinite(value.createdAt) ?? Date.now();
+  const updatedAt = readFinite(value.updatedAt) ?? createdAt;
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  return {
+    id: value.id,
+    title: createAgentConversationTitle(
+      readString(value.title) || firstUserMessage?.content || "",
+    ),
+    phase,
+    messages,
+    createdAt,
+    updatedAt,
+  };
+}
+
+export function parseAgentConversationStore(
+  raw: string | null,
+  legacyRaw: string | null,
+  idFactory: () => string = () => crypto.randomUUID(),
+  now = Date.now(),
+): AgentConversationStore {
+  try {
+    const value = raw ? (JSON.parse(raw) as unknown) : null;
+    if (isRecord(value) && value.version === 2 && Array.isArray(value.conversations)) {
+      const seen = new Set<string>();
+      const conversations = sortAndLimitConversations(
+        value.conversations
+          .map(readConversation)
+          .filter((conversation): conversation is AgentConversation => {
+            if (!conversation || seen.has(conversation.id)) return false;
+            seen.add(conversation.id);
+            return true;
+          }),
+      );
+      if (conversations.length) {
+        const activeConversationId = conversations.some(
+          (conversation) => conversation.id === value.activeConversationId,
+        )
+          ? String(value.activeConversationId)
+          : conversations[0].id;
+        return { version: 2, activeConversationId, conversations };
+      }
+    }
+  } catch {
+    // Fall through to legacy migration or a new conversation.
+  }
+
+  const legacyMessages = parseAgentMessages(legacyRaw);
+  const conversation = createAgentConversation(idFactory(), now);
+  if (legacyMessages.length) {
+    conversation.messages = legacyMessages;
+    conversation.phase = "active";
+    conversation.title = createAgentConversationTitle(
+      legacyMessages.find((message) => message.role === "user")?.content || "",
+    );
+    conversation.createdAt = legacyMessages[0]?.createdAt ?? now;
+    conversation.updatedAt = legacyMessages.at(-1)?.createdAt ?? now;
+  }
+  return {
+    version: 2,
+    activeConversationId: conversation.id,
+    conversations: [conversation],
+  };
 }
 
 export function describeDangerousOperation(operation: AgentDangerousOperation) {
