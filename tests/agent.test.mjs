@@ -111,6 +111,34 @@ test("serializes only the canvas fields the agent needs", () => {
   assert.deepEqual(snapshot.viewport, { x: 1, y: 2, scale: 1.5, width: 1000, height: 700 });
 });
 
+test("serializes edge port sides for agent canvas inspection", () => {
+  const snapshot = createAgentCanvasSnapshot(
+    {
+      version: 1,
+      nodes: [textNode("a"), textNode("b")],
+      edges: [
+        {
+          id: "edge",
+          sourceId: "a",
+          targetId: "b",
+          sourceSide: "left",
+          targetSide: "right",
+        },
+      ],
+    },
+    { x: 0, y: 0, scale: 1 },
+    { width: 1000, height: 700 },
+  );
+  assert.deepEqual(snapshot.edges, [
+    {
+      sourceId: "a",
+      targetId: "b",
+      sourceSide: "left",
+      targetSide: "right",
+    },
+  ]);
+});
+
 test("applies safe operations in order and resolves new-node aliases", () => {
   const graph = { version: 1, nodes: [textNode("a")], edges: [] };
   const operations = [
@@ -128,7 +156,15 @@ test("applies safe operations in order and resolves new-node aliases", () => {
     { x: created.x, y: created.y, width: created.width, height: created.height },
     { x: 200, y: 220, width: 360, height: 210 },
   );
-  assert.deepEqual(result.graph.edges, [{ id: "id-2", sourceId: "a", targetId: "id-1" }]);
+  assert.deepEqual(result.graph.edges, [
+    {
+      id: "id-2",
+      sourceId: "a",
+      targetId: "id-1",
+      sourceSide: "right",
+      targetSide: "left",
+    },
+  ]);
   assert.ok(result.results.every((item) => item.applied));
 
   const disconnected = applyAgentOperations(result.graph, [

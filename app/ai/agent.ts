@@ -42,7 +42,12 @@ export type AgentCanvasNodeSnapshot = {
 export type AgentCanvasSnapshot = {
   viewport: { x: number; y: number; scale: number; width: number; height: number };
   nodes: AgentCanvasNodeSnapshot[];
-  edges: Array<{ sourceId: string; targetId: string }>;
+  edges: Array<{
+    sourceId: string;
+    targetId: string;
+    sourceSide: "left" | "right";
+    targetSide: "left" | "right";
+  }>;
 };
 
 export type AgentInspectedImage = {

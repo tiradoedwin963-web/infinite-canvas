@@ -53,7 +53,14 @@ export function createAgentCanvasSnapshot(
         hasVisual: Boolean(node.assetId || node.resultUrl),
       };
     }),
-    edges: graph.edges.map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+    edges: graph.edges.map(
+      ({ sourceId, targetId, sourceSide, targetSide }) => ({
+        sourceId,
+        targetId,
+        sourceSide,
+        targetSide,
+      }),
+    ),
   };
 }
 

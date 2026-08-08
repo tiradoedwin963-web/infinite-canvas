@@ -51,8 +51,8 @@ body {
   position: absolute;
   top: 0;
   left: 0;
-  width: 1px;
-  height: 1px;
+  width: 100%;
+  height: 100%;
   overflow: visible;
   pointer-events: none;
 }
@@ -67,6 +67,44 @@ body {
 .canvas-edges .canvas-edge-draft {
   stroke: #59554f;
   stroke-dasharray: 7 5;
+}
+
+.canvas-edges .canvas-edge-selected {
+  stroke: #5063b9;
+  stroke-width: 3;
+}
+
+.canvas-edges .canvas-edge-hit {
+  stroke: transparent;
+  stroke-width: 18;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.canvas-edge-delete {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 18;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(42, 41, 38, 0.16);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 5px 14px rgba(53, 50, 45, 0.18);
+  color: #a84444;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.canvas-edge-delete:hover,
+.canvas-edge-delete:focus-visible {
+  border-color: rgba(168, 68, 68, 0.35);
+  background: #f8eeee;
+  outline: none;
 }
 
 .canvas-selection-frame {
@@ -116,11 +154,6 @@ body {
   touch-action: none;
 }
 
-.canvas-node-connection-target {
-  outline: 3px solid rgba(63, 132, 95, 0.74);
-  outline-offset: 4px;
-}
-
 .canvas-node:active {
   cursor: grabbing;
 }
@@ -166,15 +199,6 @@ body {
 .canvas-node-image-error {
   height: 100%;
   border-radius: 12px;
-}
-
-.canvas-node-image-only.canvas-node-connection-target {
-  outline: none;
-}
-
-.canvas-node-image-only.canvas-node-connection-target .canvas-node-image-content {
-  outline: 3px solid rgba(63, 132, 95, 0.74);
-  outline-offset: 4px;
 }
 
 .canvas-node-image-delete {
@@ -470,8 +494,10 @@ body {
 }
 
 .canvas-node-handle:hover,
-.canvas-node-handle:focus-visible {
+.canvas-node-handle:focus-visible,
+.canvas-node-handle-target {
   border-color: rgba(80, 99, 185, 0.55);
+  background: #eef1ff;
   color: #5063b9;
   outline: none;
   transform: translateY(-50%) scale(1.06);

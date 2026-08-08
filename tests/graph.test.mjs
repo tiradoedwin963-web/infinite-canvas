@@ -7,6 +7,7 @@ import {
   createGenerationNodes,
   directUpstreamNodes,
   draftEdgePath,
+  edgeMidpoint,
   edgePath,
   emptyGraph,
   fitMediaNode,
@@ -14,6 +15,7 @@ import {
   moveNodes,
   nodesIntersectingBounds,
   parsePersistedGraph,
+  removeEdge,
   removeNode,
   replaceOutputWithResults,
   resizeNode,
@@ -187,6 +189,33 @@ test("rejects invalid persisted data and removes orphan edges", () => {
   assert.equal(parsePersistedGraph(JSON.stringify(valid)).edges.length, 0);
 });
 
+test("restores legacy edge sides without changing the graph storage version", () => {
+  const graph = {
+    version: 1,
+    nodes: [readyNode("a"), readyNode("b")],
+    edges: [{ id: "edge", sourceId: "a", targetId: "b" }],
+  };
+  const restored = parsePersistedGraph(JSON.stringify(graph));
+  assert.deepEqual(restored.edges, [
+    {
+      id: "edge",
+      sourceId: "a",
+      targetId: "b",
+      sourceSide: "right",
+      targetSide: "left",
+    },
+  ]);
+  assert.deepEqual(
+    parsePersistedGraph(
+      JSON.stringify({
+        ...graph,
+        edges: [{ ...graph.edges[0], sourceSide: "top" }],
+      }),
+    ),
+    emptyGraph(),
+  );
+});
+
 test("restores optional node dimensions while keeping old graphs compatible", () => {
   const oldNode = readyNode("old");
   const sizedNode = { ...readyNode("sized"), width: 420, height: 260 };
@@ -310,7 +339,7 @@ test("computes selected bounds and moves only the selected nodes together", () =
   assert.deepEqual(moved.edges, graph.edges);
 });
 
-test("keeps settled edges fixed from the source right port to the target left port", () => {
+test("computes settled paths and midpoints for all four port combinations", () => {
   const base = {
     id: "a",
     kind: "text",
@@ -323,18 +352,23 @@ test("keeps settled edges fixed from the source right port to the target left po
     progress: "",
     error: "",
   };
-  const right = edgePath(base, { ...base, id: "b", x: 500 });
-  const left = edgePath(base, { ...base, id: "c", x: -500 });
-  const below = edgePath(base, { ...base, id: "c", y: 500 });
-  const above = edgePath(base, { ...base, id: "d", y: -500 });
-  assert.match(right, /^M 272 92 C/);
-  assert.match(left, /^M 272 92 C/);
-  assert.match(below, /^M 272 92 C/);
-  assert.match(above, /^M 272 92 C/);
-  assert.match(right, /, 500 92$/);
-  assert.match(left, /, -500 92$/);
-  assert.match(below, /, 0 592$/);
-  assert.match(above, /, 0 -408$/);
+  const target = { ...base, id: "b", x: 500 };
+  const rightLeft = edgePath(base, target, "right", "left");
+  const rightRight = edgePath(base, target, "right", "right");
+  const leftLeft = edgePath(base, target, "left", "left");
+  const leftRight = edgePath(base, target, "left", "right");
+  assert.match(rightLeft, /^M 272 92 C/);
+  assert.match(rightLeft, /, 500 92$/);
+  assert.match(rightRight, /^M 272 92 C/);
+  assert.match(rightRight, /, 772 92$/);
+  assert.match(leftLeft, /^M 0 92 C/);
+  assert.match(leftLeft, /, 500 92$/);
+  assert.match(leftRight, /^M 0 92 C/);
+  assert.match(leftRight, /, 772 92$/);
+  assert.notDeepEqual(
+    edgeMidpoint(base, target, "right", "left"),
+    edgeMidpoint(base, target, "right", "right"),
+  );
 });
 
 test("uses actual node dimensions for settled and draft edge endpoints", () => {
@@ -430,6 +464,27 @@ test("rejects self and duplicate edges while allowing cycles and multiple inputs
   const cycle = connectNodes(ab, "b", "a", ids);
   const multiple = connectNodes(cycle, "c", "b", ids);
   assert.equal(multiple.edges.length, 3);
+});
+
+test("stores selected port sides and removes only the requested edge", () => {
+  const base = {
+    version: 1,
+    nodes: [readyNode("a"), readyNode("b"), readyNode("c")],
+    edges: [],
+  };
+  const ids = idFactory();
+  const first = connectNodes(base, "a", "b", ids, "left", "right");
+  const second = connectNodes(first, "b", "c", ids);
+  assert.deepEqual(first.edges[0], {
+    id: "id-1",
+    sourceId: "a",
+    targetId: "b",
+    sourceSide: "left",
+    targetSide: "right",
+  });
+  const removed = removeEdge(second, first.edges[0].id);
+  assert.deepEqual(removed.edges, [second.edges[1]]);
+  assert.equal(removeEdge(removed, "missing"), removed);
 });
 
 test("reads direct upstream nodes in edge creation order without recursion", () => {

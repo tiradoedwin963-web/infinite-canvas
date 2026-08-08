@@ -682,3 +682,109 @@
 - `.env.local`：保存本机 LingkeAI 地址和服务端密钥；文件被 Git 忽略，本记录不包含敏感值。
 - `progress.md`：追加本轮配置、真实调用和节点落地验证证据。
 - 回滚方式：执行 `mv .env.local .env.local.disabled` 可停用并保留本地配置；测试节点可在画布中点击其删除按钮移除。
+
+## 2026-08-07 - Task: 生成画布 Agent 品牌图标
+
+### What was done
+- 使用用户提供的品牌 Logo 作为参考，通过内置 ImageGen 生成适用于画布侧边栏入口的方形 Agent 图标；保留三向尖角、黑色镜面与虹彩玻璃材质，并以中心蓝白光核强化 Agent 识别。
+- 将最终 PNG 保存到项目公共资源目录，仅新增图标资产，未替换当前界面按钮。
+
+### Testing
+- 视觉检查：通过；主体完整居中、品牌轮廓清晰、无文字和水印，深色圆角徽章适合小尺寸 UI 使用。
+- `file public/agent-icon.png`：通过，确认为 `1254 × 1254`、8-bit RGB PNG。
+- `shasum -a 256 public/agent-icon.png`：通过，文件摘要为 `f9a5a09723636cf47f8d3d411b033f00993a6a8d5c1128c78afaa8c0e55aa64f`。
+
+### Notes
+- `public/agent-icon.png`：新增品牌化画布 Agent 图标资产。
+- `progress.md`：追加本轮生成说明、验证证据和回滚方式。
+- 回滚方式：执行 `git restore -- progress.md && git clean -f -- public/agent-icon.png`。
+
+## 2026-08-07 - Task: 重设计透明机器人 Agent 头像
+
+### What was done
+- 以品牌 Logo 的三向尖角、黑色镜面和虹彩玻璃材质为视觉语言，重新生成正面机器人头像；新增两只蓝白发光眼睛，并移除上一版深色徽章背景。
+- 通过纯色抠图源和本地软边去底流程生成透明 PNG，替换项目中的上一版 Agent 图标。
+
+### Testing
+- 透明度检查：通过；输出为 `1254 × 1254` RGBA PNG，四角透明，主体与发光眼睛保持完整。
+- 棋盘格合成预览：通过；机器人外轮廓清晰，未见明显绿色残边。
+- `curl -I http://localhost:3000/agent-icon.png`：通过，返回 HTTP 200 和 `Content-Type: image/png`。
+- `shasum -a 256 public/agent-icon.png`：通过，文件摘要为 `aeff5e0f6789e27c928b5d1610c97dd4fba8e5ab1451adb75ab0f24984231120`。
+
+### Notes
+- `public/agent-icon.png`：替换为带双眼的透明背景机器人 Agent 头像。
+- `progress.md`：追加本轮重设计、透明度验证和回滚信息。
+- 回滚方式：在提交前可执行 `git restore -- public/agent-icon.png progress.md`；若图标仍为未跟踪文件，则执行 `git clean -f -- public/agent-icon.png` 并恢复 `progress.md`。
+
+## 2026-08-08 - Task: 生成五个简约长方形 Agent 图标候选
+
+### What was done
+- 基于现有透明长方形 Agent 图标和品牌材质参考，分别生成线性护目镜、胶囊面罩、方角工业版、分段光带眼和小方眼五种候选方案。
+- 五个候选均完成透明背景处理，并保留当前 `agent-icon.png` 作为主版本；另生成带编号的候选对比预览图。
+
+### Testing
+- 五个透明 PNG 逐一检查：通过；均包含 Alpha 通道，四角 Alpha 值为 0，主体包围盒有效。
+- 透明棋盘格对比预览：通过；五个方案的眼睛、长方形轮廓与品牌细节均清晰，无明显绿色残边。
+- `shasum -a 256 public/agent-icon-variant-*.png`：通过，五个候选均生成独立文件摘要。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `public/agent-icon-variant-1.png`：线性护目镜候选。
+- `public/agent-icon-variant-2.png`：胶囊面罩候选。
+- `public/agent-icon-variant-3.png`：方角工业候选。
+- `public/agent-icon-variant-4.png`：分段光带眼候选。
+- `public/agent-icon-variant-5.png`：小方眼候选。
+- `public/agent-icon-variants-preview.jpg`：五方案编号对比预览。
+- `progress.md`：追加本轮生成、透明度验证与回滚信息。
+- 回滚方式：执行 `git clean -f -- public/agent-icon-variant-1.png public/agent-icon-variant-2.png public/agent-icon-variant-3.png public/agent-icon-variant-4.png public/agent-icon-variant-5.png public/agent-icon-variants-preview.jpg`，并恢复 `progress.md`。
+
+## 2026-08-07 - Task: 将 Agent 图标简化为长方形
+
+### What was done
+- 将机器人 Agent 头像进一步简化为横向圆角长方形面罩，移除尖角头盔和复杂装甲，仅保留双眼、黑色面板、薄虹彩边框与顶部小型品牌切口。
+- 延续透明背景输出，并以本轮生成结果替换项目中的上一版图标。
+
+### Testing
+- 透明棋盘格预览：通过；长方形主体居中，双眼清晰，透明边缘未见明显绿色残留。
+- `sips` 检查：通过；输出为 `1512 × 1040`、带 Alpha 通道的 PNG。
+- `curl -I http://localhost:3000/agent-icon.png`：通过，返回 HTTP 200 和 `Content-Type: image/png`。
+- `shasum -a 256 public/agent-icon.png`：通过，文件摘要为 `89847d465d71de6484087b62d33305306d42af5ea0832d9c25b6257d91a8bd33`。
+
+### Notes
+- `public/agent-icon.png`：替换为简约横向圆角长方形 Agent 图标。
+- `progress.md`：追加本轮简化设计、透明度验证和回滚信息。
+- 回滚方式：在提交前可执行 `git restore -- public/agent-icon.png progress.md`；若图标仍为未跟踪文件，则执行 `git clean -f -- public/agent-icon.png` 并恢复 `progress.md`。
+
+## 2026-08-08 - Task: 替换 Agent 图标并实现自由端口连线与删除
+
+### What was done
+- 使用 ImageGen 从用户参考图左上角重建独立“轨道星标”图标，完成透明背景处理，并替换右上角 Agent 入口和侧栏标题头像；保留既有五个候选资产。
+- 为每条连线增加来源与目标的左/右端口侧别，支持四种端口组合；拖线仅在直接命中目标端口时建立连接，节点主体不再吸附，预览线持续跟随指针。
+- 增加连线高亮选中、路径中点删除按钮及 `Delete/Backspace` 快捷键；输入或可编辑控件聚焦时不触发删除，点击节点或空白处清除连线选中。
+- 旧连线在不升级存储版本的情况下按右→左恢复；自动生成、单击加号和 Agent 建线继续默认右→左，Agent 画布快照可读取端口侧别。
+- 将 Agent 侧栏桌面宽度从 400px 调整为 320px，480px 及以下视口继续全宽覆盖，画布坐标与底部输入退场逻辑不变。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，全部 55 项测试通过；新增覆盖旧边迁移、四种端口路径与中点、实际节点尺寸、指定侧别建边、按 ID 删边、Agent 默认侧别及快照序列化。
+- 本地浏览器验收：1280px 视口侧栏实测宽 320px，390px 视口实测全宽；入口与标题图标分别为 20px 和 28px 且加载成功。
+- 本地浏览器连线验收：拖到目标卡片主体后边数仍为 0；明确拖到目标右端口和左端口后均成功建边，路径终点分别为节点右边界和左边界；节点移动后路径实时更新。
+- 本地浏览器删除验收：连线点击后高亮并显示删除按钮，按钮删除与 `Delete` 删除均生效；底部输入聚焦时 `Backspace` 不删边，点击空白处清除选中。
+- 底部输入在侧栏打开时仍保持挂载并退到视口下方，关闭后恢复且测试草稿不丢失；浏览器控制台无警告或错误。
+- `sips` 与 `file public/agent-icon.png`：通过，图标为 1254×1254 RGBA PNG，包含 Alpha 通道；SHA-256 为 `ae99202a514e5b6b16d64a1041be44260706c9560d6f2e86cdcd44755abb89bc`。
+- `git diff --check`：通过，无空白符错误。未执行图片或视频付费生成任务。
+
+### Notes
+- `public/agent-icon.png`：替换为透明背景的独立轨道星标 Agent 图标。
+- `app/ai/agent.ts`：在 Agent 画布快照边结构中增加两端侧别。
+- `app/canvas/agent.ts`：序列化 Agent 可读取的连线端口侧别。
+- `app/canvas/graph.ts`：增加边端口字段、旧数据兼容、指定侧别建边、按 ID 删边及路径/中点几何。
+- `app/page.tsx`：实现明确端口命中、无主体吸附预览、连线选中与删除，并替换 Agent 入口图标。
+- `app/globals.css`：增加连线命中、选中、删除按钮和目标端口样式。
+- `components/canvas-agent-sidebar.tsx`：替换侧栏头像，并将桌面宽度调整为 320px。
+- `tests/agent.test.mjs`：增加端口快照和 Agent 默认建边侧别测试。
+- `tests/graph.test.mjs`：增加旧边迁移、四种端口几何、指定侧别和删边测试。
+- `tests/rendered-html.test.mjs`：增加无主体吸附、端口标识、连线删除、图标与响应式侧栏回归断言。
+- `docs/canvas.md`：更新端口连线、删除方式、旧数据恢复和 320px 侧栏说明。
+- `progress.md`：追加本轮实施、验证证据、改动文件和回滚方式。
+- 回滚方式：将本轮改动形成独立提交后执行 `git revert <本轮提交哈希>`；提交前可对上述文本文件执行 `git restore -- <文件>`，并恢复或移除 `public/agent-icon.png`。

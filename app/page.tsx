@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Bot,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -42,6 +41,7 @@ import {
   createConnectedNode,
   createGenerationNodes,
   draftEdgePath,
+  edgeMidpoint,
   edgePath,
   emptyGraph,
   fitMediaNode,
@@ -50,6 +50,7 @@ import {
   moveNodes,
   nodesIntersectingBounds,
   parsePersistedGraph,
+  removeEdge,
   removeNode,
   resizeNode,
   resizedNodeBounds,
@@ -106,6 +107,7 @@ type ConnectionDragState = {
   point: { x: number; y: number };
   moved: boolean;
   targetId?: string;
+  targetSide?: ConnectionSide;
 };
 
 type AddNodeMenuState = {
@@ -167,6 +169,7 @@ export default function Home() {
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [selectedManualNodeId, setSelectedManualNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectionMarquee, setSelectionMarquee] = useState<MarqueeDragState | null>(null);
   const [revealedNodeId, setRevealedNodeId] = useState<string | null>(null);
   const [addNodeMenu, setAddNodeMenu] = useState<AddNodeMenuState | null>(null);
@@ -320,13 +323,37 @@ export default function Home() {
         setAgentContextNodeId(null);
         return;
       }
+      if (selectedEdgeId) {
+        setSelectedEdgeId(null);
+        return;
+      }
       connectionDrag.current = null;
       setConnectionDraft(null);
       setAddNodeMenu(null);
     }
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [detailNodeId, isAgentOpen]);
+  }, [detailNodeId, isAgentOpen, selectedEdgeId]);
+
+  useEffect(() => {
+    function handleEdgeDelete(event: KeyboardEvent) {
+      if (
+        !selectedEdgeId ||
+        (event.key !== "Delete" && event.key !== "Backspace")
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) {
+        return;
+      }
+      event.preventDefault();
+      setGraph((current) => removeEdge(current, selectedEdgeId));
+      setSelectedEdgeId(null);
+    }
+    window.addEventListener("keydown", handleEdgeDelete);
+    return () => window.removeEventListener("keydown", handleEdgeDelete);
+  }, [selectedEdgeId]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -401,6 +428,7 @@ export default function Home() {
       setSelectedManualNodeId(null);
     }
     setSelectedNodeIds([]);
+    setSelectedEdgeId(null);
     setRevealedNodeId(null);
     setAddNodeMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -474,6 +502,7 @@ export default function Home() {
   function beginNodeDrag(event: PointerEvent<HTMLDivElement>, node: CanvasNode) {
     if (event.button !== 0) return;
     event.stopPropagation();
+    setSelectedEdgeId(null);
     setRevealedNodeId(node.id);
     const nodeIds = selectedNodeIds.includes(node.id)
       ? selectedNodeIds
@@ -542,6 +571,7 @@ export default function Home() {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedEdgeId(null);
     setRevealedNodeId(node.id);
     setSelectedNodeIds([node.id]);
     if (isAgentOpen) {
@@ -614,6 +644,7 @@ export default function Home() {
   ) {
     if (event.button !== 0 || !mainRef.current) return;
     event.stopPropagation();
+    setSelectedEdgeId(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     const bounds = mainRef.current.getBoundingClientRect();
     const state: ConnectionDragState = {
@@ -652,8 +683,13 @@ export default function Home() {
       ) >= 6;
     const targetElement = document
       .elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>("[data-node-id]");
-    const targetId = targetElement?.dataset.nodeId;
+      ?.closest<HTMLButtonElement>(
+        "[data-connection-node-id][data-connection-side]",
+      );
+    const targetId = targetElement?.dataset.connectionNodeId;
+    const targetSide = targetElement?.dataset.connectionSide as
+      | ConnectionSide
+      | undefined;
     const sourceId = current.side === "right" ? current.nodeId : targetId;
     const destinationId = current.side === "right" ? targetId : current.nodeId;
     const validTarget =
@@ -675,6 +711,7 @@ export default function Home() {
       }),
       moved,
       targetId: validTarget,
+      targetSide: validTarget ? targetSide : undefined,
     };
     connectionDrag.current = next;
     setConnectionDraft(next);
@@ -684,12 +721,25 @@ export default function Home() {
     const current = connectionDrag.current;
     if (!current || current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    if (current.moved && current.targetId) {
+    if (current.moved && current.targetId && current.targetSide) {
       const sourceId =
         current.side === "right" ? current.nodeId : current.targetId;
       const targetId =
         current.side === "right" ? current.targetId : current.nodeId;
-      setGraph((value) => connectNodes(value, sourceId, targetId));
+      const sourceSide =
+        current.side === "right" ? current.side : current.targetSide;
+      const targetSide =
+        current.side === "right" ? current.targetSide : current.side;
+      setGraph((value) =>
+        connectNodes(
+          value,
+          sourceId,
+          targetId,
+          undefined,
+          sourceSide,
+          targetSide,
+        ),
+      );
     } else if (!current.moved) {
       setAddNodeMenu({ nodeId: current.nodeId, side: current.side });
     }
@@ -970,6 +1020,7 @@ export default function Home() {
       return;
     }
     if (selectedManualNodeId === node.id) setSelectedManualNodeId(null);
+    setSelectedEdgeId(null);
     setSelectedNodeIds((current) => current.filter((id) => id !== node.id));
     if (agentContextNodeId === node.id) setAgentContextNodeId(null);
     if (revealedNodeId === node.id) setRevealedNodeId(null);
@@ -1104,9 +1155,24 @@ export default function Home() {
   const draftSourceNode = connectionDraft
     ? graph.nodes.find((node) => node.id === connectionDraft.nodeId)
     : undefined;
-  const draftTargetNode = connectionDraft?.targetId
-    ? graph.nodes.find((node) => node.id === connectionDraft.targetId)
+  const selectedEdge = selectedEdgeId
+    ? graph.edges.find((edge) => edge.id === selectedEdgeId)
     : undefined;
+  const selectedEdgeSource = selectedEdge
+    ? graph.nodes.find((node) => node.id === selectedEdge.sourceId)
+    : undefined;
+  const selectedEdgeTarget = selectedEdge
+    ? graph.nodes.find((node) => node.id === selectedEdge.targetId)
+    : undefined;
+  const selectedEdgeMidpoint =
+    selectedEdge && selectedEdgeSource && selectedEdgeTarget
+      ? edgeMidpoint(
+          selectedEdgeSource,
+          selectedEdgeTarget,
+          selectedEdge.sourceSide,
+          selectedEdge.targetSide,
+        )
+      : undefined;
   const addNodeMenuAnchor = addNodeMenu
     ? graph.nodes.find((node) => node.id === addNodeMenu.nodeId)
     : undefined;
@@ -1166,25 +1232,63 @@ export default function Home() {
             const source = graph.nodes.find((node) => node.id === edge.sourceId);
             const target = graph.nodes.find((node) => node.id === edge.targetId);
             if (!source || !target) return null;
-            return <path key={edge.id} d={edgePath(source, target)} />;
+            const path = edgePath(
+              source,
+              target,
+              edge.sourceSide,
+              edge.targetSide,
+            );
+            return (
+              <g key={edge.id}>
+                <path
+                  className={`canvas-edge${selectedEdgeId === edge.id ? " canvas-edge-selected" : ""}`}
+                  d={path}
+                />
+                <path
+                  className="canvas-edge-hit"
+                  d={path}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedEdgeId(edge.id);
+                    setSelectedNodeIds([]);
+                    setSelectedManualNodeId(null);
+                    setAddNodeMenu(null);
+                  }}
+                />
+              </g>
+            );
           })}
           {connectionDraft && draftSourceNode ? (
             <path
               className="canvas-edge-draft"
-              d={
-                draftTargetNode
-                  ? connectionDraft.side === "right"
-                    ? edgePath(draftSourceNode, draftTargetNode)
-                    : edgePath(draftTargetNode, draftSourceNode)
-                  : draftEdgePath(
-                      draftSourceNode,
-                      connectionDraft.side,
-                      connectionDraft.point,
-                    )
-              }
+              d={draftEdgePath(
+                draftSourceNode,
+                connectionDraft.side,
+                connectionDraft.point,
+              )}
             />
           ) : null}
         </svg>
+
+        {selectedEdge && selectedEdgeMidpoint ? (
+          <button
+            aria-label="删除连线"
+            className="canvas-edge-delete"
+            style={{
+              transform: `translate(${selectedEdgeMidpoint.x}px, ${selectedEdgeMidpoint.y}px) translate(-50%, -50%)`,
+            }}
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setGraph((current) => removeEdge(current, selectedEdge.id));
+              setSelectedEdgeId(null);
+            }}
+          >
+            <Trash2 aria-hidden="true" size={13} />
+          </button>
+        ) : null}
 
         {selectionFrameBounds ? (
           <div
@@ -1209,7 +1313,6 @@ export default function Home() {
             node={node}
             assetUrl={node.assetId ? assetUrls[node.assetId] : undefined}
             assetError={node.assetId ? assetLoadErrors[node.assetId] : undefined}
-            connectionTarget={connectionDraft?.targetId === node.id}
             onDelete={() => deleteNode(node)}
             onOpen={() => openNodeDetails(node)}
             onAssetError={
@@ -1248,8 +1351,13 @@ export default function Home() {
           <CanvasNodeHandles
             key={`handles-${node.id}`}
             node={node}
-            visible={revealedNodeId === node.id}
+            visible={Boolean(connectionDraft) || revealedNodeId === node.id}
             connectionActive={connectionDraft?.nodeId === node.id}
+            targetSide={
+              connectionDraft?.targetId === node.id
+                ? connectionDraft.targetSide
+                : undefined
+            }
             onPointerEnter={() => setRevealedNodeId(node.id)}
             onPointerLeave={() => {
               if (connectionDrag.current?.nodeId !== node.id) {
@@ -1345,7 +1453,13 @@ export default function Home() {
           onPointerDown={(event) => event.stopPropagation()}
           onClick={() => setIsAgentOpen(true)}
         >
-          <Bot aria-hidden="true" size={16} />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt=""
+            aria-hidden="true"
+            className="h-5 w-5 rounded-[5px] object-contain"
+            src="/agent-icon.png"
+          />
           画布 Agent
         </button>
       ) : null}
@@ -1379,7 +1493,6 @@ function CanvasNodeCard({
   node,
   assetUrl,
   assetError,
-  connectionTarget,
   onDelete,
   onOpen,
   onAssetError,
@@ -1396,7 +1509,6 @@ function CanvasNodeCard({
   node: CanvasNode;
   assetUrl?: string;
   assetError?: string;
-  connectionTarget: boolean;
   onDelete: () => void;
   onOpen: () => void;
   onAssetError?: () => void;
@@ -1433,7 +1545,7 @@ function CanvasNodeCard({
 
   return (
     <div
-      className={`canvas-node canvas-node-${node.kind}${hasImageDisplay ? " canvas-node-image-only" : ""}${connectionTarget ? " canvas-node-connection-target" : ""}`}
+      className={`canvas-node canvas-node-${node.kind}${hasImageDisplay ? " canvas-node-image-only" : ""}`}
       style={{
         width: nodeSize.width,
         height: nodeSize.height,
@@ -1665,6 +1777,7 @@ function CanvasNodeHandles({
   node,
   visible,
   connectionActive,
+  targetSide,
   onPointerEnter,
   onPointerLeave,
   onConnectionPointerDown,
@@ -1675,6 +1788,7 @@ function CanvasNodeHandles({
   node: CanvasNode;
   visible: boolean;
   connectionActive: boolean;
+  targetSide?: ConnectionSide;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
   onConnectionPointerDown: (
@@ -1699,7 +1813,9 @@ function CanvasNodeHandles({
       {(["left", "right"] as const).map((side) => (
         <button
           aria-label={side === "left" ? "添加上游节点" : "添加下游节点"}
-          className={`canvas-node-handle canvas-node-handle-${side}`}
+          className={`canvas-node-handle canvas-node-handle-${side}${targetSide === side ? " canvas-node-handle-target" : ""}`}
+          data-connection-node-id={node.id}
+          data-connection-side={side}
           key={side}
           type="button"
           onClick={(event) => event.stopPropagation()}

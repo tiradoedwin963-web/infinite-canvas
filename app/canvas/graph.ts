@@ -57,6 +57,8 @@ export type CanvasEdge = {
   id: string;
   sourceId: string;
   targetId: string;
+  sourceSide: ConnectionSide;
+  targetSide: ConnectionSide;
 };
 
 export type CanvasGraph = {
@@ -124,13 +126,24 @@ function isNode(value: unknown): value is CanvasNode {
   );
 }
 
-function isEdge(value: unknown): value is CanvasEdge {
+type PersistedCanvasEdge = Omit<CanvasEdge, "sourceSide" | "targetSide"> & {
+  sourceSide?: ConnectionSide;
+  targetSide?: ConnectionSide;
+};
+
+function isConnectionSide(value: unknown): value is ConnectionSide {
+  return value === "left" || value === "right";
+}
+
+function isEdge(value: unknown): value is PersistedCanvasEdge {
   if (!value || typeof value !== "object") return false;
-  const edge = value as Partial<CanvasEdge>;
+  const edge = value as Partial<PersistedCanvasEdge>;
   return (
     typeof edge.id === "string" &&
     typeof edge.sourceId === "string" &&
-    typeof edge.targetId === "string"
+    typeof edge.targetId === "string" &&
+    (edge.sourceSide === undefined || isConnectionSide(edge.sourceSide)) &&
+    (edge.targetSide === undefined || isConnectionSide(edge.targetSide))
   );
 }
 
@@ -151,9 +164,13 @@ export function parsePersistedGraph(raw: string | null): CanvasGraph {
     return {
       version: GRAPH_VERSION,
       nodes: value.nodes,
-      edges: value.edges.filter(
-        (edge) => ids.has(edge.sourceId) && ids.has(edge.targetId),
-      ),
+      edges: value.edges
+        .filter((edge) => ids.has(edge.sourceId) && ids.has(edge.targetId))
+        .map((edge) => ({
+          ...edge,
+          sourceSide: edge.sourceSide ?? "right",
+          targetSide: edge.targetSide ?? "left",
+        })),
     };
   } catch {
     return emptyGraph();
@@ -395,6 +412,8 @@ export function createGenerationNodes(
       id: idFactory(),
       sourceId,
       targetId: outputId,
+      sourceSide: "right" as const,
+      targetSide: "left" as const,
     })),
   ];
 
@@ -475,6 +494,8 @@ export function connectNodes(
   sourceId: string,
   targetId: string,
   idFactory: IdFactory = () => crypto.randomUUID(),
+  sourceSide: ConnectionSide = "right",
+  targetSide: ConnectionSide = "left",
 ): CanvasGraph {
   if (
     sourceId === targetId ||
@@ -488,7 +509,18 @@ export function connectNodes(
   }
   return {
     ...graph,
-    edges: [...graph.edges, { id: idFactory(), sourceId, targetId }],
+    edges: [
+      ...graph.edges,
+      { id: idFactory(), sourceId, targetId, sourceSide, targetSide },
+    ],
+  };
+}
+
+export function removeEdge(graph: CanvasGraph, edgeId: string): CanvasGraph {
+  if (!graph.edges.some((edge) => edge.id === edgeId)) return graph;
+  return {
+    ...graph,
+    edges: graph.edges.filter((edge) => edge.id !== edgeId),
   };
 }
 
@@ -666,6 +698,8 @@ export function replaceOutputWithResults(
       id: node.id === outputId ? edge.id : idFactory(),
       sourceId: edge.sourceId,
       targetId: node.id,
+      sourceSide: edge.sourceSide,
+      targetSide: edge.targetSide,
     })),
   );
 
@@ -676,19 +710,70 @@ export function replaceOutputWithResults(
   };
 }
 
-export function edgePath(source: CanvasNode, target: CanvasNode): string {
-  const sourceSize = getNodeSize(source);
-  const targetSize = getNodeSize(target);
-  const start = {
-    x: source.x + sourceSize.width,
-    y: source.y + sourceSize.height / 2,
+export function connectionPoint(node: CanvasNode, side: ConnectionSide) {
+  const size = getNodeSize(node);
+  return {
+    x: side === "right" ? node.x + size.width : node.x,
+    y: node.y + size.height / 2,
   };
-  const end = {
-    x: target.x,
-    y: target.y + targetSize.height / 2,
-  };
+}
+
+function edgeGeometry(
+  source: CanvasNode,
+  target: CanvasNode,
+  sourceSide: ConnectionSide,
+  targetSide: ConnectionSide,
+) {
+  const start = connectionPoint(source, sourceSide);
+  const end = connectionPoint(target, targetSide);
   const control = Math.max(48, Math.abs(end.x - start.x) * 0.45);
-  return `M ${start.x} ${start.y} C ${start.x + control} ${start.y}, ${end.x - control} ${end.y}, ${end.x} ${end.y}`;
+  const sourceDirection = sourceSide === "right" ? 1 : -1;
+  const targetDirection = targetSide === "right" ? 1 : -1;
+  return {
+    start,
+    firstControl: {
+      x: start.x + control * sourceDirection,
+      y: start.y,
+    },
+    secondControl: {
+      x: end.x + control * targetDirection,
+      y: end.y,
+    },
+    end,
+  };
+}
+
+export function edgePath(
+  source: CanvasNode,
+  target: CanvasNode,
+  sourceSide: ConnectionSide = "right",
+  targetSide: ConnectionSide = "left",
+): string {
+  const geometry = edgeGeometry(source, target, sourceSide, targetSide);
+  return `M ${geometry.start.x} ${geometry.start.y} C ${geometry.firstControl.x} ${geometry.firstControl.y}, ${geometry.secondControl.x} ${geometry.secondControl.y}, ${geometry.end.x} ${geometry.end.y}`;
+}
+
+export function edgeMidpoint(
+  source: CanvasNode,
+  target: CanvasNode,
+  sourceSide: ConnectionSide = "right",
+  targetSide: ConnectionSide = "left",
+) {
+  const geometry = edgeGeometry(source, target, sourceSide, targetSide);
+  return {
+    x:
+      (geometry.start.x +
+        3 * geometry.firstControl.x +
+        3 * geometry.secondControl.x +
+        geometry.end.x) /
+      8,
+    y:
+      (geometry.start.y +
+        3 * geometry.firstControl.y +
+        3 * geometry.secondControl.y +
+        geometry.end.y) /
+      8,
+  };
 }
 
 export function draftEdgePath(

@@ -2,7 +2,6 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import {
-  Bot,
   Check,
   CircleX,
   LoaderCircle,
@@ -222,7 +221,7 @@ export function CanvasAgentSidebar({
       {open ? (
         <motion.aside
           aria-label="画布 Agent"
-          className="fixed inset-y-0 right-0 z-50 flex w-[400px] max-w-full flex-col border-l border-black/10 bg-white text-zinc-900 shadow-[-18px_0_54px_rgba(35,32,28,0.16)]"
+          className="fixed inset-y-0 right-0 z-50 flex w-[320px] max-w-full flex-col border-l border-black/10 bg-white text-zinc-900 shadow-[-18px_0_54px_rgba(35,32,28,0.16)] max-[480px]:w-full"
           initial={{ x: "100%" }}
           animate={{ x: 0 }}
           exit={{ x: "100%" }}
@@ -233,8 +232,14 @@ export function CanvasAgentSidebar({
         >
           <header className="flex h-16 shrink-0 items-center justify-between border-b border-black/8 px-4">
             <div className="flex items-center gap-2.5">
-              <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-900 text-white">
-                <Bot aria-hidden="true" size={18} />
+              <span className="grid h-9 w-9 place-items-center overflow-hidden rounded-xl bg-zinc-900 text-white">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="h-7 w-7 rounded-lg object-contain"
+                  src="/agent-icon.png"
+                />
               </span>
               <div>
                 <h2 className="m-0 text-sm font-semibold">画布 Agent</h2>

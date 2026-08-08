@@ -91,7 +91,7 @@ test("removes the disposable starter surface", async () => {
   assert.doesNotMatch(page, /<video[\s\S]*?autoPlay/);
   assert.match(page, /connectionActive=\{connectionDraft\?\.nodeId === node\.id\}/);
   assert.match(page, /canvas-node-connection-active/);
-  assert.match(page, /visible=\{revealedNodeId === node\.id\}/);
+  assert.match(page, /visible=\{Boolean\(connectionDraft\) \|\| revealedNodeId === node\.id\}/);
   assert.match(page, /canvas-node-handles-visible/);
   assert.match(page, /onPointerLeave=\{onPointerLeave\}/);
   assert.match(page, /<CanvasNodeAddMenu/);
@@ -99,6 +99,9 @@ test("removes the disposable starter surface", async () => {
   assert.match(page, /addNodeMenuAnchorSize\.height \/ 2 - 60/);
   assert.match(page, /style=\{\{ transform: `translate\(\$\{x\}px, \$\{y\}px\)` \}\}/);
   assert.match(page, /document[\s\S]*?\.elementFromPoint/);
+  assert.match(page, /\[data-connection-node-id\]\[data-connection-side\]/);
+  assert.match(page, /data-connection-node-id=\{node\.id\}/);
+  assert.match(page, /data-connection-side=\{side\}/);
   assert.match(page, /buildManualNodeContext/);
   assert.match(page, /imageNodeToFile/);
   assert.match(
@@ -107,10 +110,13 @@ test("removes the disposable starter surface", async () => {
   );
   assert.match(page, /resizedNodeBounds/);
   assert.match(page, /resizeNode\(value, current\.nodeId, nextBounds\)/);
-  assert.match(
-    page,
-    /connectionDraft\.side === "right"[\s\S]*?edgePath\(draftSourceNode, draftTargetNode\)[\s\S]*?edgePath\(draftTargetNode, draftSourceNode\)/,
-  );
+  assert.match(page, /d=\{draftEdgePath\([\s\S]*?connectionDraft\.point/);
+  assert.doesNotMatch(page, /draftTargetNode/);
+  assert.match(page, /edge\.sourceSide,[\s\S]*?edge\.targetSide/);
+  assert.match(page, /className="canvas-edge-hit"/);
+  assert.match(page, /aria-label="删除连线"/);
+  assert.match(page, /event\.key !== "Delete" && event\.key !== "Backspace"/);
+  assert.match(page, /contenteditable='true'/);
   assert.match(page, /event\.currentTarget\.naturalWidth/);
   assert.match(page, /event\.currentTarget\.videoWidth/);
   assert.match(page, /width: nodeSize\.width/);
@@ -173,8 +179,14 @@ test("removes the disposable starter surface", async () => {
   assert.match(styles, /\.canvas-selection-frame \{[\s\S]*?border-style: dashed;[\s\S]*?pointer-events: auto;/);
   assert.match(styles, /\.canvas-selection-marquee \{[\s\S]*?pointer-events: none;/);
   assert.match(styles, /\.canvas-node-add-menu \{/);
-  assert.match(styles, /\.canvas-node-connection-target \{/);
+  assert.match(styles, /\.canvas-edge-selected \{/);
+  assert.match(styles, /\.canvas-edge-hit \{[\s\S]*?pointer-events: stroke;/);
+  assert.match(styles, /\.canvas-edge-delete \{/);
+  assert.match(styles, /\.canvas-node-handle-target \{/);
   assert.match(graph, /export function connectNodes/);
+  assert.match(graph, /export function removeEdge/);
+  assert.match(graph, /sourceSide: edge\.sourceSide \?\? "right"/);
+  assert.match(graph, /targetSide: edge\.targetSide \?\? "left"/);
   assert.match(graph, /sourceId === targetId/);
   assert.match(graph, /graph\.edges\.some\(/);
   assert.match(graph, /export function createConnectedNode/);
@@ -245,7 +257,10 @@ test("removes the disposable starter surface", async () => {
   assert.match(composer, /\.split\(""\)/);
   assert.doesNotMatch(composer, /\bfetch\s*\(|axios/);
   assert.match(agentSidebar, /aria-label="画布 Agent"/);
-  assert.match(agentSidebar, /w-\[400px\] max-w-full/);
+  assert.match(agentSidebar, /w-\[320px\] max-w-full/);
+  assert.match(agentSidebar, /max-\[480px\]:w-full/);
+  assert.match(page, /src="\/agent-icon\.png"/);
+  assert.match(agentSidebar, /src="\/agent-icon\.png"/);
   assert.match(agentSidebar, /AGENT_CHAT_STORAGE_KEY/);
   assert.match(agentSidebar, /isDangerousAgentOperation/);
   assert.match(agentSidebar, /正在读取画布并思考/);
