@@ -265,3 +265,42 @@ test("removes the disposable starter surface", async () => {
   assert.match(agentSidebar, /isDangerousAgentOperation/);
   assert.match(agentSidebar, /正在读取画布并思考/);
 });
+
+test("exposes an isolated workflow mode without the bottom composer", async () => {
+  const [page, workflow, workflowGraph, styles, viteConfig] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(
+      new URL("../components/workflow/workflow-canvas.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../app/workflow/graph.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /CanvasExperienceMode = "creation" \| "workflow"/);
+  assert.match(page, /lingke-canvas-experience-mode/);
+  assert.match(page, /\s创作\s*<\/button>/);
+  assert.match(page, /\s工作流\s*<\/button>/);
+  assert.match(page, /experienceMode === "creation" \? <CreationCanvas \/> : <WorkflowCanvas \/>/);
+  assert.doesNotMatch(workflow, /<AIChatInput/);
+  assert.match(workflow, /onDoubleClick=\{handleCanvasDoubleClick\}/);
+  assert.match(workflow, /双击画布，创建素材节点或调度节点/);
+  assert.match(workflow, /运行 \$\{taskCount\} 个任务/);
+  assert.match(workflow, /created\.resultIds\.map\(async \(resultId\)/);
+  assert.match(workflow, /当前模型不支持视频参考输入/);
+  assert.match(workflow, /startClientX: event\.clientX/);
+  assert.match(workflow, /Math\.hypot\([\s\S]*?\) >= 6/);
+  assert.match(workflow, /connection\?\.moved && connectionSource/);
+  assert.match(workflow, /<WorkflowSchedulerMenu/);
+  assert.match(workflow, /createConnectedScheduler/);
+  assert.match(workflow, /文本生成/);
+  assert.match(workflow, /图片生成/);
+  assert.match(workflow, /视频生成/);
+  assert.match(workflowGraph, /lingke-workflow-canvas-v1/);
+  assert.match(workflowGraph, /export function createConnectedScheduler/);
+  assert.match(styles, /\.canvas-mode-switch \{/);
+  assert.match(styles, /\.workflow-scheduler \{/);
+  assert.match(viteConfig, /port: 3001/);
+  assert.match(viteConfig, /strictPort: true/);
+});
