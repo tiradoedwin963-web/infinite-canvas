@@ -45,6 +45,18 @@ test("server-renders the infinite canvas with the LingkeAI composer", async () =
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
 });
 
+test("loads the image tool manual through the agent route", async () => {
+  const [route, manual] = await Promise.all([
+    readFile(new URL("../app/api/ai/agent/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../tools.md", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /tools\.md\?raw/);
+  assert.match(route, /toolManual/);
+  assert.match(manual, /gemini-3-pro-image-preview/);
+  assert.match(manual, /gpt-image-2/);
+  assert.doesNotMatch(manual, /gpt-5\.6-sol|doubao-seedance/);
+});
+
 test("removes the disposable starter surface", async () => {
   const [page, graph, packageJson, composer, agentSidebar, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -268,6 +280,13 @@ test("removes the disposable starter surface", async () => {
   assert.match(agentSidebar, /Agent 历史对话列表/);
   assert.match(agentSidebar, /isDangerousAgentOperation/);
   assert.match(agentSidebar, /正在读取画布并思考/);
+  assert.match(agentSidebar, /全部确认（\{pendingConfirmations\.length\}）/);
+  assert.match(agentSidebar, /runAgentConfirmationWithTimeout/);
+  assert.match(agentSidebar, /确认内容已失效/);
+  assert.match(page, /signal: AbortSignal/);
+  assert.match(page, /fetch\(node\.resultUrl, \{ signal \}\)/);
+  assert.match(page, /createGenerationNodes\(\s*graphRef\.current,/);
+  assert.match(page, /graphRef\.current = created\.graph/);
 });
 
 test("exposes an isolated workflow mode without the bottom composer", async () => {

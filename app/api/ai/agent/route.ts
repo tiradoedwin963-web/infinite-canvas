@@ -4,6 +4,7 @@ import {
   validateAgentRequest,
 } from "@/app/ai/agent-provider";
 import agentInstructions from "@/agent.md?raw";
+import toolManual from "@/tools.md?raw";
 
 function getClient() {
   const baseUrl = process.env.LINGKE_BASE_URL;
@@ -11,7 +12,12 @@ function getClient() {
   if (!baseUrl || !apiKey) {
     throw new CanvasAgentError("服务端尚未配置 LingkeAI。", 503);
   }
-  return createCanvasAgentClient({ baseUrl, apiKey, instructions: agentInstructions });
+  return createCanvasAgentClient({
+    baseUrl,
+    apiKey,
+    instructions: agentInstructions,
+    toolManual,
+  });
 }
 
 export async function POST(request: Request) {

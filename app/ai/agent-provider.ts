@@ -8,7 +8,8 @@ import {
   type AgentRequest,
   type AgentResponse,
 } from "./agent.ts";
-import { ALL_MODELS } from "./models.ts";
+import { normalizeAgentImageResponse } from "./agent-tools.ts";
+import { ALL_MODELS, MODEL_CONFIGS } from "./models.ts";
 
 type Fetcher = typeof fetch;
 
@@ -116,12 +117,33 @@ export function validateAgentRequest(value: unknown): AgentRequest {
   };
 }
 
-function systemPrompt(instructions: string, phase: AgentRequest["phase"]) {
-  const models = ALL_MODELS.map((model) => `${model.mode}:${model.value}`).join(", ");
+function systemPrompt(
+  instructions: string,
+  toolManual: string,
+  phase: AgentRequest["phase"],
+) {
+  const models = JSON.stringify(
+    ALL_MODELS.map((model) => ({ mode: model.mode, model: model.value })),
+  );
+  const imageCapabilities = JSON.stringify(
+    MODEL_CONFIGS.image.map((model) => ({
+      model: model.value,
+      label: model.label,
+      aspectRatios: model.aspectRatios,
+      resolutions: model.resolutions,
+      defaultResolution: model.defaultResolution,
+      maxReferenceImages: model.maxReferenceImages,
+    })),
+  );
   return `${instructions.trim()}
 
 当前会话阶段：${phase}。
-可用于生成的模型：${models}。`;
+可用于 generate_content 的 mode/model 组合：${models}。model 字段只能填写 model 值，不得添加 mode 前缀。
+
+图片生成 Tool 手册：
+${toolManual.trim()}
+
+图片模型运行时能力表（与手册冲突时以此表为准）：${imageCapabilities}。`;
 }
 
 function extractText(payload: unknown) {
@@ -138,7 +160,12 @@ function extractText(payload: unknown) {
 }
 
 export function createCanvasAgentClient(
-  config: { baseUrl: string; apiKey: string; instructions: string },
+  config: {
+    baseUrl: string;
+    apiKey: string;
+    instructions: string;
+    toolManual: string;
+  },
   fetcher: Fetcher = fetch,
 ) {
   const baseUrl = config.baseUrl.replace(/\/$/, "");
@@ -153,7 +180,14 @@ export function createCanvasAgentClient(
         ),
       };
       const messages: Array<Record<string, unknown>> = [
-        { role: "system", content: systemPrompt(config.instructions, request.phase) },
+        {
+          role: "system",
+          content: systemPrompt(
+            config.instructions,
+            config.toolManual,
+            request.phase,
+          ),
+        },
         ...request.messages,
         {
           role: "user",
@@ -213,7 +247,7 @@ export function createCanvasAgentClient(
         ) {
           throw new Error("Agent 首轮必须先向用户澄清需求。");
         }
-        return parsed;
+        return normalizeAgentImageResponse(parsed);
       } catch (error) {
         throw new CanvasAgentError(
           error instanceof Error ? error.message : "画布 Agent 响应无效。",

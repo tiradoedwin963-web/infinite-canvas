@@ -934,3 +934,80 @@
 - `tests/rendered-html.test.mjs`：保留双画布与连线回归，合入历史对话入口断言。
 - `progress.md`：保留双方历史并追加本次 `main` 集成记录。
 - 回滚方式：对本次 `main` 上的 cherry-pick 提交执行 `git revert <本轮 main 提交哈希>`；集成前 `main` 回滚点为 `73e5d19`。
+
+## 2026-08-08 - Task: 修复 Agent 生图确认并增加全部确认
+
+### What was done
+- 修复确认卡缺失操作载荷时无反馈的问题；不完整待确认卡会自动标记失效并显示可操作原因。
+- 统一单项与批量确认执行路径：点击后立即显示卡片加载，单项 60 秒超时会释放操作并提示远端任务可能继续。
+- 在当前对话有多个有效待确认项时增加“全部确认（N）”，按消息顺序串行执行并在首个失败处停止；成功项立即标记，失败项保留重试。
+- 参考图读取和生成请求均接入中止信号，删除和连续生成均从最新画布图执行，避免批量操作覆盖前一项结果。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，Agent、创作画布和工作流共 73 项测试全部通过；新增覆盖完整待确认筛选、缺失载荷失效、超时中止、批量全成功和首错停止。
+- 模拟上游浏览器验收：在临时 3101 实例创建 3 项图片确认，“全部确认（3）”正常显示；第 1 项成功、第 2 项模拟失败后立即停止，第 3 项未执行；失败项单独重试成功，前序结果节点未被覆盖，控制台无警告或错误。全程未调用真实付费生成。
+- `git diff --check`：通过，无空白符错误。`http://localhost:3001/` 继续返回 HTTP 200。
+
+### Notes
+- `app/ai/agent.ts`：增加待确认筛选、缺失载荷失效、60 秒超时和串行批量执行纯逻辑。
+- `app/page.tsx`：为参考图与生成请求传递中止信号，并使 Agent 操作持续读取最新创作画布图。
+- `components/canvas-agent-sidebar.tsx`：增加确认加载、错误反馈、批量进度、首错停止和“全部确认”交互。
+- `tests/agent.test.mjs`：增加待确认筛选、缺失载荷、超时中止和批量串行停止测试。
+- `tests/rendered-html.test.mjs`：增加批量确认入口、中止信号和最新画布引用的结构回归断言。
+- `docs/canvas.md`：记录确认超时、全部确认、串行首错停止和重复计费风险。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：执行 `git restore --source=b8c5822 -- app/ai/agent.ts app/page.tsx components/canvas-agent-sidebar.tsx tests/agent.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；本轮开始前的回滚点为 `b8c5822`。
+
+## 2026-08-08 - Task: 修复 Agent 生图模型前缀导致的批量确认失败
+
+### What was done
+- 定位并修复 Agent 将动态模型清单中的 `image:gemini-3-pro-image-preview` 整体误写入 `model` 字段，导致确认时在调用上游前即失败的问题。
+- 将模型清单改为明确的 `mode`/`model` JSON 组合，并在 Agent 响应解析和确认执行两处兼容移除同模式前缀，既修复新回复也兼容当前页面已有待确认项。
+- 批量执行首项失败时，除了显示停止位置，还会在“全部确认”区域直接附上具体失败原因。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，73 项测试全部通过；回归用例确认 `image:gpt-image-2` 会解析为 `gpt-image-2`，系统消息不再使用易混淆的 `mode:model` 字符串。
+- 模拟上游浏览器验收：Agent 故意返回 3 个带 `image:` 前缀的图片操作，侧栏 3 张卡均自动显示为无前缀合法 ID；批量第 1 项成功、第 2 项模拟失败后停止，明确显示“原因：模拟参数错误：宽高不支持”，剩余 2 项可重试，控制台无错误。未调用真实付费生成。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `app/ai/agent.ts`：新增 Agent 模型 ID 前缀规范化，并在操作解析和确认描述中应用。
+- `app/ai/agent-provider.ts`：将动态模型清单改为无歧义 JSON 组合，明确禁止 `model` 携带模式前缀。
+- `app/page.tsx`：确认执行时兼容当前页面已有的带前缀操作，并以正规模型 ID 发起生成。
+- `components/canvas-agent-sidebar.tsx`：在批量失败摘要中补充具体执行错误。
+- `tests/agent.test.mjs`：增加带模式前缀的生成操作规范化回归断言。
+- `tests/agent-provider.test.mjs`：增加模型 JSON 组合和无 `mode:model` 串的系统消息断言。
+- `docs/canvas.md`：记录模型 ID 分字段传递、前缀兼容和批量失败原因展示。
+- `progress.md`：追加本轮根因、修复、验证与回滚记录。
+- 回滚方式：执行 `git restore --source=b8c5822 -- app/ai/agent.ts app/ai/agent-provider.ts app/page.tsx components/canvas-agent-sidebar.tsx tests/agent.test.mjs tests/agent-provider.test.mjs docs/canvas.md progress.md`可将本轮与尚未提交的上一轮确认功能一并回退；共同回滚点为 `b8c5822`。
+
+## 2026-08-09 - Task: 配置画布 Agent 图片模型 Tool 手册
+
+### What was done
+- 新增仅覆盖 4 个图片模型的 `tools.md`，记录模型选型、提示词模板、合法比例、分辨率和参考图限制，并与 `agent.md`、会话阶段及动态能力表共同组成单次 Agent 请求的系统消息。
+- 为图片生成操作增加服务端参数兜底：合法值保持不变，缺失值采用模型默认值，不支持的比例按方向选择最近值，分辨率按数值选择最近值且同距取较低值，未知图片模型直接拒绝。
+- 确认卡展示最终比例、分辨率和自动调整原因，并清理调整原因之间的重复标点；确认后生成接口只接收规范化后的合法参数。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，Agent、创作画布和工作流共 81 项测试全部通过；覆盖手册与模型配置一致性、单次 Agent 调用、比例与分辨率归一化、未知模型拒绝和确认卡展示。
+- 模拟上游浏览器验收：新对话首轮只提问，第二轮将 `2:3 / 3K` 展示为最终 `3:4 / 2K` 并列出两条调整原因；模拟媒体接口仅接受 `aspectRatio=3:4` 和 `imageSize=2K`，点击确认后成功进入画布任务状态并显示“已确认执行”。全程未调用真实付费生成。
+- `git diff --check`：通过，无空白符错误。
+- `http://localhost:3001/`：使用当前生产构建重新启动并返回 HTTP 200；启动过程未发起模型请求。
+
+### Notes
+- `tools.md`：新增 4 个图片模型的精简 Tool 手册。
+- `agent.md`：要求图片生成前查阅工具手册且不得猜测模型参数。
+- `app/ai/agent-tools.ts`：新增图片模型校验、比例和分辨率归一化及调整说明。
+- `app/ai/agent.ts`：为生成操作增加服务端调整信息，并在确认卡描述中展示最终参数和原因。
+- `app/ai/agent-provider.ts`：将工具手册和动态图片能力表加入系统消息，并在同一次响应内规范化图片操作。
+- `app/api/ai/agent/route.ts`：构建时以原始文本加载并传入 `tools.md`。
+- `tests/agent-tools.test.mjs`：覆盖图片参数兜底和手册配置防漂移。
+- `tests/agent-provider.test.mjs`：覆盖工具手册注入、动态能力表和单次 Agent 调用。
+- `tests/agent.test.mjs`：覆盖最终参数、调整原因和确认卡标点展示。
+- `tests/rendered-html.test.mjs`：覆盖 Agent 路由加载图片工具手册且不引入非图片模型手册。
+- `docs/canvas.md`：记录图片工具手册、四模型范围、参数兜底和确认行为。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：待本轮独立提交后可执行 `git revert <本轮提交哈希>`；当前工作树同时包含尚未提交的确认功能修复，若执行 `git restore --source=b8c5822 -- agent.md app/ai/agent.ts app/ai/agent-provider.ts app/api/ai/agent/route.ts tests/agent-provider.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`，再执行 `git clean -f -- tools.md app/ai/agent-tools.ts tests/agent-tools.test.mjs`，会将本轮及这些文件中此前未提交的确认修复一并回退。

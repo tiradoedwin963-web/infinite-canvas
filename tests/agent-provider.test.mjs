@@ -25,6 +25,7 @@ const clientConfig = {
   baseUrl: "https://lingke.example",
   apiKey: "secret",
   instructions: "RUNTIME_AGENT_MD_MARKER",
+  toolManual: "RUNTIME_IMAGE_TOOL_MANUAL_MARKER",
 };
 
 test("validates agent history and requires a final user message", () => {
@@ -77,7 +78,52 @@ test("calls the fixed agent model and parses its JSON response", async () => {
   assert.equal(upstreamRequest.init.headers.Authorization, "Bearer secret");
   assert.match(JSON.stringify(upstreamRequest.body.messages), /画布快照/);
   assert.match(JSON.stringify(upstreamRequest.body.messages), /RUNTIME_AGENT_MD_MARKER/);
-  assert.match(JSON.stringify(upstreamRequest.body.messages), /text:gpt-5\.6-sol/);
+  const systemMessage = upstreamRequest.body.messages[0].content;
+  assert.match(systemMessage, /RUNTIME_IMAGE_TOOL_MANUAL_MARKER/);
+  assert.match(systemMessage, /"mode":"text","model":"gpt-5\.6-sol"/);
+  assert.match(systemMessage, /"model":"gemini-3-pro-image-preview"/);
+  assert.match(systemMessage, /"aspectRatios":\["1:1","4:3","3:4","16:9","9:16"\]/);
+  assert.match(systemMessage, /model 字段只能填写 model 值/);
+  assert.doesNotMatch(systemMessage, /text:gpt-5\.6-sol/);
+});
+
+test("normalizes an image draft without making a second agent request", async () => {
+  let calls = 0;
+  const client = createCanvasAgentClient(clientConfig, async () => {
+    calls += 1;
+    return Response.json({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            message: "请确认生图",
+            workflow_state: "active",
+            operations: [{
+              type: "generate_content",
+              mode: "image",
+              model: "image:gemini-3-pro-image-preview",
+              prompt: "portrait",
+              reference_node_ids: [],
+              aspect_ratio: "2:3",
+              resolution: "3K",
+            }],
+          }),
+        },
+      }],
+    });
+  });
+  const response = await client.respond(validateAgentRequest(request({
+    phase: "active",
+    messages: [
+      { role: "user", content: "生成人像" },
+      { role: "assistant", content: "需要什么比例？" },
+      { role: "user", content: "2:3，3K" },
+    ],
+  })));
+  assert.equal(calls, 1);
+  assert.equal(response.operations[0].model, "gemini-3-pro-image-preview");
+  assert.equal(response.operations[0].aspectRatio, "3:4");
+  assert.equal(response.operations[0].resolution, "2K");
+  assert.equal(response.operations[0].adjustments.length, 2);
 });
 
 test("rejects model output that tries to execute on the intake turn", async () => {

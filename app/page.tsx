@@ -15,10 +15,11 @@ import {
 } from "lucide-react";
 import type { CSSProperties, PointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AgentDangerousOperation,
-  AgentInspectedImage,
-  AgentOperation,
+import {
+  normalizeAgentModelId,
+  type AgentDangerousOperation,
+  type AgentInspectedImage,
+  type AgentOperation,
 } from "@/app/ai/agent";
 import {
   ALL_MODELS,
@@ -140,13 +141,18 @@ async function readApiError(response: Response): Promise<string> {
   return "生成请求失败，请稍后重试。";
 }
 
-async function imageNodeToFile(node: CanvasNode): Promise<File> {
+async function imageNodeToFile(
+  node: CanvasNode,
+  signal?: AbortSignal,
+): Promise<File> {
   let blob: Blob | null = null;
+  signal?.throwIfAborted();
   if (node.assetId) blob = await readAsset(node.assetId);
+  signal?.throwIfAborted();
   if (!blob && node.resultUrl) {
     let response: Response;
     try {
-      response = await fetch(node.resultUrl);
+      response = await fetch(node.resultUrl, { signal });
     } catch {
       throw new Error("无法读取上游生成图片，请将图片重新上传后再试。");
     }
@@ -234,6 +240,7 @@ function CreationCanvas() {
   const recoveringAssets = useRef(new Set<string>());
   const assetRecoveryAttempts = useRef(new Set<string>());
   const assetUrlsRef = useRef<Record<string, string>>({});
+  const graphRef = useRef(graph);
 
   const restoreAssetUrl = useCallback(async (assetId: string) => {
     if (recoveringAssets.current.has(assetId)) return;
@@ -283,9 +290,17 @@ function CreationCanvas() {
   }
 
   useEffect(() => {
-    setGraph(parsePersistedGraph(window.localStorage.getItem(GRAPH_STORAGE_KEY)));
+    const persistedGraph = parsePersistedGraph(
+      window.localStorage.getItem(GRAPH_STORAGE_KEY),
+    );
+    graphRef.current = persistedGraph;
+    setGraph(persistedGraph);
     setIsHydrated(true);
   }, []);
+
+  useEffect(() => {
+    graphRef.current = graph;
+  }, [graph]);
 
   useEffect(() => {
     assetUrlsRef.current = assetUrls;
@@ -930,8 +945,12 @@ function CreationCanvas() {
     }
   }
 
-  async function submitStandaloneGeneration(submission: ComposerSubmission) {
+  async function submitStandaloneGeneration(
+    submission: ComposerSubmission,
+    signal?: AbortSignal,
+  ) {
     if (!mainRef.current) return;
+    signal?.throwIfAborted();
     setIsSubmitting(true);
     let outputId = "";
     try {
@@ -942,8 +961,10 @@ function CreationCanvas() {
       });
       const references = await Promise.all(
         submission.files.map(async (file) => {
+          signal?.throwIfAborted();
           const id = crypto.randomUUID();
           await saveAsset(id, file);
+          signal?.throwIfAborted();
           const localUrl = URL.createObjectURL(file);
           loadedAssets.current.add(id);
           setAssetUrls((current) => ({ ...current, [id]: localUrl }));
@@ -959,7 +980,7 @@ function CreationCanvas() {
         }),
       );
       const created = createGenerationNodes(
-        graph,
+        graphRef.current,
         {
           mode: submission.mode,
           model: submission.model,
@@ -970,10 +991,12 @@ function CreationCanvas() {
         worldCenter,
       );
       outputId = created.outputId;
+      graphRef.current = created.graph;
       setGraph(created.graph);
 
       const response = await fetch("/api/ai/generate", {
         method: "POST",
+        signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: submission.mode,
@@ -989,34 +1012,34 @@ function CreationCanvas() {
       const result = (await response.json()) as GenerateResponse;
 
       if (result.kind === "text") {
-        setGraph((current) =>
-          updateOutputNode(current, created.outputId, {
-            status: "success",
-            progress: "",
-            text: result.content,
-          }),
-        );
+        const nextGraph = updateOutputNode(graphRef.current, created.outputId, {
+          status: "success",
+          progress: "",
+          text: result.content,
+        });
+        graphRef.current = nextGraph;
+        setGraph(nextGraph);
       } else {
-        setGraph((current) =>
-          updateOutputNode(current, created.outputId, {
-            status: "pending",
-            progress: "排队中",
-            taskId: result.taskId,
-            startedAt: Date.now(),
-          }),
-        );
+        const nextGraph = updateOutputNode(graphRef.current, created.outputId, {
+          status: "pending",
+          progress: "排队中",
+          taskId: result.taskId,
+          startedAt: Date.now(),
+        });
+        graphRef.current = nextGraph;
+        setGraph(nextGraph);
       }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "生成请求失败，请稍后重试。";
       if (outputId) {
-        setGraph((current) =>
-          updateOutputNode(current, outputId, {
-            status: "failed",
-            progress: "",
-            error: message,
-          }),
-        );
+        const nextGraph = updateOutputNode(graphRef.current, outputId, {
+          status: "failed",
+          progress: "",
+          error: message,
+        });
+        graphRef.current = nextGraph;
+        setGraph(nextGraph);
       }
       throw new Error(message);
     } finally {
@@ -1074,7 +1097,9 @@ function CreationCanvas() {
     if (revealedNodeId === node.id) setRevealedNodeId(null);
     if (addNodeMenu?.nodeId === node.id) setAddNodeMenu(null);
     if (detailNodeId === node.id) closeNodeDetails();
-    setGraph((current) => removeNode(current, node.id));
+    const nextGraph = removeNode(graphRef.current, node.id);
+    graphRef.current = nextGraph;
+    setGraph(nextGraph);
     if (node.assetId) {
       const url = assetUrls[node.assetId];
       if (url) URL.revokeObjectURL(url);
@@ -1098,7 +1123,8 @@ function CreationCanvas() {
 
   function applyCanvasAgentOperations(operations: AgentOperation[]) {
     if (!operations.length) return [];
-    const outcome = applyAgentOperations(graph, operations);
+    const outcome = applyAgentOperations(graphRef.current, operations);
+    graphRef.current = outcome.graph;
     setGraph(outcome.graph);
     return outcome.results.map((result) => result.message);
   }
@@ -1107,7 +1133,7 @@ function CreationCanvas() {
     const uniqueIds = [...new Set(nodeIds)].slice(0, 5);
     return Promise.all(
       uniqueIds.map(async (nodeId) => {
-        const node = graph.nodes.find(
+        const node = graphRef.current.nodes.find(
           (candidate) => candidate.id === nodeId && candidate.kind === "image",
         );
         if (!node) throw new Error(`未找到可读取的图片节点 ${nodeId}。`);
@@ -1123,9 +1149,15 @@ function CreationCanvas() {
     );
   }
 
-  async function confirmAgentOperation(operation: AgentDangerousOperation) {
+  async function confirmAgentOperation(
+    operation: AgentDangerousOperation,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
     if (operation.type === "delete_node") {
-      const node = graph.nodes.find((candidate) => candidate.id === operation.nodeId);
+      const node = graphRef.current.nodes.find(
+        (candidate) => candidate.id === operation.nodeId,
+      );
       if (!node) throw new Error("节点已不存在，未执行删除。");
       deleteNode(node, true);
       return node.status === "pending" || node.status === "running"
@@ -1133,11 +1165,12 @@ function CreationCanvas() {
         : "已删除节点及其连线。";
     }
 
-    const model = getModelConfig(operation.mode, operation.model);
+    const modelId = normalizeAgentModelId(operation.mode, operation.model);
+    const model = getModelConfig(operation.mode, modelId);
     if (!model) throw new Error("生成模型与模式不匹配，请重新提出生成要求。");
     const referenceNodeIds = [...new Set(operation.referenceNodeIds)];
     const references = referenceNodeIds
-      .map((nodeId) => graph.nodes.find((node) => node.id === nodeId))
+      .map((nodeId) => graphRef.current.nodes.find((node) => node.id === nodeId))
       .filter((node): node is CanvasNode => Boolean(node));
     if (references.length !== referenceNodeIds.length) {
       throw new Error("部分参考节点已不存在，请重新提出生成要求。");
@@ -1152,7 +1185,7 @@ function CreationCanvas() {
     const files = await Promise.all(
       references
         .filter((node) => node.kind === "image")
-        .map((node) => imageNodeToFile(node)),
+        .map((node) => imageNodeToFile(node, signal)),
     );
     if (files.length > model.maxReferenceImages) {
       throw new Error(`当前模型最多支持 ${model.maxReferenceImages} 张参考图。`);
@@ -1175,15 +1208,18 @@ function CreationCanvas() {
     if (model.resolutions.length && !model.resolutions.includes(resolution)) {
       throw new Error("Agent 选择了当前模型不支持的分辨率。");
     }
-    await submitStandaloneGeneration({
-      mode: operation.mode,
-      model: operation.model,
-      prompt: [...context, operation.prompt].join("\n\n"),
-      files,
-      aspectRatio,
-      duration,
-      resolution,
-    });
+    await submitStandaloneGeneration(
+      {
+        mode: operation.mode,
+        model: modelId,
+        prompt: [...context, operation.prompt].join("\n\n"),
+        files,
+        aspectRatio,
+        duration,
+        resolution,
+      },
+      signal,
+    );
     return `已提交${
       operation.mode === "text" ? "文本" : operation.mode === "image" ? "图片" : "视频"
     }生成，结果会写入画布节点。`;

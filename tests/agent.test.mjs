@@ -3,10 +3,15 @@ import test from "node:test";
 import {
   createAgentConversation,
   createAgentConversationTitle,
+  describeDangerousOperation,
+  expireIncompleteAgentConfirmations,
+  getPendingAgentConfirmations,
   isDangerousAgentOperation,
   parseAgentConversationStore,
   parseAgentMessages,
   parseAgentModelResponse,
+  runAgentConfirmationsSequentially,
+  runAgentConfirmationWithTimeout,
   serializeAgentConversationStore,
   serializeAgentMessages,
 } from "../app/ai/agent.ts";
@@ -47,7 +52,7 @@ test("parses the strict agent response and all operation names", () => {
       {
         type: "generate_content",
         mode: "image",
-        model: "gpt-image-2",
+        model: "image:gpt-image-2",
         prompt: "海报",
         reference_node_ids: ["old"],
         aspect_ratio: "1:1",
@@ -67,6 +72,7 @@ test("parses the strict agent response and all operation names", () => {
     "generate_content",
   ]);
   assert.equal(response.operations.filter(isDangerousAgentOperation).length, 2);
+  assert.equal(response.operations.at(-1).model, "gpt-image-2");
 });
 
 test("rejects unknown or malformed model operations without partial application", () => {
@@ -97,6 +103,132 @@ test("persists text history but expires pending confirmations and strips payload
   ]);
   assert.doesNotMatch(serialized, /delete_node|nodeId/);
   assert.equal(parseAgentMessages(serialized)[0].action.status, "expired");
+});
+
+test("extracts only complete pending confirmations in message order", () => {
+  const messages = [
+    {
+      id: "delete",
+      role: "assistant",
+      content: "",
+      createdAt: 1,
+      action: {
+        label: "delete",
+        status: "pending",
+        operation: { type: "delete_node", nodeId: "a" },
+      },
+    },
+    {
+      id: "missing",
+      role: "assistant",
+      content: "",
+      createdAt: 2,
+      action: { label: "missing", status: "pending" },
+    },
+    {
+      id: "generate",
+      role: "assistant",
+      content: "",
+      createdAt: 3,
+      action: {
+        label: "generate",
+        status: "pending",
+        operation: {
+          type: "generate_content",
+          mode: "image",
+          model: "gpt-image-2",
+          prompt: "poster",
+          referenceNodeIds: [],
+        },
+      },
+    },
+    {
+      id: "confirmed",
+      role: "assistant",
+      content: "",
+      createdAt: 4,
+      action: {
+        label: "confirmed",
+        status: "confirmed",
+        operation: { type: "delete_node", nodeId: "b" },
+      },
+    },
+  ];
+  const confirmations = getPendingAgentConfirmations(messages);
+
+  assert.deepEqual(
+    confirmations.map((confirmation) => confirmation.messageId),
+    ["delete", "generate"],
+  );
+  const normalized = expireIncompleteAgentConfirmations(messages);
+  assert.equal(normalized[1].action.status, "expired");
+  assert.match(normalized[1].details[0], /确认内容已失效/);
+  assert.equal(expireIncompleteAgentConfirmations(normalized), normalized);
+});
+
+test("describes final image parameters and automatic adjustments", () => {
+  const description = describeDangerousOperation({
+    type: "generate_content",
+    mode: "image",
+    model: "gemini-3-pro-image-preview",
+    prompt: "portrait",
+    referenceNodeIds: [],
+    aspectRatio: "3:4",
+    resolution: "2K",
+    adjustments: ["画面比例由 2:3 调整为 3:4。"],
+  });
+  assert.match(description, /比例 3:4/);
+  assert.match(description, /分辨率 2K/);
+  assert.match(description, /画面比例由 2:3 调整为 3:4/);
+  assert.doesNotMatch(description, /。；/);
+});
+
+test("confirmation timeout aborts the signal and reports the remote-task warning", async () => {
+  let taskSignal;
+  await assert.rejects(
+    runAgentConfirmationWithTimeout(
+      (signal) => {
+        taskSignal = signal;
+        return new Promise(() => {});
+      },
+      5,
+    ),
+    /远端任务可能仍在继续.*避免重复计费/,
+  );
+  assert.equal(taskSignal.aborted, true);
+
+  const result = await runAgentConfirmationWithTimeout(
+    async (signal) => {
+      assert.equal(signal.aborted, false);
+      return "done";
+    },
+    20,
+  );
+  assert.equal(result, "done");
+});
+
+test("runs confirmations sequentially and stops at the first failure", async () => {
+  const successfulCalls = [];
+  const successful = await runAgentConfirmationsSequentially(
+    ["a", "b", "c"],
+    async (item) => {
+      successfulCalls.push(item);
+      return true;
+    },
+  );
+  assert.deepEqual(successfulCalls, ["a", "b", "c"]);
+  assert.deepEqual(successful, { completed: 3 });
+
+  const failedCalls = [];
+  const failed = await runAgentConfirmationsSequentially(
+    ["a", "b", "c"],
+    async (item) => {
+      failedCalls.push(item);
+      return item !== "b";
+    },
+  );
+  assert.deepEqual(failedCalls, ["a", "b"]);
+  assert.deepEqual(failed, { completed: 1, failedIndex: 1 });
 });
 
 test("migrates legacy messages into one active conversation", () => {

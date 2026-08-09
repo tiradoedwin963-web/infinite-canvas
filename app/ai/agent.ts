@@ -7,6 +7,9 @@ export const MAX_AGENT_MESSAGES = 100;
 export const MAX_AGENT_CONVERSATIONS = 20;
 export const MAX_AGENT_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_AGENT_IMAGE_TOTAL_BYTES = 30 * 1024 * 1024;
+export const AGENT_CONFIRM_TIMEOUT_MS = 60_000;
+export const AGENT_CONFIRM_TIMEOUT_MESSAGE =
+  "确认请求超过 60 秒，已停止本地等待。远端任务可能仍在继续，请先检查画布再重试，避免重复计费。";
 
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
@@ -103,12 +106,23 @@ export type AgentOperation =
       aspectRatio?: string;
       duration?: string;
       resolution?: string;
+      adjustments?: string[];
     };
 
 export type AgentDangerousOperation = Extract<
   AgentOperation,
   { type: "delete_node" | "generate_content" }
 >;
+
+export type AgentPendingConfirmation = {
+  messageId: string;
+  operation: AgentDangerousOperation;
+};
+
+export function normalizeAgentModelId(mode: ComposerMode, model: string) {
+  const prefix = `${mode}:`;
+  return model.startsWith(prefix) ? model.slice(prefix.length) : model;
+}
 
 export type AgentRequest = {
   messages: Array<{ role: AgentMessageRole; content: string }>;
@@ -203,7 +217,9 @@ function parseOperation(value: unknown): AgentOperation | null {
 
   if (type === "generate_content") {
     const mode = readMode(value.mode);
-    const model = readString(value.model);
+    const model = mode
+      ? normalizeAgentModelId(mode, readString(value.model))
+      : "";
     const prompt = readString(value.prompt).trim();
     if (!mode || !model || !prompt) return null;
     return {
@@ -275,6 +291,67 @@ export function isDangerousAgentOperation(
   operation: AgentOperation,
 ): operation is AgentDangerousOperation {
   return operation.type === "delete_node" || operation.type === "generate_content";
+}
+
+export function getPendingAgentConfirmations(
+  messages: AgentMessage[],
+): AgentPendingConfirmation[] {
+  return messages.flatMap((message) =>
+    message.action?.status === "pending" && message.action.operation
+      ? [{ messageId: message.id, operation: message.action.operation }]
+      : [],
+  );
+}
+
+export function expireIncompleteAgentConfirmations(messages: AgentMessage[]) {
+  let changed = false;
+  const normalized = messages.map((message) => {
+    if (message.action?.status !== "pending" || message.action.operation) {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      details: ["确认内容已失效，请重新向 Agent 提出要执行的操作。"],
+      action: { ...message.action, status: "expired" as const },
+    };
+  });
+  return changed ? normalized : messages;
+}
+
+export async function runAgentConfirmationWithTimeout<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = AGENT_CONFIRM_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      reject(new Error(AGENT_CONFIRM_TIMEOUT_MESSAGE));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([task(controller.signal), timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function runAgentConfirmationsSequentially<T>(
+  confirmations: T[],
+  execute: (confirmation: T, index: number, total: number) => Promise<boolean>,
+) {
+  for (let index = 0; index < confirmations.length; index += 1) {
+    const succeeded = await execute(
+      confirmations[index],
+      index,
+      confirmations.length,
+    );
+    if (!succeeded) return { completed: index, failedIndex: index };
+  }
+  return { completed: confirmations.length };
 }
 
 export function serializeAgentMessages(messages: AgentMessage[]): string {
@@ -466,7 +543,17 @@ export function parseAgentConversationStore(
 
 export function describeDangerousOperation(operation: AgentDangerousOperation) {
   if (operation.type === "delete_node") return `删除节点 ${operation.nodeId}`;
-  return `使用 ${operation.model} 生成${
+  const parameters =
+    operation.mode === "image"
+      ? [
+          operation.aspectRatio ? `比例 ${operation.aspectRatio}` : "",
+          operation.resolution ? `分辨率 ${operation.resolution}` : "",
+          ...(operation.adjustments ?? []).map((item) =>
+            item.replace(/[。；]+$/, ""),
+          ),
+        ].filter(Boolean)
+      : [];
+  return `使用 ${normalizeAgentModelId(operation.mode, operation.model)} 生成${
     operation.mode === "text" ? "文本" : operation.mode === "image" ? "图片" : "视频"
-  }：${operation.prompt}`;
+  }${parameters.length ? `（${parameters.join("；")}）` : ""}：${operation.prompt}`;
 }

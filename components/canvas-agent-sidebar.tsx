@@ -20,8 +20,12 @@ import {
   createAgentConversation,
   createAgentConversationTitle,
   describeDangerousOperation,
+  expireIncompleteAgentConfirmations,
+  getPendingAgentConfirmations,
   isDangerousAgentOperation,
   parseAgentConversationStore,
+  runAgentConfirmationsSequentially,
+  runAgentConfirmationWithTimeout,
   serializeAgentConversationStore,
   type AgentCanvasSnapshot,
   type AgentConversation,
@@ -53,7 +57,10 @@ type CanvasAgentSidebarProps = {
   onClose: () => void;
   onClearFocus: () => void;
   onApplyOperations: (operations: AgentOperation[]) => string[];
-  onConfirmOperation: (operation: AgentDangerousOperation) => Promise<string>;
+  onConfirmOperation: (
+    operation: AgentDangerousOperation,
+    signal: AbortSignal,
+  ) => Promise<string>;
   onReadImages: (nodeIds: string[]) => Promise<AgentInspectedImage[]>;
 };
 
@@ -84,6 +91,11 @@ export function CanvasAgentSidebar({
   const [isHydrated, setIsHydrated] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
+  const [batchSummary, setBatchSummary] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -94,6 +106,11 @@ export function CanvasAgentSidebar({
     () => activeConversation?.messages ?? [],
     [activeConversation],
   );
+  const pendingConfirmations = useMemo(
+    () => getPendingAgentConfirmations(messages),
+    [messages],
+  );
+  const isConfirmationBusy = Boolean(confirmingId) || Boolean(batchProgress);
   const focusedNode = focusedNodeId
     ? snapshot.nodes.find((node) => node.id === focusedNodeId)
     : undefined;
@@ -140,6 +157,17 @@ export function CanvasAgentSidebar({
     }));
   }
 
+  useEffect(() => {
+    if (!activeConversation) return;
+    const normalizedMessages = expireIncompleteAgentConfirmations(messages);
+    if (normalizedMessages === messages) return;
+    updateConversation(activeConversation.id, (conversation) => ({
+      ...conversation,
+      messages: normalizedMessages,
+      updatedAt: Date.now(),
+    }));
+  }, [activeConversation, messages]);
+
   async function requestAgent(
     history: AgentMessage[],
     phase: AgentConversationPhase,
@@ -165,7 +193,7 @@ export function CanvasAgentSidebar({
 
   async function submit() {
     const content = draft.trim();
-    if (!content || isSending || !activeConversation) return;
+    if (!content || isSending || isConfirmationBusy || !activeConversation) return;
     const conversationId = activeConversation.id;
     const phase = activeConversation.phase;
     const userMessage: AgentMessage = {
@@ -248,20 +276,40 @@ export function CanvasAgentSidebar({
     }
   }
 
-  async function confirm(message: AgentMessage) {
-    if (
-      !activeConversation ||
-      !message.action?.operation ||
-      message.action.status !== "pending"
-    ) return;
-    const conversationId = activeConversation.id;
-    setConfirmingId(message.id);
+  function expireConfirmation(conversationId: string, messageId: string) {
+    updateConversation(conversationId, (conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId && message.action
+          ? {
+              ...message,
+              details: ["确认内容已失效，请重新向 Agent 提出要执行的操作。"],
+              action: {
+                ...message.action,
+                status: "expired",
+                operation: undefined,
+              },
+            }
+          : message,
+      ),
+      updatedAt: Date.now(),
+    }));
+  }
+
+  async function executeConfirmation(
+    conversationId: string,
+    messageId: string,
+    operation: AgentDangerousOperation,
+  ) {
+    setConfirmingId(messageId);
     try {
-      const detail = await onConfirmOperation(message.action.operation);
+      const detail = await runAgentConfirmationWithTimeout((signal) =>
+        onConfirmOperation(operation, signal),
+      );
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         messages: conversation.messages.map((item) =>
-          item.id === message.id
+          item.id === messageId
             ? {
                 ...item,
                 details: [detail],
@@ -271,22 +319,71 @@ export function CanvasAgentSidebar({
         ),
         updatedAt: Date.now(),
       }));
+      return { succeeded: true as const };
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "操作执行失败。";
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         messages: conversation.messages.map((item) =>
-          item.id === message.id
+          item.id === messageId
             ? {
                 ...item,
-                details: [error instanceof Error ? error.message : "操作执行失败。"],
+                details: [errorMessage],
               }
             : item,
         ),
         updatedAt: Date.now(),
       }));
+      return { succeeded: false as const, error: errorMessage };
     } finally {
-      setConfirmingId(null);
+      setConfirmingId((current) => (current === messageId ? null : current));
     }
+  }
+
+  async function confirm(message: AgentMessage) {
+    if (!activeConversation || message.action?.status !== "pending") return;
+    if (!message.action.operation) {
+      expireConfirmation(activeConversation.id, message.id);
+      return;
+    }
+    setBatchSummary("");
+    await executeConfirmation(
+      activeConversation.id,
+      message.id,
+      message.action.operation,
+    );
+  }
+
+  async function confirmAll() {
+    if (!activeConversation || isConfirmationBusy || pendingConfirmations.length < 2) {
+      return;
+    }
+    const conversationId = activeConversation.id;
+    const confirmations = [...pendingConfirmations];
+    setBatchSummary("");
+    setBatchProgress({ current: 1, total: confirmations.length });
+
+    let batchFailureDetail = "";
+    const result = await runAgentConfirmationsSequentially(
+      confirmations,
+      async (confirmation, index, total) => {
+        setBatchProgress({ current: index + 1, total });
+        const outcome = await executeConfirmation(
+          conversationId,
+          confirmation.messageId,
+          confirmation.operation,
+        );
+        if (!outcome.succeeded) batchFailureDetail = outcome.error;
+        return outcome.succeeded;
+      },
+    );
+    setBatchSummary(
+      result.failedIndex === undefined
+        ? `已确认全部 ${confirmations.length} 项操作。`
+        : `已确认 ${result.completed}/${confirmations.length} 项，第 ${result.failedIndex + 1} 项失败，后续操作未执行。原因：${batchFailureDetail}`,
+    );
+    setBatchProgress(null);
   }
 
   function cancel(messageId: string) {
@@ -303,7 +400,7 @@ export function CanvasAgentSidebar({
   }
 
   function startNewConversation() {
-    if (isSending || confirmingId) return;
+    if (isSending || isConfirmationBusy) return;
     if (activeConversation && !activeConversation.messages.length) {
       setIsHistoryOpen(false);
       inputRef.current?.focus();
@@ -319,22 +416,25 @@ export function CanvasAgentSidebar({
       ]),
     }));
     setDraft("");
+    setBatchSummary("");
     setIsHistoryOpen(false);
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }
 
   function selectConversation(conversationId: string) {
-    if (isSending || confirmingId) return;
+    if (isSending || isConfirmationBusy) return;
     setConversationStore((current) => ({
       ...current,
       activeConversationId: conversationId,
     }));
     setDraft("");
+    setBatchSummary("");
     setIsHistoryOpen(false);
   }
 
   function deleteConversation(conversationId: string) {
-    if (isSending || confirmingId) return;
+    if (isSending || isConfirmationBusy) return;
+    setBatchSummary("");
     setConversationStore((current) => {
       const remaining = current.conversations.filter(
         (conversation) => conversation.id !== conversationId,
@@ -392,7 +492,7 @@ export function CanvasAgentSidebar({
               <button
                 aria-label="Agent 历史对话"
                 className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900"
-                disabled={isSending || Boolean(confirmingId)}
+                disabled={isSending || isConfirmationBusy}
                 type="button"
                 onClick={() => setIsHistoryOpen((current) => !current)}
               >
@@ -401,7 +501,7 @@ export function CanvasAgentSidebar({
               <button
                 aria-label="新建 Agent 对话"
                 className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-30"
-                disabled={isSending || Boolean(confirmingId)}
+                disabled={isSending || isConfirmationBusy}
                 type="button"
                 onClick={startNewConversation}
               >
@@ -506,7 +606,7 @@ export function CanvasAgentSidebar({
                           <div className="flex gap-2">
                             <button
                               className="inline-flex h-8 items-center gap-1.5 rounded-full bg-zinc-900 px-3 text-xs text-white disabled:opacity-50"
-                              disabled={Boolean(confirmingId)}
+                              disabled={isConfirmationBusy}
                               type="button"
                               onClick={() => void confirm(message)}
                             >
@@ -519,7 +619,7 @@ export function CanvasAgentSidebar({
                             </button>
                             <button
                               className="inline-flex h-8 items-center gap-1.5 rounded-full bg-zinc-200 px-3 text-xs text-zinc-700"
-                              disabled={Boolean(confirmingId)}
+                              disabled={isConfirmationBusy}
                               type="button"
                               onClick={() => cancel(message.id)}
                             >
@@ -553,6 +653,38 @@ export function CanvasAgentSidebar({
           </div>
 
           <div className="shrink-0 border-t border-black/8 bg-white p-3.5">
+            {pendingConfirmations.length > 1 || batchProgress || batchSummary ? (
+              <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-4 text-amber-900">
+                {pendingConfirmations.length > 1 || batchProgress ? (
+                  <button
+                    aria-label={`全部确认 ${batchProgress?.total ?? pendingConfirmations.length} 项操作`}
+                    className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-full bg-zinc-900 px-3 text-xs font-medium text-white disabled:opacity-60"
+                    disabled={isConfirmationBusy}
+                    type="button"
+                    onClick={() => void confirmAll()}
+                  >
+                    {batchProgress ? (
+                      <>
+                        <LoaderCircle className="animate-spin" aria-hidden="true" size={13} />
+                        正在确认 {batchProgress.current}/{batchProgress.total}
+                      </>
+                    ) : (
+                      <>
+                        <Check aria-hidden="true" size={13} />
+                        全部确认（{pendingConfirmations.length}）
+                      </>
+                    )}
+                  </button>
+                ) : null}
+                {batchSummary ? (
+                  <p aria-live="polite" className="mt-2 mb-0">
+                    {batchSummary}
+                  </p>
+                ) : (
+                  <p className="mt-2 mb-0">将按消息顺序逐项执行，遇到失败即停止。</p>
+                )}
+              </div>
+            ) : null}
             <div className="relative rounded-2xl border border-black/10 bg-zinc-50 px-3 py-2 pr-12 focus-within:border-zinc-400">
               <textarea
                 ref={inputRef}
@@ -565,6 +697,7 @@ export function CanvasAgentSidebar({
                 }
                 rows={2}
                 value={draft}
+                disabled={isConfirmationBusy}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -576,7 +709,7 @@ export function CanvasAgentSidebar({
               <button
                 aria-label="发送给画布 Agent"
                 className="absolute right-2.5 bottom-2.5 grid h-8 w-8 place-items-center rounded-full bg-zinc-900 text-white disabled:opacity-30"
-                disabled={!draft.trim() || isSending}
+                disabled={!draft.trim() || isSending || isConfirmationBusy}
                 type="button"
                 onClick={() => void submit()}
               >
