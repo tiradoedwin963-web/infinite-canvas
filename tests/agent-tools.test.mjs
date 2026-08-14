@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { normalizeAgentImageOperation } from "../app/ai/agent-tools.ts";
+import {
+  normalizeAgentImageOperation,
+  normalizeAgentStoryAnalysisOperation,
+  normalizeAgentStoryAssetBatchOperation,
+  normalizeAgentStoryWorkflowOperation,
+} from "../app/ai/agent-tools.ts";
 import { MODEL_CONFIGS } from "../app/ai/models.ts";
 
 function imageOperation(overrides = {}) {
@@ -64,6 +69,77 @@ test("rejects unknown image models instead of silently changing models", () => {
   );
 });
 
+test("normalizes short-drama defaults and unsupported generation parameters", () => {
+  const normalized = normalizeAgentStoryWorkflowOperation({
+    type: "create_story_workflow",
+    ref: "story-1",
+    title: "夜班电梯",
+    globalContext: "统一角色和场景",
+    imageModel: "",
+    videoModel: "",
+    aspectRatio: "2:3",
+    imageResolution: "3K",
+    videoResolution: "900p",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [{
+      ref: "shot-01",
+      title: "停电",
+      script: "灯灭了。",
+      imagePrompt: "电梯内静态关键帧",
+      videoPrompt: "灯光熄灭，缓慢推镜",
+      duration: "7",
+      referenceNodeIds: [],
+    }],
+  });
+  assert.equal(normalized.imageModel, "gemini-3-pro-image-preview");
+  assert.equal(normalized.videoModel, "doubao-seedance-1-5-pro-251215");
+  assert.equal(normalized.aspectRatio, "9:16");
+  assert.equal(normalized.imageResolution, "2K");
+  assert.equal(normalized.videoResolution, "720p");
+  assert.equal(normalized.shots[0].duration, "5");
+  assert.equal(normalized.adjustments.length, 3);
+});
+
+test("normalizes story analysis and asset image defaults", () => {
+  const analysis = normalizeAgentStoryAnalysisOperation({
+    type: "create_story_analysis",
+    ref: "story",
+    title: "测试",
+    analysis: {
+      genre: "都市",
+      theme: "成长",
+      audience: "青年",
+      emotion: "振奋",
+      estimatedDuration: "60 秒",
+    },
+    projectAspectRatio: "2:3",
+    imageModel: "",
+  });
+  assert.equal(analysis.imageModel, "gemini-3-pro-image-preview");
+  assert.equal(analysis.projectAspectRatio, "3:4");
+
+  const batch = normalizeAgentStoryAssetBatchOperation({
+    type: "create_story_asset_batch",
+    storyId: "story-id",
+    assetKind: "prop",
+    chunkIndex: 0,
+    isFinal: true,
+    assets: [{
+      ref: "prop-01",
+      name: "雨伞",
+      description: "红色长柄伞",
+      reason: "多次出现",
+      occurrences: ["第一场"],
+      imagePrompt: "干净背景上的红伞",
+      aspectRatio: "",
+      resolution: "3K",
+    }],
+  });
+  assert.equal(batch.assets[0].aspectRatio, "1:1");
+  assert.equal(batch.assets[0].resolution, "2K");
+});
+
 test("keeps the tool manual aligned with every configured image model", async () => {
   const manual = await readFile(new URL("../tools.md", import.meta.url), "utf8");
   for (const model of MODEL_CONFIGS.image) {
@@ -77,4 +153,25 @@ test("keeps the tool manual aligned with every configured image model", async ()
     assert.match(manual, new RegExp(ratio.replace(":", "\\:")));
   }
   assert.match(manual, /最多使用 5 张参考图/);
+});
+
+test("keeps the workflow manual aligned with the default image and video models", async () => {
+  const manual = await readFile(new URL("../workflow-tools.md", import.meta.url), "utf8");
+  assert.match(manual, /create_story_workflow/);
+  assert.match(manual, /run_story_workflow/);
+  assert.match(manual, /gemini-3-pro-image-preview/);
+  assert.match(manual, /doubao-seedance-1-5-pro-251215/);
+  assert.match(manual, /每批最多 8 个分镜/);
+  assert.match(manual, /同一响应/);
+});
+
+test("documents the complete asset planning rules", async () => {
+  const manual = await readFile(new URL("../story-asset-tools.md", import.meta.url), "utf8");
+  assert.match(manual, /create_story_analysis/);
+  assert.match(manual, /create_story_asset_batch/);
+  assert.match(manual, /run_story_assets/);
+  assert.match(manual, /正面全身.*左侧面全身.*右侧面全身/s);
+  assert.match(manual, /每一次场景出现都建立独立资产/);
+  assert.match(manual, /品牌商品.*汽车/);
+  assert.match(manual, /2K/);
 });

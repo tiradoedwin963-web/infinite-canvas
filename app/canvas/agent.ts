@@ -34,6 +34,7 @@ export function createAgentCanvasSnapshot(
   viewportSize: { width: number; height: number },
 ): AgentCanvasSnapshot {
   return {
+    mode: "creation",
     viewport: { ...viewport, ...viewportSize },
     nodes: graph.nodes.map((node) => {
       const size = getNodeSize(node);
@@ -107,6 +108,17 @@ export function applyAgentOperations(
   const results: AgentOperationResult[] = [];
 
   for (const operation of operations) {
+    if (
+      operation.type === "create_story_workflow" ||
+      operation.type === "run_story_workflow"
+    ) {
+      results.push({
+        operation,
+        applied: false,
+        message: "短剧工作流操作不能在创作画布执行。",
+      });
+      continue;
+    }
     if (operation.type === "delete_node" || operation.type === "generate_content") {
       results.push({ operation, applied: false, message: "此操作需要用户确认。" });
       continue;

@@ -1,9 +1,12 @@
 import {
   normalizeAgentModelId,
+  type AgentCreateStoryAnalysisOperation,
+  type AgentCreateStoryAssetBatchOperation,
+  type AgentCreateStoryWorkflowOperation,
   type AgentOperation,
   type AgentResponse,
 } from "./agent.ts";
-import { getModelConfig } from "./models.ts";
+import { DEFAULT_MODEL_BY_MODE, getModelConfig } from "./models.ts";
 
 function parseRatio(value: string) {
   const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
@@ -124,7 +127,128 @@ export function normalizeAgentImageResponse(response: AgentResponse): AgentRespo
     operations: response.operations.map((operation) =>
       operation.type === "generate_content"
         ? normalizeAgentImageOperation(operation)
+        : operation.type === "create_story_analysis"
+          ? normalizeAgentStoryAnalysisOperation(operation)
+        : operation.type === "create_story_asset_batch"
+          ? normalizeAgentStoryAssetBatchOperation(operation)
+        : operation.type === "create_story_workflow"
+          ? normalizeAgentStoryWorkflowOperation(operation)
         : operation,
     ),
+  };
+}
+
+export function normalizeAgentStoryAnalysisOperation(
+  operation: AgentCreateStoryAnalysisOperation,
+): AgentCreateStoryAnalysisOperation {
+  const imageModel = operation.imageModel || DEFAULT_MODEL_BY_MODE.image;
+  const model = getModelConfig("image", imageModel);
+  if (!model) throw new Error(`Agent 选择了未知的图片模型 ${imageModel}。`);
+  const requestedRatio = operation.projectAspectRatio || "9:16";
+  const projectAspectRatio = closestRatio(requestedRatio, model.aspectRatios);
+  const adjustments = requestedRatio === projectAspectRatio
+    ? []
+    : [`短剧比例由 ${requestedRatio} 调整为 ${projectAspectRatio}。`];
+  return {
+    ...operation,
+    imageModel,
+    projectAspectRatio,
+    ...(adjustments.length ? { adjustments } : {}),
+  };
+}
+
+export function normalizeAgentStoryAssetBatchOperation(
+  operation: AgentCreateStoryAssetBatchOperation,
+): AgentCreateStoryAssetBatchOperation {
+  const model = getModelConfig("image", DEFAULT_MODEL_BY_MODE.image)!;
+  const adjustments: string[] = [];
+  const assets = operation.assets.map((asset) => {
+    const requestedRatio = asset.aspectRatio ||
+      (operation.assetKind === "character"
+        ? "16:9"
+        : operation.assetKind === "prop"
+          ? "1:1"
+          : "");
+    const aspectRatio = requestedRatio
+      ? closestRatio(requestedRatio, model.aspectRatios)
+      : "";
+    const resolution = closestResolution(
+      asset.resolution || "2K",
+      model.resolutions,
+      "2K",
+    );
+    if (requestedRatio !== aspectRatio) {
+      adjustments.push(`${asset.name} 比例由 ${requestedRatio} 调整为 ${aspectRatio}。`);
+    }
+    if (asset.resolution && asset.resolution !== resolution) {
+      adjustments.push(`${asset.name} 分辨率由 ${asset.resolution} 调整为 ${resolution}。`);
+    }
+    return { ...asset, aspectRatio, resolution };
+  });
+  return {
+    ...operation,
+    assets,
+    ...(adjustments.length ? { adjustments } : {}),
+  };
+}
+
+export function normalizeAgentStoryWorkflowOperation(
+  operation: AgentCreateStoryWorkflowOperation,
+): AgentCreateStoryWorkflowOperation {
+  const imageModel = operation.imageModel || DEFAULT_MODEL_BY_MODE.image;
+  const videoModel = operation.videoModel || DEFAULT_MODEL_BY_MODE.video;
+  const image = getModelConfig("image", imageModel);
+  const video = getModelConfig("video", videoModel);
+  if (!image) throw new Error(`Agent 选择了未知的图片模型 ${imageModel}。`);
+  if (!video) throw new Error(`Agent 选择了未知的视频模型 ${videoModel}。`);
+
+  const requestedRatio = operation.aspectRatio || "9:16";
+  const supportedRatios = image.aspectRatios.filter((ratio) =>
+    video.aspectRatios.includes(ratio as (typeof video.aspectRatios)[number]),
+  );
+  const aspectRatio = closestRatio(requestedRatio, supportedRatios);
+  const imageFallback = image.defaultResolution ?? image.resolutions[0];
+  const videoFallback = video.defaultResolution ?? video.resolutions[0];
+  const imageResolution = closestResolution(
+    operation.imageResolution || imageFallback,
+    image.resolutions,
+    imageFallback,
+  );
+  const videoResolution = closestResolution(
+    operation.videoResolution || videoFallback,
+    video.resolutions,
+    videoFallback,
+  );
+  const adjustments: string[] = [];
+  if (requestedRatio !== aspectRatio) {
+    adjustments.push(`短剧比例由 ${requestedRatio} 调整为 ${aspectRatio}。`);
+  }
+  if (operation.imageResolution && operation.imageResolution !== imageResolution) {
+    adjustments.push(
+      `图片分辨率由 ${operation.imageResolution} 调整为 ${imageResolution}。`,
+    );
+  }
+  if (operation.videoResolution && operation.videoResolution !== videoResolution) {
+    adjustments.push(
+      `视频分辨率由 ${operation.videoResolution} 调整为 ${videoResolution}。`,
+    );
+  }
+
+  return {
+    ...operation,
+    imageModel,
+    videoModel,
+    aspectRatio,
+    imageResolution,
+    videoResolution,
+    shots: operation.shots.map((shot) => ({
+      ...shot,
+      duration: video.durations.includes(
+        shot.duration as (typeof video.durations)[number],
+      )
+        ? shot.duration
+        : video.durations[0],
+    })),
+    ...(adjustments.length ? { adjustments } : {}),
   };
 }

@@ -7,7 +7,9 @@ import {
   createConnectedScheduler,
   createWorkflowNode,
   createWorkflowRun,
+  createStoryWorkflow,
   emptyWorkflowGraph,
+  fitWorkflowImageNode,
   moveWorkflowNodes,
   parseWorkflowGraph,
   readWorkflowInputs,
@@ -35,6 +37,43 @@ function scheduler(id = "scheduler") {
     ...schedulerDefaults("image"),
     prompt: "节点提示词",
     error: "",
+  };
+}
+
+function storyOperation(overrides = {}) {
+  return {
+    type: "create_story_workflow",
+    ref: "story-1",
+    title: "夜班电梯",
+    globalContext: "角色造型、场景光线和画面风格必须统一。",
+    imageModel: "gemini-3-pro-image-preview",
+    videoModel: "doubao-seedance-1-5-pro-251215",
+    aspectRatio: "9:16",
+    imageResolution: "1K",
+    videoResolution: "720p",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [
+      {
+        ref: "shot-01",
+        title: "停电",
+        script: "灯灭了。",
+        imagePrompt: "电梯内停电瞬间的静态关键帧",
+        videoPrompt: "灯光熄灭，缓慢推镜，角色外观不变",
+        duration: "5",
+        referenceNodeIds: [],
+      },
+      {
+        ref: "shot-02",
+        title: "来电",
+        script: "灯又亮了。",
+        imagePrompt: "电梯重新亮起的静态关键帧",
+        videoPrompt: "灯光闪烁后亮起，固定镜头，服装不变",
+        duration: "10",
+        referenceNodeIds: [],
+      },
+    ],
+    ...overrides,
   };
 }
 
@@ -222,9 +261,13 @@ test("uses actual dimensions for fixed right-out and left-in edges and group mov
 });
 
 test("keeps workflow image and video nodes proportional while text remains freeform", () => {
-  const image = { ...source("image", "image"), width: 300, height: 200 };
-  const resizedImage = resizedWorkflowNodeBounds(image, "south-east", { x: 600, y: 250 });
-  assert.equal(resizedImage.width / resizedImage.height, 1.5);
+  const image = { ...source("image", "image"), width: 162, height: 330 };
+  const resizedImage = resizedWorkflowNodeBounds(image, "south-east", { x: 324, y: 618 });
+  assert.equal(resizedImage.width / (resizedImage.height - 42), 9 / 16);
+  assert.deepEqual(
+    { width: resizedImage.width, height: resizedImage.height },
+    { width: 324, height: 618 },
+  );
   const resizedText = resizedWorkflowNodeBounds(
     { ...source("text", "text"), width: 300, height: 200 },
     "south-east",
@@ -234,4 +277,152 @@ test("keeps workflow image and video nodes proportional while text remains freef
     { width: resizedText.width, height: resizedText.height },
     { width: 600, height: 250 },
   );
+});
+
+test("fits generated and imported image nodes to their natural ratios", () => {
+  const nodes = [
+    { ...source("square", "image"), x: 0, y: 0 },
+    { ...source("portrait", "image"), x: 400, y: 0 },
+    {
+      id: "landscape",
+      x: 800,
+      y: 0,
+      type: "result",
+      kind: "image",
+      schedulerId: "scheduler",
+      text: "",
+      model: "gemini-3-pro-image-preview",
+      status: "success",
+      progress: "",
+      error: "",
+      resultUrl: "https://example.com/landscape.png",
+    },
+  ];
+  let graph = { version: 1, nodes, edges: [] };
+  graph = fitWorkflowImageNode(graph, "square", 1000, 1000);
+  graph = fitWorkflowImageNode(graph, "portrait", 900, 1600);
+  graph = fitWorkflowImageNode(graph, "landscape", 1600, 900);
+  const square = graph.nodes.find((node) => node.id === "square");
+  const portrait = graph.nodes.find((node) => node.id === "portrait");
+  const landscape = graph.nodes.find((node) => node.id === "landscape");
+  assert.deepEqual(
+    { x: square.x, y: square.y, width: square.width, height: square.height },
+    { x: 0, y: -65, width: 288, height: 330 },
+  );
+  assert.deepEqual(
+    { x: portrait.x, y: portrait.y, width: portrait.width, height: portrait.height },
+    { x: 463, y: -65, width: 162, height: 330 },
+  );
+  assert.deepEqual(
+    { x: landscape.x, y: landscape.y, width: landscape.width, height: landscape.height },
+    { x: 800, y: -2, width: 288, height: 204 },
+  );
+  assert.equal(portrait.width / (portrait.height - 42), 9 / 16);
+  assert.equal(landscape.width / (landscape.height - 42), 16 / 9);
+});
+
+test("keeps explicit image sizes and rejects invalid or non-image fit requests", () => {
+  const explicit = { ...source("explicit", "image"), width: 400, height: 442 };
+  const video = source("video", "video");
+  const graph = { version: 1, nodes: [explicit, video, source("text", "text")], edges: [] };
+  assert.equal(fitWorkflowImageNode(graph, "explicit", 1000, 1000), graph);
+  assert.equal(fitWorkflowImageNode(graph, "video", 1920, 1080), graph);
+  assert.equal(fitWorkflowImageNode(graph, "text", 1000, 1000), graph);
+  assert.equal(fitWorkflowImageNode(graph, "missing", 1000, 1000), graph);
+  assert.equal(fitWorkflowImageNode(graph, "explicit", 0, 1000), graph);
+  assert.equal(fitWorkflowImageNode(graph, "explicit", Number.NaN, 1000), graph);
+});
+
+test("keeps extreme image ratios natural while applying preview edge limits", () => {
+  const graph = { version: 1, nodes: [source("panorama", "image")], edges: [] };
+  const fitted = fitWorkflowImageNode(graph, "panorama", 1000, 100);
+  const node = fitted.nodes[0];
+  assert.equal(node.width, 960);
+  assert.equal(node.height, 138);
+  assert.equal(node.width / (node.height - 42), 10);
+
+  const minimum = resizedWorkflowNodeBounds(
+    { ...source("portrait", "image"), width: 162, height: 330 },
+    "south-east",
+    { x: 1, y: 1 },
+  );
+  assert.equal(minimum.width, 96);
+  assert.ok(Math.abs(minimum.width / (minimum.height - 42) - 9 / 16) < 1e-10);
+  const maximum = resizedWorkflowNodeBounds(
+    { ...source("portrait", "image"), width: 162, height: 330 },
+    "south-east",
+    { x: 2000, y: 2000 },
+  );
+  assert.equal(maximum.height - 42, 1200);
+  assert.ok(Math.abs(maximum.width / (maximum.height - 42) - 9 / 16) < 1e-10);
+});
+
+test("creates an atomic short-drama graph to the right with reusable placeholders", () => {
+  const reference = {
+    ...source("reference", "image"),
+    x: 500,
+    assetId: "asset-reference",
+  };
+  const operation = storyOperation({
+    shots: storyOperation().shots.map((shot, index) => ({
+      ...shot,
+      referenceNodeIds: index === 0 ? [reference.id] : [],
+    })),
+  });
+  const created = createStoryWorkflow(
+    { version: 1, nodes: [reference], edges: [] },
+    operation,
+    ids(),
+  );
+  const storyNodes = created.graph.nodes.filter((node) => node.storyId === created.storyId);
+  assert.equal(storyNodes.length, 11);
+  assert.equal(created.graph.edges.length, 15);
+  assert.ok(storyNodes.every((node) => node.x > reference.x));
+  assert.deepEqual(
+    storyNodes.filter((node) => node.shotRef === "shot-01").map((node) => node.storyRole),
+    ["shot", "storyboard-scheduler", "storyboard", "video-scheduler", "clip"],
+  );
+  const imagePlaceholder = storyNodes.find((node) => node.storyRole === "storyboard");
+  const imageScheduler = storyNodes.find((node) => node.storyRole === "storyboard-scheduler");
+  const videoScheduler = storyNodes.find((node) => node.storyRole === "video-scheduler");
+  assert.equal(imagePlaceholder.status, "ready");
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === reference.id && edge.targetId === imageScheduler.id));
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === imagePlaceholder.id && edge.targetId === videoScheduler.id));
+  const sizedGraph = {
+    ...created.graph,
+    nodes: created.graph.nodes.map((node) =>
+      node.id === imagePlaceholder.id
+        ? { ...node, width: 162, height: 330 }
+        : node,
+    ),
+  };
+  const rerun = createWorkflowRun(sizedGraph, imageScheduler.id, 123, ids());
+  assert.deepEqual(rerun.resultIds, [imagePlaceholder.id]);
+  assert.equal(rerun.graph.nodes.find((node) => node.id === imagePlaceholder.id).status, "pending");
+  assert.equal(rerun.graph.nodes.find((node) => node.id === imagePlaceholder.id).width, undefined);
+  assert.equal(rerun.graph.nodes.find((node) => node.id === imagePlaceholder.id).height, undefined);
+  assert.equal(rerun.graph.nodes.filter((node) => node.type === "result").length, 4);
+  const restored = parseWorkflowGraph(JSON.stringify(created.graph));
+  assert.equal(restored.nodes.find((node) => node.id === imagePlaceholder.id).storyRole, "storyboard");
+});
+
+test("rejects incomplete, duplicate, and invalid-reference story plans without mutation", () => {
+  const graph = emptyWorkflowGraph();
+  assert.throws(
+    () => createStoryWorkflow(graph, storyOperation({ isFinal: false })),
+    /尚未完整/,
+  );
+  assert.throws(
+    () => createStoryWorkflow(graph, storyOperation({
+      shots: storyOperation().shots.map((shot) => ({ ...shot, ref: "same" })),
+    })),
+    /重复分镜/,
+  );
+  assert.throws(
+    () => createStoryWorkflow(graph, storyOperation({
+      shots: [{ ...storyOperation().shots[0], referenceNodeIds: ["missing"] }],
+    })),
+    /不可用的图片节点/,
+  );
+  assert.deepEqual(graph, emptyWorkflowGraph());
 });

@@ -3,6 +3,8 @@ import type { ComposerMode } from "./models.ts";
 export const AGENT_MODEL = "gpt-5.6-sol";
 export const AGENT_CHAT_STORAGE_KEY = "canvas-agent-chat-v1";
 export const AGENT_CONVERSATIONS_STORAGE_KEY = "canvas-agent-conversations-v2";
+export const WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY =
+  "workflow-agent-conversations-v1";
 export const MAX_AGENT_MESSAGES = 100;
 export const MAX_AGENT_CONVERSATIONS = 20;
 export const MAX_AGENT_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -10,6 +12,9 @@ export const MAX_AGENT_IMAGE_TOTAL_BYTES = 30 * 1024 * 1024;
 export const AGENT_CONFIRM_TIMEOUT_MS = 60_000;
 export const AGENT_CONFIRM_TIMEOUT_MESSAGE =
   "确认请求超过 60 秒，已停止本地等待。远端任务可能仍在继续，请先检查画布再重试，避免重复计费。";
+export const AGENT_REQUEST_TIMEOUT_MS = 120_000;
+export const AGENT_REQUEST_TIMEOUT_MESSAGE =
+  "画布 Agent 单次请求超过 120 秒，已停止等待。";
 
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
@@ -62,6 +67,7 @@ export type AgentCanvasNodeSnapshot = {
 };
 
 export type AgentCanvasSnapshot = {
+  mode: "creation";
   viewport: { x: number; y: number; scale: number; width: number; height: number };
   nodes: AgentCanvasNodeSnapshot[];
   edges: Array<{
@@ -71,6 +77,48 @@ export type AgentCanvasSnapshot = {
     targetSide: "left" | "right";
   }>;
 };
+
+export type AgentWorkflowNodeSnapshot = {
+  id: string;
+  type: "source" | "scheduler" | "result";
+  kind: ComposerMode;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label?: string;
+  storyId?: string;
+  shotRef?: string;
+  storyRole?: string;
+  assetRef?: string;
+  assetKind?: AgentStoryAssetKind;
+  assetRole?: AgentStoryAssetRole;
+  foundationRole?: AgentStoryFoundationRole;
+  assetStrategy?: "foundation-pair-v1";
+  foundationApprovedAt?: number;
+  storyVisualStyle?: string;
+  assetAvailable?: boolean;
+  planningStage?: AgentStoryAssetPlanningStage;
+  planningStatus?: AgentStoryAssetPlanningStatus;
+  planningChunkIndex?: number;
+  projectAspectRatio?: string;
+  storyImageModel?: string;
+  assetName?: string;
+  text: string;
+  prompt: string;
+  model: string;
+  status: string;
+  hasVisual: boolean;
+};
+
+export type AgentWorkflowSnapshot = {
+  mode: "workflow";
+  viewport: { x: number; y: number; scale: number; width: number; height: number };
+  nodes: AgentWorkflowNodeSnapshot[];
+  edges: Array<{ sourceId: string; targetId: string }>;
+};
+
+export type AgentSurfaceSnapshot = AgentCanvasSnapshot | AgentWorkflowSnapshot;
 
 export type AgentInspectedImage = {
   nodeId: string;
@@ -89,6 +137,102 @@ export type AgentCreateNodeOperation = {
   y: number;
 };
 
+export type AgentStoryShot = {
+  ref: string;
+  title: string;
+  script: string;
+  imagePrompt: string;
+  videoPrompt: string;
+  duration: string;
+  referenceNodeIds: string[];
+};
+
+export type AgentCreateStoryWorkflowOperation = {
+  type: "create_story_workflow";
+  ref: string;
+  title: string;
+  globalContext: string;
+  imageModel: string;
+  videoModel: string;
+  aspectRatio: string;
+  imageResolution: string;
+  videoResolution: string;
+  chunkIndex: number;
+  isFinal: boolean;
+  shots: AgentStoryShot[];
+  adjustments?: string[];
+};
+
+export type AgentRunStoryWorkflowOperation = {
+  type: "run_story_workflow";
+  storyId: string;
+  shotRefs: string[];
+};
+
+export type AgentStoryAssetKind = "character" | "scene" | "prop";
+export type AgentStoryAssetRole = "spec" | "scheduler" | "result";
+export type AgentStoryAssetPlanningStage =
+  | "character"
+  | "scene"
+  | "prop"
+  | "complete";
+export type AgentStoryAssetPlanningStatus =
+  | "planning"
+  | "awaiting-foundation-generation"
+  | "awaiting-foundation-approval"
+  | "stopped"
+  | "failed"
+  | "complete";
+
+export type AgentStoryAnalysis = {
+  genre: string;
+  theme: string;
+  audience: string;
+  emotion: string;
+  estimatedDuration: string;
+  visualStyle?: string;
+};
+
+export type AgentStoryFoundationRole = "lead" | "support";
+
+export type AgentCreateStoryAnalysisOperation = {
+  type: "create_story_analysis";
+  ref: string;
+  title: string;
+  analysis: AgentStoryAnalysis;
+  projectAspectRatio: string;
+  imageModel: string;
+  adjustments?: string[];
+};
+
+export type AgentStoryAsset = {
+  ref: string;
+  name: string;
+  description: string;
+  reason: string;
+  occurrences: string[];
+  imagePrompt: string;
+  aspectRatio: string;
+  resolution: string;
+  foundationRole?: AgentStoryFoundationRole;
+};
+
+export type AgentCreateStoryAssetBatchOperation = {
+  type: "create_story_asset_batch";
+  storyId: string;
+  assetKind: AgentStoryAssetKind;
+  chunkIndex: number;
+  isFinal: boolean;
+  assets: AgentStoryAsset[];
+  adjustments?: string[];
+};
+
+export type AgentRunStoryAssetsOperation = {
+  type: "run_story_assets";
+  storyId: string;
+  assetRefs: string[];
+};
+
 export type AgentOperation =
   | AgentCreateNodeOperation
   | { type: "update_node"; nodeId: string; text?: string; prompt?: string }
@@ -97,6 +241,11 @@ export type AgentOperation =
   | { type: "connect_nodes"; sourceId: string; targetId: string }
   | { type: "disconnect_nodes"; sourceId: string; targetId: string }
   | { type: "delete_node"; nodeId: string }
+  | AgentCreateStoryAnalysisOperation
+  | AgentCreateStoryAssetBatchOperation
+  | AgentRunStoryAssetsOperation
+  | AgentCreateStoryWorkflowOperation
+  | AgentRunStoryWorkflowOperation
   | {
       type: "generate_content";
       mode: ComposerMode;
@@ -111,7 +260,13 @@ export type AgentOperation =
 
 export type AgentDangerousOperation = Extract<
   AgentOperation,
-  { type: "delete_node" | "generate_content" }
+  {
+    type:
+      | "delete_node"
+      | "generate_content"
+      | "run_story_workflow"
+      | "run_story_assets";
+  }
 >;
 
 export type AgentPendingConfirmation = {
@@ -126,13 +281,14 @@ export function normalizeAgentModelId(mode: ComposerMode, model: string) {
 
 export type AgentRequest = {
   messages: Array<{ role: AgentMessageRole; content: string }>;
-  canvas: AgentCanvasSnapshot;
+  canvas: AgentSurfaceSnapshot;
   phase: AgentConversationPhase;
   focusedNodeId?: string;
   inspectedImages?: AgentInspectedImage[];
 };
 
 export type AgentResponse = {
+  progressSummary?: string;
   message: string;
   workflowState: AgentWorkflowState;
   inspectImageNodeIds: string[];
@@ -160,6 +316,105 @@ function readMode(value: unknown): ComposerMode | null {
 function readNodeIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function readBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readAssetKind(value: unknown): AgentStoryAssetKind | null {
+  return value === "character" || value === "scene" || value === "prop"
+    ? value
+    : null;
+}
+
+function readFoundationRole(value: unknown): AgentStoryFoundationRole | null {
+  return value === "lead" || value === "support" ? value : null;
+}
+
+function parseStoryAnalysis(value: unknown): AgentStoryAnalysis | null {
+  if (!isRecord(value)) return null;
+  const analysis = {
+    genre: readString(value.genre).trim(),
+    theme: readString(value.theme).trim(),
+    audience: readString(value.audience).trim(),
+    emotion: readString(value.emotion).trim(),
+    estimatedDuration: readString(
+      value.estimated_duration ?? value.estimatedDuration,
+    ).trim(),
+    visualStyle: readString(value.visual_style ?? value.visualStyle).trim(),
+  };
+  return [
+    analysis.genre,
+    analysis.theme,
+    analysis.audience,
+    analysis.emotion,
+    analysis.estimatedDuration,
+    analysis.visualStyle,
+  ].every(Boolean)
+    ? analysis
+    : null;
+}
+
+function parseStoryAssets(value: unknown, isFinal: boolean): AgentStoryAsset[] | null {
+  if (!Array.isArray(value) || value.length > 8 || (!value.length && !isFinal)) {
+    return null;
+  }
+  const assets = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const asset = {
+      ref: readString(item.ref).trim(),
+      name: readString(item.name).trim(),
+      description: readString(item.description).trim(),
+      reason: readString(item.reason).trim(),
+      occurrences: readNodeIds(item.occurrences).map((entry) => entry.trim()).filter(Boolean),
+      imagePrompt: readString(item.image_prompt ?? item.imagePrompt).trim(),
+      aspectRatio: readString(item.aspect_ratio ?? item.aspectRatio).trim(),
+      resolution: readString(item.resolution).trim(),
+      foundationRole: readFoundationRole(
+        item.foundation_role ?? item.foundationRole,
+      ) ?? undefined,
+    };
+    return asset.ref && asset.name && asset.description && asset.reason &&
+      asset.occurrences.length && asset.imagePrompt
+      ? asset
+      : null;
+  });
+  if (assets.some((asset) => asset === null)) return null;
+  const parsed = assets as AgentStoryAsset[];
+  return new Set(parsed.map((asset) => asset.ref)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function parseStoryShots(value: unknown): AgentStoryShot[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) return null;
+  const shots = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const ref = readString(item.ref).trim();
+    const title = readString(item.title).trim();
+    const script = readString(item.script).trim();
+    const imagePrompt = readString(item.image_prompt ?? item.imagePrompt).trim();
+    const videoPrompt = readString(item.video_prompt ?? item.videoPrompt).trim();
+    const duration = readString(item.duration).trim() || "5";
+    if (!ref || !title || !script || !imagePrompt || !videoPrompt) return null;
+    return {
+      ref,
+      title,
+      script,
+      imagePrompt,
+      videoPrompt,
+      duration,
+      referenceNodeIds: readNodeIds(
+        item.reference_node_ids ?? item.referenceNodeIds,
+      ),
+    };
+  });
+  if (shots.some((shot) => shot === null)) return null;
+  const parsed = shots as AgentStoryShot[];
+  return new Set(parsed.map((shot) => shot.ref)).size === parsed.length
+    ? parsed
+    : null;
 }
 
 function parseOperation(value: unknown): AgentOperation | null {
@@ -213,6 +468,106 @@ function parseOperation(value: unknown): AgentOperation | null {
   if (type === "delete_node") {
     const nodeId = readString(value.node_id ?? value.nodeId);
     return nodeId ? { type, nodeId } : null;
+  }
+
+  if (type === "create_story_analysis") {
+    const ref = readString(value.ref).trim();
+    const title = readString(value.title).trim();
+    const analysis = parseStoryAnalysis(value.analysis);
+    if (!ref || !title || !analysis) return null;
+    return {
+      type,
+      ref,
+      title,
+      analysis,
+      projectAspectRatio: readString(
+        value.project_aspect_ratio ?? value.projectAspectRatio,
+      ).trim(),
+      imageModel: readString(value.image_model ?? value.imageModel).trim(),
+    };
+  }
+
+  if (type === "create_story_asset_batch") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    const assetKind = readAssetKind(value.asset_kind ?? value.assetKind);
+    const chunkIndex = readFinite(value.chunk_index ?? value.chunkIndex);
+    const isFinal = readBoolean(value.is_final ?? value.isFinal);
+    const assets = isFinal === null ? null : parseStoryAssets(value.assets, isFinal);
+    if (
+      !storyId ||
+      !assetKind ||
+      chunkIndex === null ||
+      !Number.isInteger(chunkIndex) ||
+      chunkIndex < 0 ||
+      isFinal === null ||
+      !assets
+    ) {
+      return null;
+    }
+    return { type, storyId, assetKind, chunkIndex, isFinal, assets };
+  }
+
+  if (type === "run_story_assets") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    return storyId
+      ? {
+          type,
+          storyId,
+          assetRefs: readNodeIds(value.asset_refs ?? value.assetRefs),
+        }
+      : null;
+  }
+
+  if (type === "create_story_workflow") {
+    const ref = readString(value.ref).trim();
+    const title = readString(value.title).trim();
+    const globalContext = readString(
+      value.global_context ?? value.globalContext,
+    ).trim();
+    const chunkIndex = readFinite(value.chunk_index ?? value.chunkIndex);
+    const isFinal = readBoolean(value.is_final ?? value.isFinal);
+    const shots = parseStoryShots(value.shots);
+    if (
+      !ref ||
+      !title ||
+      !globalContext ||
+      chunkIndex === null ||
+      !Number.isInteger(chunkIndex) ||
+      chunkIndex < 0 ||
+      isFinal === null ||
+      !shots
+    ) {
+      return null;
+    }
+    return {
+      type,
+      ref,
+      title,
+      globalContext,
+      imageModel: readString(value.image_model ?? value.imageModel).trim(),
+      videoModel: readString(value.video_model ?? value.videoModel).trim(),
+      aspectRatio: readString(value.aspect_ratio ?? value.aspectRatio).trim(),
+      imageResolution: readString(
+        value.image_resolution ?? value.imageResolution,
+      ).trim(),
+      videoResolution: readString(
+        value.video_resolution ?? value.videoResolution,
+      ).trim(),
+      chunkIndex,
+      isFinal,
+      shots,
+    };
+  }
+
+  if (type === "run_story_workflow") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    return storyId
+      ? {
+          type,
+          storyId,
+          shotRefs: readNodeIds(value.shot_refs ?? value.shotRefs),
+        }
+      : null;
   }
 
   if (type === "generate_content") {
@@ -280,6 +635,13 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
     throw new Error("Agent 在需求澄清阶段不得执行画布操作。");
   }
   return {
+    ...(readString(value.progress_summary ?? value.progressSummary).trim()
+      ? {
+          progressSummary: readString(
+            value.progress_summary ?? value.progressSummary,
+          ).trim(),
+        }
+      : {}),
     message,
     workflowState,
     inspectImageNodeIds,
@@ -290,7 +652,45 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
 export function isDangerousAgentOperation(
   operation: AgentOperation,
 ): operation is AgentDangerousOperation {
-  return operation.type === "delete_node" || operation.type === "generate_content";
+  return (
+    operation.type === "delete_node" ||
+    operation.type === "generate_content" ||
+    operation.type === "run_story_workflow" ||
+    operation.type === "run_story_assets"
+  );
+}
+
+export function validateAgentOperationsForSurface(
+  mode: AgentSurfaceSnapshot["mode"],
+  operations: AgentOperation[],
+) {
+  const storyOperations = operations.filter(
+    (operation) =>
+      operation.type === "create_story_analysis" ||
+      operation.type === "create_story_asset_batch" ||
+      operation.type === "run_story_assets" ||
+      operation.type === "create_story_workflow" ||
+      operation.type === "run_story_workflow",
+  );
+  if (mode === "creation" && storyOperations.length) {
+    throw new Error("短剧工作流操作不能在创作画布执行。");
+  }
+  if (mode === "workflow" && storyOperations.length !== operations.length) {
+    throw new Error("普通创作画布操作不能在工作流画布执行。");
+  }
+  if (
+    operations.some((operation) =>
+      operation.type === "create_story_analysis" ||
+      operation.type === "create_story_asset_batch" ||
+      operation.type === "create_story_workflow",
+    ) &&
+    operations.some((operation) =>
+      operation.type === "run_story_assets" ||
+      operation.type === "run_story_workflow",
+    )
+  ) {
+    throw new Error("创建或规划操作和批量生成不能在同一响应中执行。");
+  }
 }
 
 export function getPendingAgentConfirmations(
@@ -336,6 +736,54 @@ export async function runAgentConfirmationWithTimeout<T>(
     return await Promise.race([task(controller.signal), timeout]);
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function runAgentRequestWithTimeout<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  parentSignal?: AbortSignal,
+  timeoutMs = AGENT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let rejectAbort: ((reason: unknown) => void) | undefined;
+  const abort = () => controller.abort(parentSignal?.reason);
+
+  if (parentSignal?.aborted) abort();
+  else parentSignal?.addEventListener("abort", abort, { once: true });
+
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        reject(
+          timedOut
+            ? new Error(AGENT_REQUEST_TIMEOUT_MESSAGE)
+            : controller.signal.reason,
+        );
+      },
+      { once: true },
+    );
+  });
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    if (controller.signal.aborted) {
+      rejectAbort?.(
+        timedOut
+          ? new Error(AGENT_REQUEST_TIMEOUT_MESSAGE)
+          : controller.signal.reason,
+      );
+    }
+    return await Promise.race([task(controller.signal), aborted]);
+  } finally {
+    clearTimeout(timeoutId);
+    parentSignal?.removeEventListener("abort", abort);
   }
 }
 
@@ -543,6 +991,20 @@ export function parseAgentConversationStore(
 
 export function describeDangerousOperation(operation: AgentDangerousOperation) {
   if (operation.type === "delete_node") return `删除节点 ${operation.nodeId}`;
+  if (operation.type === "run_story_workflow") {
+    return `批量生成短剧工作流 ${operation.storyId}${
+      operation.shotRefs.length
+        ? `（${operation.shotRefs.length} 个指定分镜）`
+        : "（全部分镜）"
+    }；同层任务将全部并行并可能产生多笔费用`;
+  }
+  if (operation.type === "run_story_assets") {
+    return `批量生成短剧资产 ${operation.storyId}${
+      operation.assetRefs.length
+        ? `（${operation.assetRefs.length} 个指定资产）`
+        : "（全部未完成资产）"
+    }；任务将并行提交并可能产生多笔费用`;
+  }
   const parameters =
     operation.mode === "image"
       ? [

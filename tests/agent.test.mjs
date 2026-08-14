@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AGENT_REQUEST_TIMEOUT_MESSAGE,
   createAgentConversation,
   createAgentConversationTitle,
   describeDangerousOperation,
@@ -12,8 +13,10 @@ import {
   parseAgentModelResponse,
   runAgentConfirmationsSequentially,
   runAgentConfirmationWithTimeout,
+  runAgentRequestWithTimeout,
   serializeAgentConversationStore,
   serializeAgentMessages,
+  validateAgentOperationsForSurface,
 } from "../app/ai/agent.ts";
 import {
   applyAgentOperations,
@@ -38,6 +41,7 @@ function textNode(id, overrides = {}) {
 
 test("parses the strict agent response and all operation names", () => {
   const response = parseAgentModelResponse(JSON.stringify({
+    progress_summary: "已读取剧本并整理安全操作。",
     message: "已经整理好了。",
     workflow_state: "active",
     inspect_image_node_ids: [],
@@ -58,9 +62,67 @@ test("parses the strict agent response and all operation names", () => {
         aspect_ratio: "1:1",
         resolution: "1K",
       },
+      {
+        type: "create_story_workflow",
+        ref: "story-1",
+        title: "夜班电梯",
+        global_context: "固定角色和电梯场景",
+        image_model: "gemini-3-pro-image-preview",
+        video_model: "doubao-seedance-1-5-pro-251215",
+        aspect_ratio: "9:16",
+        image_resolution: "1K",
+        video_resolution: "720p",
+        chunk_index: 0,
+        is_final: true,
+        shots: [{
+          ref: "shot-01",
+          title: "停电",
+          script: "灯灭了。",
+          image_prompt: "电梯内静态关键帧",
+          video_prompt: "灯光熄灭，缓慢推镜",
+          duration: "5",
+          reference_node_ids: ["old"],
+        }],
+      },
+      { type: "run_story_workflow", story_id: "actual-story-id", shot_refs: [] },
+      {
+        type: "create_story_analysis",
+        ref: "asset-story",
+        title: "资产剧",
+        analysis: {
+          genre: "都市",
+          theme: "成长",
+          audience: "青年用户",
+          emotion: "低落到振奋",
+          estimated_duration: "60 秒",
+          visual_style: "水粉笔触与柔和光影",
+        },
+        project_aspect_ratio: "9:16",
+        image_model: "gemini-3-pro-image-preview",
+      },
+      {
+        type: "create_story_asset_batch",
+        story_id: "actual-story-id",
+        asset_kind: "character",
+        chunk_index: 0,
+        is_final: true,
+        assets: [{
+          ref: "character-01",
+          name: "阿宁",
+          description: "黑色短发，蓝色外套",
+          reason: "主角",
+          occurrences: ["全剧"],
+          image_prompt: "人物三视图和四种表情",
+          aspect_ratio: "16:9",
+          resolution: "2K",
+          foundation_role: "lead",
+        }],
+      },
+      { type: "run_story_assets", story_id: "actual-story-id", asset_refs: ["character-01"] },
     ],
   }));
   assert.equal(response.message, "已经整理好了。");
+  assert.equal(response.progressSummary, "已读取剧本并整理安全操作。");
   assert.deepEqual(response.operations.map((operation) => operation.type), [
     "create_node",
     "update_node",
@@ -70,9 +132,18 @@ test("parses the strict agent response and all operation names", () => {
     "disconnect_nodes",
     "delete_node",
     "generate_content",
+    "create_story_workflow",
+    "run_story_workflow",
+    "create_story_analysis",
+    "create_story_asset_batch",
+    "run_story_assets",
   ]);
-  assert.equal(response.operations.filter(isDangerousAgentOperation).length, 2);
-  assert.equal(response.operations.at(-1).model, "gpt-image-2");
+  assert.equal(response.operations.filter(isDangerousAgentOperation).length, 4);
+  assert.equal(response.operations[8].shots[0].referenceNodeIds[0], "old");
+  assert.equal(response.operations.at(-2).assets[0].resolution, "2K");
+  assert.equal(response.operations.at(-3).analysis.visualStyle, "水粉笔触与柔和光影");
+  assert.equal(response.operations.at(-2).assets[0].foundationRole, "lead");
+  assert.match(describeDangerousOperation(response.operations.at(-1)), /资产/);
 });
 
 test("rejects unknown or malformed model operations without partial application", () => {
@@ -84,6 +155,135 @@ test("rejects unknown or malformed model operations without partial application"
   assert.throws(
     () => parseAgentModelResponse('{"message":"请确认？","workflow_state":"clarifying","operations":[{"type":"move_node","node_id":"a","x":1,"y":2}]}'),
     /澄清阶段/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse(JSON.stringify({
+      message: "重复分镜",
+      workflow_state: "active",
+      operations: [{
+        type: "create_story_workflow",
+        ref: "story-1",
+        title: "测试",
+        global_context: "设定",
+        chunk_index: 0,
+        is_final: true,
+        shots: Array.from({ length: 9 }, (_, index) => ({
+          ref: `shot-${index}`,
+          title: "镜头",
+          script: "文本",
+          image_prompt: "画面",
+          video_prompt: "动作",
+          duration: "5",
+        })),
+      }],
+    })),
+    /不受支持/,
+  );
+  const assetBatch = (assets, isFinal = true) => JSON.stringify({
+    message: "资产",
+    workflow_state: "active",
+    operations: [{
+      type: "create_story_asset_batch",
+      story_id: "story-id",
+      asset_kind: "character",
+      chunk_index: 0,
+      is_final: isFinal,
+      assets,
+    }],
+  });
+  const validAsset = (index) => ({
+    ref: `character-${index}`,
+    name: `人物 ${index}`,
+    description: "稳定外观",
+    reason: "有独立身份",
+    occurrences: ["第一场"],
+    image_prompt: "三视图和剧情表情",
+    aspect_ratio: "16:9",
+    resolution: "2K",
+  });
+  assert.throws(
+    () => parseAgentModelResponse(assetBatch(Array.from({ length: 9 }, (_, index) => validAsset(index)))),
+    /不受支持/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse(assetBatch([], false)),
+    /不受支持/,
+  );
+  assert.equal(
+    parseAgentModelResponse(assetBatch([], true)).operations[0].assets.length,
+    0,
+  );
+});
+
+test("rejects operations on the wrong canvas and create-plus-run responses", () => {
+  const createStory = {
+    type: "create_story_workflow",
+    ref: "story",
+    title: "测试",
+    globalContext: "设定",
+    imageModel: "gemini-3-pro-image-preview",
+    videoModel: "doubao-seedance-1-5-pro-251215",
+    aspectRatio: "9:16",
+    imageResolution: "1K",
+    videoResolution: "720p",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [{
+      ref: "shot-01",
+      title: "镜头",
+      script: "剧本",
+      imagePrompt: "画面",
+      videoPrompt: "动作",
+      duration: "5",
+      referenceNodeIds: [],
+    }],
+  };
+  assert.throws(
+    () => validateAgentOperationsForSurface("creation", [createStory]),
+    /不能在创作画布/,
+  );
+  assert.throws(
+    () => validateAgentOperationsForSurface("workflow", [{
+      type: "create_node",
+      ref: "node",
+      kind: "text",
+      text: "x",
+      x: 0,
+      y: 0,
+    }]),
+    /不能在工作流画布/,
+  );
+  assert.throws(
+    () => validateAgentOperationsForSurface("workflow", [
+      createStory,
+      { type: "run_story_workflow", storyId: "story-id", shotRefs: [] },
+    ]),
+    /不能在同一响应/,
+  );
+  const createAnalysis = {
+    type: "create_story_analysis",
+    ref: "story-assets",
+    title: "测试",
+    analysis: {
+      genre: "都市",
+      theme: "成长",
+      audience: "青年",
+      emotion: "振奋",
+      estimatedDuration: "60 秒",
+    },
+    projectAspectRatio: "9:16",
+    imageModel: "gemini-3-pro-image-preview",
+  };
+  assert.throws(
+    () => validateAgentOperationsForSurface("creation", [createAnalysis]),
+    /不能在创作画布/,
+  );
+  assert.throws(
+    () => validateAgentOperationsForSurface("workflow", [
+      createAnalysis,
+      { type: "run_story_assets", storyId: "story-id", assetRefs: [] },
+    ]),
+    /不能在同一响应/,
   );
 });
 
@@ -202,6 +402,44 @@ test("confirmation timeout aborts the signal and reports the remote-task warning
       assert.equal(signal.aborted, false);
       return "done";
     },
+    20,
+  );
+  assert.equal(result, "done");
+});
+
+test("agent request timeout distinguishes timeout from a manual stop", async () => {
+  let timeoutSignal;
+  await assert.rejects(
+    runAgentRequestWithTimeout(
+      (signal) => {
+        timeoutSignal = signal;
+        return new Promise(() => {});
+      },
+      undefined,
+      5,
+    ),
+    (error) => error instanceof Error && error.message === AGENT_REQUEST_TIMEOUT_MESSAGE,
+  );
+  assert.equal(timeoutSignal.aborted, true);
+
+  const manualController = new AbortController();
+  const stopped = runAgentRequestWithTimeout(
+    () => new Promise(() => {}),
+    manualController.signal,
+    100,
+  );
+  manualController.abort();
+  await assert.rejects(
+    stopped,
+    (error) => error instanceof DOMException && error.name === "AbortError",
+  );
+
+  const result = await runAgentRequestWithTimeout(
+    async (signal) => {
+      assert.equal(signal.aborted, false);
+      return "done";
+    },
+    undefined,
     20,
   );
   assert.equal(result, "done");

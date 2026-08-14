@@ -1011,3 +1011,205 @@
 - `docs/canvas.md`：记录图片工具手册、四模型范围、参数兜底和确认行为。
 - `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
 - 回滚方式：待本轮独立提交后可执行 `git revert <本轮提交哈希>`；当前工作树同时包含尚未提交的确认功能修复，若执行 `git restore --source=b8c5822 -- agent.md app/ai/agent.ts app/ai/agent-provider.ts app/api/ai/agent/route.ts tests/agent-provider.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`，再执行 `git clean -f -- tools.md app/ai/agent-tools.ts tests/agent-tools.test.mjs`，会将本轮及这些文件中此前未提交的确认修复一并回退。
+
+## 2026-08-09 - Task: 为画布 Agent 增加短剧工作流工具包
+
+### What was done
+- 为工作流画布增加独立 Agent 入口、对话记录、画布快照和短剧 Tool 手册；完整剧本支持首轮直建，长剧本按每批最多 8 镜自动连续规划并原子写入。
+- 每部短剧创建项目设定节点，每镜创建分镜文本、图片调度、图片占位、视频调度和视频占位；指定参考素材只进入对应分镜，主占位在首次运行、失败重试和重新生成时复用。
+- 增加需确认的整剧或指定分镜批量运行：确认卡按当前画布显示真实图片/视频请求数，同层任务并行，图片成功后释放对应视频，失败只阻断当前分支。
+- 持久化批量队列并恢复未完成任务轮询；刷新遇到已提交但未保存任务 ID 的分支时标为“提交状态未知”并停止自动重试，避免重复计费。
+- 保持创作画布首轮澄清与原有生成逻辑，拒绝跨画布类型操作；本轮不增加视频拼接、配音、字幕、音轨或最终成片导出。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，91 项测试全部通过；覆盖工作流 Tool 解析与参数归一化、分批连续性与原子失败、图结构与占位复用、同层并行与分支隔离、独立对话、首轮直建和错误画布拒绝。
+- 应用内浏览器验收：`http://localhost:3011/` 返回并显示工作流画布；“画布 Agent”可打开，显示工作流专用标题、完整剧本直建引导和输入框；浏览器控制台无 warning/error。未提交 Agent 请求，未调用真实图片或视频生成。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `agent.md`：区分创作与工作流首轮规则，并限制 operation 的画布类型。
+- `workflow-tools.md`：新增短剧拆镜、连续性、占位、参考素材、分批创建和确认运行规则。
+- `app/ai/agent.ts`：增加工作流快照、短剧创建/运行协议、解析、危险操作和画布类型校验。
+- `app/ai/agent-provider.ts`：注入当前画布类型、短剧手册和视频模型能力，保留创作画布首轮约束。
+- `app/ai/agent-tools.ts`：增加短剧图片/视频模型、比例、分辨率和时长归一化。
+- `app/api/ai/agent/route.ts`：将短剧工作流 Tool 手册传入 Agent 服务。
+- `app/canvas/agent.ts`、`app/page.tsx`：为创作画布拒绝短剧工作流操作并保持原有执行路径。
+- `app/workflow/graph.ts`：增加兼容旧版本的短剧元数据、原子图创建和主占位复用。
+- `app/workflow/agent.ts`：新增工作流快照、分批合并、批量队列推进、恢复解析和权威请求数描述。
+- `components/canvas-agent-sidebar.tsx`：支持独立存储键、工作流引导、自动多批规划进度与停止入口、画布专属确认描述。
+- `components/workflow/workflow-canvas.tsx`：接入工作流 Agent、人工依赖阻断、并行批量调度、任务恢复和未知提交状态保护。
+- `tests/agent-provider.test.mjs`、`tests/agent-tools.test.mjs`、`tests/agent.test.mjs`：覆盖工作流首轮直建、协议、参数和画布边界。
+- `tests/workflow.test.mjs`、`tests/workflow-agent.test.mjs`：覆盖短剧图结构、追加布局、指定参考、占位复用、原子分批与批量推进。
+- `tests/rendered-html.test.mjs`：覆盖手册加载、工作流 Agent 入口、独立存储和恢复保护的结构回归。
+- `docs/canvas.md`：记录短剧工作流创建、执行、费用确认、恢复策略和当前产品边界。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：执行 `git restore --source=5a3a9d1 -- agent.md app/ai/agent-provider.ts app/ai/agent-tools.ts app/ai/agent.ts app/api/ai/agent/route.ts app/canvas/agent.ts app/page.tsx app/workflow/graph.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md tests/agent-provider.test.mjs tests/agent-tools.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs tests/workflow.test.mjs progress.md`，再执行 `git clean -f -- app/workflow/agent.ts tests/workflow-agent.test.mjs workflow-tools.md`；本轮开始前回滚点为 `5a3a9d1`。
+
+## 2026-08-10 - Task: 工作流图片节点按真实比例自适应
+
+### What was done
+- 导入图片和生成图片加载后读取自然宽高，以图片视觉区最长边 288px 自动调整节点并保持节点中心不变；1:1、9:16、16:9 外框分别为 288×330、162×330、288×204px。
+- 图片节点四角缩放改为固定 42px 标题栏、仅对标题栏下方图片区域保持真实比例，并继续执行短边 96px、长边 1200px 限制。
+- 替换导入图片和短剧图片占位重新生成时清除旧宽高，使新图片重新适配；已有显式尺寸在刷新加载时保持不变。
+- 已加载图片移除素材区额外内边距和虚线边框，长标题在窄竖图节点中单行省略；视频节点、创作画布、基础视口和生成接口保持不变。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，94 项测试全部通过；新增覆盖方图、竖图、横图、极端比例、非法尺寸、非图片节点、显式尺寸保护、中心点保持、手动缩放限制和短剧占位尺寸重置。
+- 应用内浏览器验收：在 `http://localhost:3011/` 依次导入本地方图、9:16 竖图和 16:9 横图，节点实际尺寸为 288×330、162×330、288×204px，图片自然尺寸与显示比例一致，控制台无 warning/error；未调用真实生成接口，验收节点和临时图片已清理。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `app/workflow/graph.ts`：增加图片自然尺寸适配纯函数、固定标题栏比例缩放和短剧图片重新生成尺寸重置。
+- `components/workflow/workflow-canvas.tsx`：接入导入图与生成图加载尺寸、替换图片尺寸清理和长标题结构。
+- `app/globals.css`：优化已加载图片填充方式和窄节点标题省略样式。
+- `tests/workflow.test.mjs`：增加真实比例、自适应中心、限制、显式尺寸和占位复用回归测试。
+- `tests/rendered-html.test.mjs`：增加图片加载事件、适配函数与样式结构断言。
+- `docs/canvas.md`：记录工作流图片节点的默认尺寸、缩放规则和兼容行为。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：本轮需在当前短剧工作流改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；因本轮修改与上一轮未提交内容共用工作流文件，提交前不得对这些文件执行整文件 `git restore`，以免丢失短剧工作流改动。
+
+## 2026-08-14 - Task: 为画布 Agent 增加剧本分析与资产库能力
+
+### What was done
+- 完整剧本改为先创建类型、主题、受众、情绪和预计时长分析节点，再按人物、场景、道具阶段每批最多 8 项逐批落图；每批校验成功后立即持久化，停止或失败保留已完成节点。
+- 每项资产创建“资产说明 → 图片调度 → 结果占位”三节点组，保存短剧 ID、`assetRef`、资产类型、节点角色、规划阶段和可用状态；工作流存储版本保持 `v1`。
+- 人物使用正面、左侧面、右侧面与剧情表情合图，每次场景出现独立建档，影响剧情、多次出现、标志物、品牌商品和汽车创建独立道具资产；所有图片默认 2K 且可人工调整。
+- 新增需确认的 `run_story_assets`；支持 Agent 指定、单调度节点运行和框选资产组任意节点批量生成。批量前按 `assetRef` 去重并显示真实请求数、并行费用风险和成功资产覆盖数；重新生成复用原占位并同步最新模型。
+- 本轮未创建分镜或视频节点，未改造 SSE；已有分镜工作流保留兼容，但新剧本首轮会拒绝跳过资产分析直接建分镜。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，100 项测试全部通过；新增覆盖资产协议、参数归一化、阶段/批次连续性、空最终批、重复与跨项目拒绝、三节点结构、旧数据兼容、选择去重、占位复用和批量费用描述。
+- 应用内浏览器验收：`http://localhost:3011/` 显示新的剧本先分析、再搭建人物/场景/道具资产库引导和新输入占位，控制台无 warning/error；一次梗概输入被 Agent 正确识别为非完整剧本并请求正文，验收对话已清理。未发起图片或视频生成。
+- `git diff --check`：通过；`http://localhost:3011/` 返回 HTTP 200，当前分支开发服务保持运行。
+
+### Notes
+- `story-asset-tools.md`：新增剧本分析、三类资产规则、分批协议和生成确认手册。
+- `agent.md`、`workflow-tools.md`：将完整剧本的默认入口改为资产分析，保留原分镜工作流兼容说明。
+- `app/ai/agent.ts`、`app/ai/agent-tools.ts`：新增分析、资产批次、资产运行协议、严格解析、画布隔离和图片参数归一化。
+- `app/ai/agent-provider.ts`、`app/api/ai/agent/route.ts`：注入资产能力手册，并阻止工作流首轮跳过资产分析直接建分镜。
+- `app/workflow/story-assets.ts`：新增资产图创建、阶段状态、批次校验、框选归一和运行描述纯逻辑。
+- `app/workflow/graph.ts`、`app/workflow/agent.ts`：扩展可选资产元数据、快照可用性、结果占位复用和可恢复批量队列。
+- `components/canvas-agent-sidebar.tsx`：新增分析后自动连续的人物/场景/道具批次、实时进度、停止保留和继续规划上下文。
+- `components/workflow/workflow-canvas.tsx`、`app/globals.css`：接入资产确认队列、计费风险描述、框选生成按钮和资产调度图片锁定。
+- `tests/agent-provider.test.mjs`、`tests/agent-tools.test.mjs`、`tests/agent.test.mjs`、`tests/rendered-html.test.mjs`、`tests/story-assets.test.mjs`：增加协议、手册、结构、运行和 UI 回归测试。
+- `docs/canvas.md`：记录资产规划顺序、筛选规则、节点结构、流式落图、生成确认和本轮边界。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：本轮需在当前未提交短剧工作流之上独立提交，提交后执行 `git revert <本轮提交哈希>`；提交前不得对共享文件执行整文件 `git restore`，否则会一并丢失 8 月 9 日和 8 月 10 日的未提交工作流改动。
+
+## 2026-08-14 - Task: 修复长剧本请求并增加 Agent SSE 过程摘要
+
+### What was done
+- 移除 Agent 历史消息的单条 12,000 字符静默截断，完整传递剧本，同时继续只发送最近 20 条历史消息。
+- Agent 上游请求启用流式响应，服务端只从增量 JSON 中提取受控的 `progress_summary`，并以 `progress`、`result`、`error` 三类 SSE 事件返回；完整结果校验成功前不修改画布。
+- 增加每次 Agent 请求 120 秒超时和主动停止的上游中止能力，区分 `failed` 与 `stopped`，保留此前完成的分析、资产批次和摘要以便继续规划。
+- 增加非标准流、普通 JSON 或缺少 `progress_summary` 时的一次受控摘要降级；上下文或请求体超限改为明确提示，不再归并为通用不可用错误。
+- 侧栏显示固定规划阶段、累计完成数量、已等待时间、停止入口和替换式处理摘要；完成批次的摘要会进入 Agent 消息详情，不展示原始思维链、原始 JSON、节点 ID 或未确认操作。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，108 项测试全部通过；覆盖 25,330 字符消息全文传递、最近 20 条历史、任意字节边界 SSE、转义与 Unicode、普通 JSON 降级、缺摘要降级、流中断、非法结果、120 秒超时、主动停止和上下文超限。
+- 应用内浏览器验收：在 `http://localhost:3011/` 一次性提交 25,330 字符《白雪公主，但旁白死不改词》附件，未出现补发正文提示；首轮分析成功后创建分析节点，人物第 1 批成功创建 8 个资产组，共 25 个节点。停止第 2 批后已完成节点保留，未发起图片或视频生成。
+- 应用内浏览器兼容验收：当真实上游未返回 `progress_summary` 时，侧栏显示一次受控的阶段完成摘要，且没有创建或执行节点。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `agent.md`：规定摘要首字段、允许内容和禁止暴露项。
+- `story-asset-tools.md`：为分析和三类资产批次补充受控摘要要求。
+- `app/ai/agent.ts`：增加摘要响应字段、120 秒常量和可区分主动停止的请求超时封装。
+- `app/ai/agent-stream.ts`：新增 SSE 编解码、分块解析和增量摘要安全提取。
+- `app/ai/agent-provider.ts`：移除消息截断，接入上游流、取消信号、上下文超限识别和缺摘要降级。
+- `app/api/ai/agent/route.ts`：将 Agent API 改为 SSE，并在客户端断开时取消上游连接。
+- `components/canvas-agent-sidebar.tsx`：接入 SSE、摘要、等待时间、停止/超时状态和已完成摘要留存。
+- `docs/canvas.md`：记录长消息、SSE 安全边界、降级行为和单请求超时。
+- `tests/agent.test.mjs`：增加请求超时、主动停止和长消息验证。
+- `tests/agent-stream.test.mjs`：增加 SSE 任意分块、增量摘要与中断验证。
+- `tests/agent-provider.test.mjs`：增加完整长剧本、上游流、JSON/摘要降级、取消信号和超限错误验证。
+- `tests/rendered-html.test.mjs`：增加路由、侧栏和协议接线断言。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚方式。
+- 回滚方式：本轮需在当前未提交的短剧工作流与资产库改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；提交前不得对共享文件执行整文件 `git restore`，否则会一并丢失此前未提交的工作流改动。
+
+## 2026-08-14 - Task: 资产生成改为主角与核心配角双基准确认流程
+
+### What was done
+- 新短剧分析增加动态统一视觉风格，首个人物批次严格只允许一名主角和一名核心配角；基础角色未生成且未经人工质量确认时，禁止规划和运行其他资产。
+- 侧栏增加三段门禁：两张基础角色的并行付费确认、不产生费用的角色质量确认、以及其余资产的第二次批量付费确认；部分失败时只重试真实失败数量。
+- 所有非基础人物、场景和道具调度器都以稳定顺序引用图1主角和图2核心配角，并按资产类型生成人物替换、无人场景和独立道具提示词，动态继承当前项目视觉风格。
+- 基础角色重新生成会复用原结果节点并重置质量确认；已建下游节点不删除，刷新后可从等待生成、等待质量确认或继续规划恢复。存储版本保持 `v1`，旧项目不强制迁移。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，110 项测试全部通过；新增覆盖双基准协议、首批严格约束、参考边顺序、分类提示词、付费与质量确认门禁、部分失败、重新生成重置和 `v1` 兼容。
+- 应用内浏览器验收：在独立空白工作流提交《雨夜送伞》完整测试剧本，页面只创建 1 个分析节点和主角、核心配角各 3 个节点；林夏标记为图1主角，陈川标记为图2核心配角，周伯保留到质量确认后规划。确认卡显示 2 个并行请求和 2 笔可能费用，控制台无 warning/error；未点击确认，未产生真实图片任务或费用。
+- `git diff --check`：通过；`http://localhost:3011/` 返回 HTTP 200，当前分支开发服务保持运行。
+
+### Notes
+- `agent.md`：增加新短剧双基准门禁和禁止越阶规则。
+- `story-asset-tools.md`：记录视觉风格、基础角色协议、核心配角选择、参考顺序、提示词模板和两次付费确认。
+- `app/ai/agent.ts`：扩展视觉风格、基础角色、规划状态和工作流快照协议解析。
+- `app/workflow/graph.ts`：保存双基准策略、角色职责、质量确认和统一风格元数据，继续兼容 `v1`。
+- `app/workflow/story-assets.ts`：实现双基准创建校验、状态同步、质量确认、参考连线、分类提示词和运行门禁。
+- `app/workflow/agent.ts`：向 Agent 快照暴露双基准元数据，并在基础角色重新生成时重置质量确认。
+- `components/workflow/workflow-canvas.tsx`：根据两张基础图状态恢复门禁，并提供不产生费用的质量确认回调。
+- `components/canvas-agent-sidebar.tsx`：实现基础角色付费卡、质量确认、继续规划、其余资产付费卡和刷新恢复入口。
+- `tests/agent.test.mjs`、`tests/agent-provider.test.mjs`：增加双基准协议解析和完整系统消息回归。
+- `tests/story-assets.test.mjs`：增加首批约束、图1/图2连线、提示词、门禁、并行、重试、恢复和兼容性测试。
+- `tests/rendered-html.test.mjs`：增加手册字段、质量确认交互和侧栏结构断言。
+- `docs/canvas.md`：记录三段确认流程、图1/图2依赖顺序、动态视觉风格与刷新恢复行为。
+- `progress.md`：追加本轮实施、验证、文件清单和回滚方式。
+- 回滚方式：本轮需在当前未提交的短剧工作流、资产库和 SSE 改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；提交前不得对共享文件执行整文件 `git restore`，以免丢失此前未提交的工作流改动。
+
+## 2026-08-14 - Task: 优化工作流画布滑动与大图性能
+
+### What was done
+- 工作流平移和缩放改为实时视口引用与 RAF 合帧，交互期间直接更新世界容器 CSS 变量，停止约 120ms 后才提交一次 React 视口状态；框选、连线和坐标换算统一读取实时视口。
+- 节点拖动改为每帧最多提交一次位置更新，节点卡片和操作覆盖层增加节点级缓存；节点索引、连线路径和资产可用性计算改为线性遍历，纯视口变化不再重复构建图路径或 Agent 快照。
+- 工作流图持久化改为 300ms 静默延迟，只保存最新状态；页面隐藏、卸载或组件清理时强制补写，存储版本和恢复协议保持 `v1`。
+- 世界容器启用工作流范围内的合成层提示，保留既有点阵背景、节点阴影、表单和媒体展示；创作画布与基础视口协议未修改。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，114 项测试全部通过；新增覆盖视口 RAF 合帧、缩放锚点、空闲提交、待处理帧清理、延迟持久化、100 节点资产状态线性构建和性能接线结构。
+- `git diff --check`：通过，无空白符错误。
+- 应用内浏览器验收：`http://localhost:3011/` 当前 26 节点资产画布连续平移和缩放正常；在隔离测试画布拖动调度节点时两侧连线同步跟随，随后恢复原位置。两个页面均无 warning/error，未发起任何图片或视频生成。
+- 浏览器控制接口未提供帧时间线，因此未形成“3 秒长任务与帧间隔 P95”的可审计数值；本轮以真实交互、生产构建、RAF/延迟单元测试和 100 节点线性复杂度回归替代，正式性能基线仍需在 Chrome Performance 面板采集。
+
+### Notes
+- `app/workflow/performance.ts`：新增工作流视口 RAF 控制器和图持久化延迟控制器。
+- `app/workflow/agent.ts`：资产可用状态改为成功结果集合索引，避免每项资产重复扫描全部节点。
+- `components/workflow/workflow-canvas.tsx`：接入实时视口、CSS 变换、拖动合帧、节点与连线缓存、快照门控及延迟持久化。
+- `app/globals.css`：仅为工作流世界容器增加合成层提示。
+- `tests/workflow-performance.test.mjs`：新增视口合帧、清理和最新图持久化测试。
+- `tests/workflow-agent.test.mjs`：新增 100 节点资产状态线性读取回归测试。
+- `tests/rendered-html.test.mjs`：增加性能控制器、缓存、快照门控和样式接线断言。
+- `docs/canvas.md`：记录工作流实时视口、线性索引、快照门控和延迟持久化行为。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚说明。
+- 回滚方式：本轮需在当前未提交的短剧工作流、资产库和 SSE 改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；提交前不得对共享文件执行整文件 `git restore`，否则会同时丢失此前未提交的工作流改动。
+
+## 2026-08-15 - Task: 工作流画布第二轮无感性能优化与节点清空
+
+### What was done
+- 一次性删除 `http://localhost:3011/` 当前工作流的 26 个节点及其连线，刷新后保持空画布；关联本地素材随节点删除，工作流 Agent 文字对话保留且旧确认操作随刷新失效。
+- 将工作流点阵背景拆为独立合成层，世界层与点阵层直接更新 `translate3d/scale`，不再通过画布根节点的继承 CSS 变量使全部节点重新计算样式。
+- 为屏外节点增加浏览器原生绘制隔离，图片改为异步解码；世界层和节点的 `will-change` 只在对应交互期间启用。
+- 框选、临时连线和节点缩放接入统一 RAF 合帧，保持最后一帧、坐标换算、连线命中和存储协议不变；空图会同步清除残留批量队列。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，116 项测试全部通过；新增覆盖点阵取模、负坐标、0.25–4 倍覆盖范围、交互合帧、最后一帧刷新和活动图层释放。
+- 浏览器空图验收：`http://localhost:3011/` 刷新后显示空工作流，Agent 历史文字仍可打开，未发现运行中的任务，未调用任何生成接口。
+- 浏览器压力验收：在独立 `[::1]` origin 创建 100 个本地调度节点，连续平移、缩放后节点数量保持 100，世界层与点阵层同步更新，本轮时间边界内无 warning/error；测试数据随后执行清理，不影响正式画布。
+- 当前浏览器控制环境不暴露页面 `requestAnimationFrame` 时间线，无法形成可审计的 P95 和大于 50ms 帧计数；这两项仍需通过 Chrome Performance 面板采集，不将其误报为通过。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `app/workflow/performance.ts`：新增点阵覆盖计算、通用 RAF 合帧器和视口活动状态通知。
+- `components/workflow/workflow-canvas.tsx`：接入独立点阵层、直接 transform、交互合帧、临时合成提示、异步图片解码和空图批量状态清理。
+- `app/globals.css`：增加工作流点阵层、节点绘制隔离及仅交互期间启用的合成规则。
+- `tests/workflow-performance.test.mjs`：新增点阵覆盖和高频交互只提交最新帧的单元测试。
+- `tests/rendered-html.test.mjs`：更新工作流性能接线、CSS 隔离和异步图片解码断言。
+- `docs/canvas.md`：记录独立点阵层、绘制隔离、RAF 合帧和临时 `will-change` 行为。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚说明。
+- 回滚方式：本轮需在当前未提交的工作流、资产库、SSE 和第一轮性能改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；一次性清空的是浏览器本地状态，代码回滚不会自动恢复已删除节点。

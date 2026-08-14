@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Bot,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -13,7 +14,14 @@ import {
   X,
 } from "lucide-react";
 import type { CSSProperties, PointerEvent } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY,
+  describeDangerousOperation,
+  type AgentDangerousOperation,
+  type AgentInspectedImage,
+  type AgentOperation,
+} from "@/app/ai/agent";
 import {
   MODEL_CONFIGS,
   getModelConfig,
@@ -26,9 +34,7 @@ import type {
 } from "@/app/ai/types";
 import { deleteAsset, readAsset, saveAsset } from "@/app/canvas/assets";
 import {
-  panViewport,
   wheelZoomFactor,
-  zoomViewport,
   type Viewport,
 } from "@/app/canvas/viewport";
 import {
@@ -39,6 +45,7 @@ import {
   createWorkflowNode,
   createWorkflowRun,
   emptyWorkflowGraph,
+  fitWorkflowImageNode,
   getWorkflowNodeSize,
   moveWorkflowNodes,
   parseWorkflowGraph,
@@ -55,6 +62,7 @@ import {
   workflowNodesIntersecting,
   workflowSelectionBounds,
   WORKFLOW_STORAGE_KEY,
+  type WorkflowBounds,
   type WorkflowGraph,
   type WorkflowNode,
   type WorkflowResizeCorner,
@@ -62,11 +70,44 @@ import {
   type WorkflowSchedulerNode,
   type WorkflowSourceNode,
 } from "@/app/workflow/graph";
+import {
+  WORKFLOW_BATCH_STORAGE_KEY,
+  advanceWorkflowBatch,
+  applyWorkflowAgentOperations,
+  createWorkflowAgentSnapshot,
+  createWorkflowBatchRun,
+  createStoryAssetBatchRun,
+  describeStoryAssetRun,
+  describeWorkflowRun,
+  parseWorkflowBatchRun,
+  type WorkflowBatchRun,
+} from "@/app/workflow/agent";
+import {
+  approveStoryFoundation,
+  assetRefsForSelection,
+  markStoryAssetPlanning,
+  syncStoryFoundationStatuses,
+} from "@/app/workflow/story-assets";
+import {
+  createWorkflowGraphPersistence,
+  createWorkflowRafBatcher,
+  createWorkflowViewportController,
+  workflowGridTransform,
+} from "@/app/workflow/performance";
+import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 
 const DOT_SPACING = 24;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_TOTAL_BYTES = 30 * 1024 * 1024;
+const WORKFLOW_WORLD_STYLE = {
+  transform: "translate3d(0, 0, 0) scale(1)",
+} as CSSProperties;
+const WORKFLOW_GRID_STYLE = {
+  width: `calc(100% + ${DOT_SPACING * 2}px)`,
+  height: `calc(100% + ${DOT_SPACING * 2}px)`,
+  transform: `translate3d(-${DOT_SPACING}px, -${DOT_SPACING}px, 0) scale(1)`,
+} as CSSProperties;
 
 type CreationMenu = { x: number; y: number };
 type SchedulerMenu = { nodeId: string; x: number; y: number };
@@ -83,12 +124,19 @@ type DragState = {
   nodeIds: string[];
   clientX: number;
   clientY: number;
+  pendingX: number;
+  pendingY: number;
+  frame: number | null;
 };
 type ResizeState = {
   pointerId: number;
   nodeId: string;
   corner: WorkflowResizeCorner;
   startNode: WorkflowNode;
+};
+type ResizeUpdate = {
+  nodeId: string;
+  bounds: WorkflowBounds;
 };
 type ConnectionState = {
   pointerId: number;
@@ -105,6 +153,18 @@ function screenToWorld(viewport: Viewport, point: { x: number; y: number }) {
     x: (point.x - viewport.x) / viewport.scale,
     y: (point.y - viewport.y) / viewport.scale,
   };
+}
+
+function applyWorkflowGridTransform(
+  grid: HTMLDivElement,
+  viewport: Viewport,
+  canvasSize: { width: number; height: number },
+) {
+  const transform = workflowGridTransform(viewport, canvasSize, DOT_SPACING);
+  grid.style.width = `${transform.width}px`;
+  grid.style.height = `${transform.height}px`;
+  grid.style.transform =
+    `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`;
 }
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -163,27 +223,139 @@ export function WorkflowCanvas() {
   const [assetErrors, setAssetErrors] = useState<Record<string, string>>({});
   const [runningSchedulers, setRunningSchedulers] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [isAgentOpen, setIsAgentOpen] = useState(false);
+  const [agentContextNodeId, setAgentContextNodeId] = useState<string | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [batchRun, setBatchRun] = useState<WorkflowBatchRun | null>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const worldRef = useRef<HTMLDivElement>(null);
+  const canvasSizeRef = useRef(canvasSize);
   const marqueeRef = useRef<MarqueeState | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const connectionRef = useRef<ConnectionState | null>(null);
+  const marqueeRenderRef = useRef<
+    ReturnType<typeof createWorkflowRafBatcher<MarqueeState>> | null
+  >(null);
+  const connectionRenderRef = useRef<
+    ReturnType<typeof createWorkflowRafBatcher<ConnectionState>> | null
+  >(null);
+  const resizeRenderRef = useRef<
+    ReturnType<typeof createWorkflowRafBatcher<ResizeUpdate>> | null
+  >(null);
   const pollingTasks = useRef(new Set<string>());
   const loadedAssets = useRef(new Set<string>());
   const assetUrlsRef = useRef<Record<string, string>>({});
   const graphRef = useRef<WorkflowGraph>(emptyWorkflowGraph());
+  const selectedIdsRef = useRef<string[]>(selectedIds);
+  const isAgentOpenRef = useRef(isAgentOpen);
+  const viewportRef = useRef<Viewport>(viewport);
+  const viewportControllerRef = useRef<
+    ReturnType<typeof createWorkflowViewportController> | null
+  >(null);
+  const persistenceRef = useRef<
+    ReturnType<typeof createWorkflowGraphPersistence> | null
+  >(null);
+  const runningSchedulersRef = useRef(new Set<string>());
 
   graphRef.current = graph;
+  selectedIdsRef.current = selectedIds;
+  isAgentOpenRef.current = isAgentOpen;
+  canvasSizeRef.current = canvasSize;
 
   useEffect(() => {
-    setGraph(parseWorkflowGraph(window.localStorage.getItem(WORKFLOW_STORAGE_KEY)));
+    const restored = parseWorkflowGraph(
+      window.localStorage.getItem(WORKFLOW_STORAGE_KEY),
+    );
+    const safeRestored = {
+      ...restored,
+      nodes: restored.nodes.map((node) =>
+        node.type === "result" && node.status === "pending" && !node.taskId
+          ? {
+              ...node,
+              status: "paused" as const,
+              progress: "提交状态未知",
+              error: "页面在任务 ID 保存前中断，已停止自动重试以避免重复计费。",
+            }
+          : node,
+      ),
+    };
+    graphRef.current = safeRestored;
+    setGraph(safeRestored);
+    setBatchRun(
+      parseWorkflowBatchRun(
+        window.localStorage.getItem(WORKFLOW_BATCH_STORAGE_KEY),
+      ),
+    );
     setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
-    window.localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(graph));
+    const persistence = createWorkflowGraphPersistence({
+      write: (next) =>
+        window.localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(next)),
+    });
+    persistenceRef.current = persistence;
+    const flush = () => persistence.flush();
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      persistence.flush();
+      persistence.dispose();
+      if (persistenceRef.current === persistence) persistenceRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (hydrated) persistenceRef.current?.schedule(graph);
   }, [graph, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const synced = syncStoryFoundationStatuses(graph);
+    if (synced === graph) return;
+    graphRef.current = synced;
+    setGraph(synced);
+  }, [graph, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (batchRun) {
+      window.localStorage.setItem(
+        WORKFLOW_BATCH_STORAGE_KEY,
+        JSON.stringify(batchRun),
+      );
+    } else {
+      window.localStorage.removeItem(WORKFLOW_BATCH_STORAGE_KEY);
+    }
+  }, [batchRun, hydrated]);
+
+  useEffect(() => {
+    if (hydrated && graph.nodes.length === 0 && batchRun) setBatchRun(null);
+  }, [batchRun, graph.nodes.length, hydrated]);
+
+  useEffect(() => {
+    const canvas = mainRef.current;
+    if (!canvas) return;
+    const updateSize = () => {
+      const bounds = canvas.getBoundingClientRect();
+      const next = { width: bounds.width, height: bounds.height };
+      canvasSizeRef.current = next;
+      setCanvasSize(next);
+      const grid = gridRef.current;
+      if (grid) applyWorkflowGridTransform(grid, viewportRef.current, next);
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     assetUrlsRef.current = assetUrls;
@@ -218,12 +390,66 @@ export function WorkflowCanvas() {
   }, [graph.nodes, hydrated, restoreAsset]);
 
   useEffect(() => () => {
-    window.localStorage.setItem(
-      WORKFLOW_STORAGE_KEY,
-      JSON.stringify(graphRef.current),
-    );
     Object.values(assetUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     loadedAssets.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const marqueeBatch = createWorkflowRafBatcher<MarqueeState>({
+      apply: setMarquee,
+    });
+    const connectionBatch = createWorkflowRafBatcher<ConnectionState>({
+      apply: setConnection,
+    });
+    const resizeBatch = createWorkflowRafBatcher<ResizeUpdate>({
+      apply: ({ nodeId, bounds }) => {
+        setGraph((current) => {
+          const next = resizeWorkflowNode(current, nodeId, bounds);
+          graphRef.current = next;
+          return next;
+        });
+      },
+    });
+    marqueeRenderRef.current = marqueeBatch;
+    connectionRenderRef.current = connectionBatch;
+    resizeRenderRef.current = resizeBatch;
+    return () => {
+      marqueeBatch.dispose();
+      connectionBatch.dispose();
+      resizeBatch.dispose();
+      marqueeRenderRef.current = null;
+      connectionRenderRef.current = null;
+      resizeRenderRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = mainRef.current;
+    const grid = gridRef.current;
+    const world = worldRef.current;
+    if (!canvas || !grid || !world) return;
+    const apply = (next: Viewport) => {
+      viewportRef.current = next;
+      world.style.transform =
+        `translate3d(${next.x}px, ${next.y}px, 0) scale(${next.scale})`;
+      applyWorkflowGridTransform(grid, next, canvasSizeRef.current);
+    };
+    apply(viewportRef.current);
+    const controller = createWorkflowViewportController({
+      initial: viewportRef.current,
+      apply,
+      commit: (next) => setViewport(next),
+      onActiveChange: (active) =>
+        canvas.toggleAttribute("data-workflow-viewport-active", active),
+    });
+    viewportControllerRef.current = controller;
+    return () => {
+      controller.dispose();
+      canvas.removeAttribute("data-workflow-viewport-active");
+      if (viewportControllerRef.current === controller) {
+        viewportControllerRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -241,13 +467,13 @@ export function WorkflowCanvas() {
             : delta;
       const deltaX = normalize(event.deltaX, bounds.width);
       const deltaY = normalize(event.deltaY, bounds.height);
+      const controller = viewportControllerRef.current;
+      if (!controller) return;
       if (!event.ctrlKey) {
-        setViewport((current) => panViewport(current, -deltaX, -deltaY));
+        controller.pan(-deltaX, -deltaY);
       } else {
         const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
-        setViewport((current) =>
-          zoomViewport(current, anchor, current.scale * wheelZoomFactor(deltaY, true)),
-        );
+        controller.zoom(anchor, wheelZoomFactor(deltaY, true));
       }
     }
     canvas.addEventListener("wheel", handleWheel, { passive: false });
@@ -257,6 +483,11 @@ export function WorkflowCanvas() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      if (isAgentOpen) {
+        setIsAgentOpen(false);
+        setAgentContextNodeId(null);
+        return;
+      }
       setCreationMenu(null);
       setSchedulerMenu(null);
       setDetailId(null);
@@ -265,7 +496,7 @@ export function WorkflowCanvas() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [isAgentOpen]);
 
   useEffect(() => {
     function moveWindowConnection(event: globalThis.PointerEvent) {
@@ -284,7 +515,7 @@ export function WorkflowCanvas() {
         ) >= 6;
       const next = {
         ...current,
-        point: screenToWorld(viewport, {
+        point: screenToWorld(viewportRef.current, {
           x: event.clientX - bounds.left,
           y: event.clientY - bounds.top,
         }),
@@ -292,7 +523,11 @@ export function WorkflowCanvas() {
         targetId: moved ? target?.dataset.workflowNodeId : undefined,
       };
       connectionRef.current = next;
-      setConnection(next);
+      if (connectionRenderRef.current) {
+        connectionRenderRef.current.schedule(next);
+      } else {
+        setConnection(next);
+      }
     }
     function finishWindowConnection() {
       const current = connectionRef.current;
@@ -314,10 +549,12 @@ export function WorkflowCanvas() {
           });
         }
       }
+      connectionRenderRef.current?.cancel();
       connectionRef.current = null;
       setConnection(null);
     }
     function cancelWindowConnection() {
+      connectionRenderRef.current?.cancel();
       connectionRef.current = null;
       setConnection(null);
     }
@@ -329,7 +566,7 @@ export function WorkflowCanvas() {
       window.removeEventListener("pointerup", finishWindowConnection);
       window.removeEventListener("pointercancel", cancelWindowConnection);
     };
-  }, [viewport]);
+  }, []);
 
   const pollTask = useCallback(async (node: WorkflowResultNode) => {
     if (!node.taskId || pollingTasks.current.has(node.taskId)) return;
@@ -372,7 +609,10 @@ export function WorkflowCanvas() {
 
   function canvasPoint(clientX: number, clientY: number) {
     const bounds = mainRef.current!.getBoundingClientRect();
-    return screenToWorld(viewport, { x: clientX - bounds.left, y: clientY - bounds.top });
+    return screenToWorld(viewportRef.current, {
+      x: clientX - bounds.left,
+      y: clientY - bounds.top,
+    });
   }
 
   function handleCanvasDoubleClick(event: React.MouseEvent<HTMLElement>) {
@@ -397,8 +637,10 @@ export function WorkflowCanvas() {
     if (event.button !== 0 || event.target !== event.currentTarget) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     setSelectedIds([]);
+    setAgentContextNodeId(null);
     setCreationMenu(null);
     setSchedulerMenu(null);
+    marqueeRenderRef.current?.cancel();
     event.currentTarget.setPointerCapture(event.pointerId);
     const state: MarqueeState = {
       pointerId: event.pointerId,
@@ -420,18 +662,24 @@ export function WorkflowCanvas() {
     const moved = current.moved || Math.hypot(currentX - current.startX, currentY - current.startY) >= 6;
     const next = { ...current, currentX, currentY, moved };
     marqueeRef.current = next;
-    setMarquee(moved ? next : null);
+    if (moved) {
+      if (marqueeRenderRef.current) {
+        marqueeRenderRef.current.schedule(next);
+      } else {
+        setMarquee(next);
+      }
+    }
   }
 
   function finishCanvasPointer(event: PointerEvent<HTMLElement>) {
     const current = marqueeRef.current;
     if (!current || current.pointerId !== event.pointerId) return;
     if (current.moved) {
-      const topLeft = screenToWorld(viewport, {
+      const topLeft = screenToWorld(viewportRef.current, {
         x: Math.min(current.startX, current.currentX),
         y: Math.min(current.startY, current.currentY),
       });
-      const bottomRight = screenToWorld(viewport, {
+      const bottomRight = screenToWorld(viewportRef.current, {
         x: Math.max(current.startX, current.currentX),
         y: Math.max(current.startY, current.currentY),
       });
@@ -442,6 +690,7 @@ export function WorkflowCanvas() {
         height: bottomRight.y - topLeft.y,
       }));
     }
+    marqueeRenderRef.current?.cancel();
     marqueeRef.current = null;
     setMarquee(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -449,11 +698,25 @@ export function WorkflowCanvas() {
     }
   }
 
+  function markDraggedNodes(nodeIds: string[], active: boolean) {
+    const ids = new Set(nodeIds);
+    mainRef.current
+      ?.querySelectorAll<HTMLElement>("[data-workflow-node-id]")
+      .forEach((element) => {
+        if (ids.has(element.dataset.workflowNodeId || "")) {
+          element.classList.toggle("workflow-node-transforming", active);
+        }
+      });
+  }
+
   function beginNodeDrag(event: PointerEvent<HTMLDivElement>, node: WorkflowNode) {
     if (event.button !== 0 || (event.target as HTMLElement).closest("[data-workflow-control]")) return;
     event.stopPropagation();
-    const ids = selectedIds.includes(node.id) ? selectedIds : [node.id];
+    const ids = selectedIdsRef.current.includes(node.id)
+      ? selectedIdsRef.current
+      : [node.id];
     setSelectedIds(ids);
+    if (isAgentOpenRef.current) setAgentContextNodeId(node.id);
     setSchedulerMenu(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
@@ -461,23 +724,49 @@ export function WorkflowCanvas() {
       nodeIds: ids,
       clientX: event.clientX,
       clientY: event.clientY,
+      pendingX: 0,
+      pendingY: 0,
+      frame: null,
     };
+    markDraggedNodes(ids, true);
+  }
+
+  function flushNodeDrag(current: DragState) {
+    current.frame = null;
+    const deltaX = current.pendingX;
+    const deltaY = current.pendingY;
+    current.pendingX = 0;
+    current.pendingY = 0;
+    if (!deltaX && !deltaY) return;
+    setGraph((value) => {
+      const next = moveWorkflowNodes(value, current.nodeIds, deltaX, deltaY);
+      graphRef.current = next;
+      return next;
+    });
   }
 
   function dragNodes(event: PointerEvent<HTMLDivElement>) {
     const current = dragRef.current;
     if (!current || current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    const deltaX = (event.clientX - current.clientX) / viewport.scale;
-    const deltaY = (event.clientY - current.clientY) / viewport.scale;
+    current.pendingX +=
+      (event.clientX - current.clientX) / viewportRef.current.scale;
+    current.pendingY +=
+      (event.clientY - current.clientY) / viewportRef.current.scale;
     current.clientX = event.clientX;
     current.clientY = event.clientY;
-    setGraph((value) => moveWorkflowNodes(value, current.nodeIds, deltaX, deltaY));
+    if (current.frame === null) {
+      current.frame = window.requestAnimationFrame(() => flushNodeDrag(current));
+    }
   }
 
   function finishNodeDrag(event: PointerEvent<HTMLDivElement>) {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
+    const current = dragRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
     event.stopPropagation();
+    if (current.frame !== null) window.cancelAnimationFrame(current.frame);
+    flushNodeDrag(current);
+    markDraggedNodes(current.nodeIds, false);
     dragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -493,6 +782,7 @@ export function WorkflowCanvas() {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRenderRef.current?.cancel();
     resizeRef.current = { pointerId: event.pointerId, nodeId: node.id, corner, startNode: { ...node } };
   }
 
@@ -501,17 +791,26 @@ export function WorkflowCanvas() {
     if (!current || current.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    setGraph((value) => resizeWorkflowNode(
-      value,
-      current.nodeId,
-      resizedWorkflowNodeBounds(current.startNode, current.corner, canvasPoint(event.clientX, event.clientY)),
-    ));
+    const update = {
+      nodeId: current.nodeId,
+      bounds: resizedWorkflowNodeBounds(
+        current.startNode,
+        current.corner,
+        canvasPoint(event.clientX, event.clientY),
+      ),
+    };
+    if (resizeRenderRef.current) {
+      resizeRenderRef.current.schedule(update);
+    } else {
+      setGraph((value) => resizeWorkflowNode(value, update.nodeId, update.bounds));
+    }
   }
 
   function finishResize(event: PointerEvent<HTMLButtonElement>) {
     if (resizeRef.current?.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    resizeRenderRef.current?.flush();
     resizeRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -525,6 +824,7 @@ export function WorkflowCanvas() {
     event.currentTarget.setPointerCapture(event.pointerId);
     setCreationMenu(null);
     setSchedulerMenu(null);
+    connectionRenderRef.current?.cancel();
     const state = {
       pointerId: event.pointerId,
       nodeId: node.id,
@@ -558,7 +858,11 @@ export function WorkflowCanvas() {
       targetId,
     };
     connectionRef.current = next;
-    setConnection(next);
+    if (connectionRenderRef.current) {
+      connectionRenderRef.current.schedule(next);
+    } else {
+      setConnection(next);
+    }
   }
 
   function finishConnection(event: PointerEvent<HTMLButtonElement>) {
@@ -566,6 +870,7 @@ export function WorkflowCanvas() {
     if (!current || current.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    connectionRenderRef.current?.cancel();
     if (event.type === "pointercancel") {
       connectionRef.current = null;
       setConnection(null);
@@ -635,7 +940,20 @@ export function WorkflowCanvas() {
       assetName: file.name,
       assetMimeType: file.type,
       text: file.name,
+      ...(node.kind === "image"
+        ? { width: undefined, height: undefined }
+        : {}),
     }));
+  }
+
+  function fitImageNodeToMedia(
+    nodeId: string,
+    naturalWidth: number,
+    naturalHeight: number,
+  ) {
+    setGraph((current) =>
+      fitWorkflowImageNode(current, nodeId, naturalWidth, naturalHeight),
+    );
   }
 
   function updateSchedulerKind(node: WorkflowSchedulerNode, outputKind: ComposerMode) {
@@ -657,26 +975,54 @@ export function WorkflowCanvas() {
     }));
   }
 
-  async function runScheduler(scheduler: WorkflowSchedulerNode) {
-    if (runningSchedulers.has(scheduler.id)) return;
-    const inputs = readWorkflowInputs(graph, scheduler.id);
+  const commitGraph = useCallback(
+    (updater: (current: WorkflowGraph) => WorkflowGraph) => {
+      setGraph((current) => {
+        const next = updater(current);
+        graphRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const runScheduler = useCallback(async (schedulerId: string) => {
+    if (runningSchedulersRef.current.has(schedulerId)) return;
+    const scheduler = graphRef.current.nodes.find(
+      (node): node is WorkflowSchedulerNode =>
+        node.id === schedulerId && node.type === "scheduler",
+    );
+    if (!scheduler) return;
+    const inputs = readWorkflowInputs(graphRef.current, scheduler.id);
     if (inputs.videos.length) {
-      setGraph((current) => updateWorkflowNode(current, scheduler.id, {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
         error: "当前模型不支持视频参考输入。",
+      }));
+      return;
+    }
+    if (
+      inputs.images.some(
+        (node) => node.type === "result" && node.status !== "success",
+      )
+    ) {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: "上游分镜图尚未生成完成。",
       }));
       return;
     }
     const prompt = buildWorkflowPrompt(inputs, scheduler.prompt);
     if (!prompt) {
-      setGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "请填写提示词或连接文本节点。" }));
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "请填写提示词或连接文本节点。" }));
       return;
     }
     const config = getModelConfig(scheduler.outputKind, scheduler.model);
     if (!config) {
-      setGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "当前模型配置无效。" }));
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "当前模型配置无效。" }));
       return;
     }
+    runningSchedulersRef.current.add(scheduler.id);
     setRunningSchedulers((current) => new Set(current).add(scheduler.id));
+    let createdResultIds: string[] = [];
     try {
       const files = await Promise.all(inputs.images.map(workflowImageToFile));
       if (files.length > config.maxReferenceImages) {
@@ -692,7 +1038,10 @@ export function WorkflowCanvas() {
         size: file.size,
         dataUrl: await fileToDataUrl(file),
       } satisfies GenerateReferenceImage)));
-      const created = createWorkflowRun(graph, scheduler.id, Date.now());
+      const created = createWorkflowRun(graphRef.current, scheduler.id, Date.now());
+      if (!created.resultIds.length) return;
+      createdResultIds = created.resultIds;
+      graphRef.current = created.graph;
       setGraph(created.graph);
       await Promise.all(created.resultIds.map(async (resultId) => {
         try {
@@ -711,7 +1060,7 @@ export function WorkflowCanvas() {
           });
           if (!response.ok) throw new Error(await readApiError(response));
           const result = (await response.json()) as GenerateResponse;
-          setGraph((current) => result.kind === "text"
+          commitGraph((current) => result.kind === "text"
             ? updateWorkflowResult(current, resultId, {
                 status: "success", progress: "", text: result.content,
               })
@@ -719,25 +1068,142 @@ export function WorkflowCanvas() {
                 status: "pending", progress: "排队中", taskId: result.taskId, startedAt: Date.now(),
               }));
         } catch (error) {
-          setGraph((current) => updateWorkflowResult(current, resultId, {
+          commitGraph((current) => updateWorkflowResult(current, resultId, {
             status: "failed",
             progress: "",
             error: error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
           }));
         }
       }));
-      setGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "" }));
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "" }));
     } catch (error) {
-      setGraph((current) => updateWorkflowNode(current, scheduler.id, {
-        error: error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
-      }));
+      const message = error instanceof Error ? error.message : "生成请求失败，请稍后重试。";
+      commitGraph((current) => {
+        let next = updateWorkflowNode(current, scheduler.id, { error: message });
+        const storyResult = next.nodes.find(
+          (node): node is WorkflowResultNode =>
+            node.type === "result" &&
+            node.schedulerId === scheduler.id &&
+            Boolean(node.storyRole),
+        );
+        if (storyResult && !createdResultIds.length) {
+          next = updateWorkflowResult(next, storyResult.id, {
+            status: "failed",
+            progress: "",
+            error: message,
+          });
+        }
+        return next;
+      });
     } finally {
+      runningSchedulersRef.current.delete(scheduler.id);
       setRunningSchedulers((current) => {
         const next = new Set(current);
         next.delete(scheduler.id);
         return next;
       });
     }
+  }, [commitGraph]);
+
+  useEffect(() => {
+    if (!hydrated || !batchRun || batchRun.status !== "running") return;
+    const advanced = advanceWorkflowBatch(graph, batchRun);
+    if (advanced.graph !== graph) {
+      graphRef.current = advanced.graph;
+      setGraph(advanced.graph);
+    }
+    if (advanced.batch !== batchRun) setBatchRun(advanced.batch);
+    advanced.readySchedulerIds.forEach((schedulerId) => {
+      void runScheduler(schedulerId);
+    });
+  }, [batchRun, graph, hydrated, runScheduler]);
+
+  function applyAgentOperations(operations: AgentOperation[]) {
+    if (!operations.length) return [];
+    const outcome = applyWorkflowAgentOperations(graphRef.current, operations);
+    graphRef.current = outcome.graph;
+    setGraph(outcome.graph);
+    return outcome.messages;
+  }
+
+  function currentAgentSnapshot() {
+    return createWorkflowAgentSnapshot(
+      graphRef.current,
+      viewportRef.current,
+      canvasSize,
+    );
+  }
+
+  function updateAssetPlanningStatus(
+    storyId: string,
+    status: "stopped" | "failed",
+  ) {
+    commitGraph((current) => markStoryAssetPlanning(current, storyId, status));
+  }
+
+  function approveFoundation(storyId: string) {
+    let message = "";
+    commitGraph((current) => {
+      const next = approveStoryFoundation(current, storyId);
+      message = "已确认主角与核心配角，正在继续规划其余资产。";
+      return next;
+    });
+    return message;
+  }
+
+  async function readAgentImages(
+    nodeIds: string[],
+  ): Promise<AgentInspectedImage[]> {
+    return Promise.all(
+      [...new Set(nodeIds)].slice(0, 5).map(async (nodeId) => {
+        const node = graphRef.current.nodes.find(
+          (candidate): candidate is WorkflowSourceNode | WorkflowResultNode =>
+            candidate.id === nodeId &&
+            candidate.type !== "scheduler" &&
+            candidate.kind === "image",
+        );
+        if (!node) throw new Error(`未找到可读取的工作流图片节点 ${nodeId}。`);
+        const file = await workflowImageToFile(node);
+        return {
+          nodeId,
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+          dataUrl: await fileToDataUrl(file),
+        };
+      }),
+    );
+  }
+
+  async function confirmAgentOperation(
+    operation: AgentDangerousOperation,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    if (operation.type === "run_story_assets") {
+      const description = describeStoryAssetRun(graphRef.current, operation);
+      const prepared = createStoryAssetBatchRun(graphRef.current, operation);
+      graphRef.current = prepared.graph;
+      setGraph(prepared.graph);
+      setBatchRun(prepared.batch);
+      return description;
+    }
+    if (operation.type !== "run_story_workflow") {
+      throw new Error("当前工作流画布不支持此确认操作。");
+    }
+    const batch = createWorkflowBatchRun(graphRef.current, operation);
+    setBatchRun(batch);
+    return describeWorkflowRun(graphRef.current, operation);
+  }
+
+  function describeAgentOperation(operation: AgentDangerousOperation) {
+    if (operation.type === "run_story_workflow") {
+      return describeWorkflowRun(graphRef.current, operation);
+    }
+    if (operation.type === "run_story_assets") {
+      return describeStoryAssetRun(graphRef.current, operation);
+    }
+    return describeDangerousOperation(operation);
   }
 
   function deleteNode(node: WorkflowNode) {
@@ -747,7 +1213,7 @@ export function WorkflowCanvas() {
     setSelectedIds((current) => current.filter((id) => id !== node.id));
     setGraph((current) => removeWorkflowNode(current, node.id));
     if (node.type === "source" && node.assetId) {
-      const url = assetUrls[node.assetId];
+      const url = assetUrlsRef.current[node.assetId];
       if (url) URL.revokeObjectURL(url);
       void deleteAsset(node.assetId);
       setAssetUrls((current) => {
@@ -759,41 +1225,96 @@ export function WorkflowCanvas() {
   }
 
   const selection = selectedIds.length > 1 ? workflowSelectionBounds(graph, selectedIds) : null;
+  const selectedAssetRefs = assetRefsForSelection(graph, selectedIds);
+  const selectedAssetStoryIds = [...new Set(
+    graph.nodes.flatMap((node) =>
+      selectedIds.includes(node.id) && node.assetRef && node.storyId
+        ? [node.storyId]
+        : [],
+    ),
+  )];
+
+  function runSelectedAssets() {
+    if (!selectedAssetRefs.length) return;
+    if (selectedAssetStoryIds.length !== 1) {
+      window.alert("请一次只选择同一短剧项目的资产。");
+      return;
+    }
+    const operation = {
+      type: "run_story_assets" as const,
+      storyId: selectedAssetStoryIds[0],
+      assetRefs: selectedAssetRefs,
+    };
+    try {
+      const description = describeStoryAssetRun(graphRef.current, operation);
+      if (!window.confirm(`${description}。确定继续吗？`)) return;
+      const prepared = createStoryAssetBatchRun(graphRef.current, operation);
+      graphRef.current = prepared.graph;
+      setGraph(prepared.graph);
+      setBatchRun(prepared.batch);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法生成选中资产。");
+    }
+  }
   const marqueeBounds = marquee ? {
     x: Math.min(marquee.startX, marquee.currentX),
     y: Math.min(marquee.startY, marquee.currentY),
     width: Math.abs(marquee.currentX - marquee.startX),
     height: Math.abs(marquee.currentY - marquee.startY),
   } : null;
-  const connectionSource = connection ? graph.nodes.find((node) => node.id === connection.nodeId) : undefined;
-  const connectionTarget = connection?.targetId ? graph.nodes.find((node) => node.id === connection.targetId) : undefined;
-  const detailNode = detailId ? graph.nodes.find((node) => node.id === detailId) : undefined;
-  const canvasStyle = {
-    "--canvas-x": `${viewport.x}px`,
-    "--canvas-y": `${viewport.y}px`,
-    "--canvas-grid-size": `${DOT_SPACING * viewport.scale}px`,
-  } as CSSProperties;
-  const worldStyle = { transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` };
+  const nodesById = useMemo(
+    () => new Map(graph.nodes.map((node) => [node.id, node])),
+    [graph.nodes],
+  );
+  const edgePaths = useMemo(
+    () => graph.edges.flatMap((edge) => {
+      const source = nodesById.get(edge.sourceId);
+      const target = nodesById.get(edge.targetId);
+      return source && target
+        ? [{ id: edge.id, path: workflowEdgePath(source, target) }]
+        : [];
+    }),
+    [graph.edges, nodesById],
+  );
+  const connectionSource = connection
+    ? nodesById.get(connection.nodeId)
+    : undefined;
+  const connectionTarget = connection?.targetId
+    ? nodesById.get(connection.targetId)
+    : undefined;
+  const detailNode = detailId ? nodesById.get(detailId) : undefined;
+  const agentSnapshot = useMemo(
+    () => isAgentOpen
+      ? createWorkflowAgentSnapshot(graph, viewport, canvasSize)
+      : {
+          mode: "workflow" as const,
+          viewport: { ...viewport, ...canvasSize },
+          nodes: [],
+          edges: [],
+        },
+    [canvasSize, graph, isAgentOpen, viewport],
+  );
 
   return (
     <main
       ref={mainRef}
       aria-label="LingkeAI 工作流画布"
       className="infinite-canvas workflow-canvas"
-      style={canvasStyle}
       onDoubleClick={handleCanvasDoubleClick}
       onPointerDown={beginCanvasPointer}
       onPointerMove={moveCanvasPointer}
       onPointerUp={finishCanvasPointer}
       onPointerCancel={finishCanvasPointer}
     >
-      <div className="canvas-world" style={worldStyle}>
+      <div
+        ref={gridRef}
+        aria-hidden="true"
+        className="workflow-grid"
+        style={WORKFLOW_GRID_STYLE}
+      />
+      <div ref={worldRef} className="canvas-world" style={WORKFLOW_WORLD_STYLE}>
         <svg className="canvas-edges" aria-hidden="true">
-          {graph.edges.map((edge) => {
-            const source = graph.nodes.find((node) => node.id === edge.sourceId);
-            const target = graph.nodes.find((node) => node.id === edge.targetId);
-            return source && target ? <path key={edge.id} d={workflowEdgePath(source, target)} /> : null;
-          })}
+          {edgePaths.map((edge) => <path key={edge.id} d={edge.path} />)}
           {connection?.moved && connectionSource ? (
             <path
               className="canvas-edge-draft"
@@ -817,12 +1338,39 @@ export function WorkflowCanvas() {
               if (event.button !== 0) return;
               event.stopPropagation();
               event.currentTarget.setPointerCapture(event.pointerId);
-              dragRef.current = { pointerId: event.pointerId, nodeIds: selectedIds, clientX: event.clientX, clientY: event.clientY };
+              dragRef.current = {
+                pointerId: event.pointerId,
+                nodeIds: selectedIds,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                pendingX: 0,
+                pendingY: 0,
+                frame: null,
+              };
             }}
             onPointerMove={dragNodes}
             onPointerUp={finishNodeDrag}
             onPointerCancel={finishNodeDrag}
           />
+        ) : null}
+
+        {selection && selectedAssetRefs.length ? (
+          <button
+            className="workflow-selection-run"
+            data-workflow-control
+            type="button"
+            style={{
+              transform: `translate(${selection.x}px, ${selection.y - 48 / viewport.scale}px)`,
+              height: 32 / viewport.scale,
+              paddingInline: 14 / viewport.scale,
+              fontSize: 12 / viewport.scale,
+              borderRadius: 16 / viewport.scale,
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={runSelectedAssets}
+          >
+            生成选中资产（{selectedAssetRefs.length}）
+          </button>
         ) : null}
 
         {graph.nodes.map((node) => (
@@ -839,7 +1387,10 @@ export function WorkflowCanvas() {
             onUpload={(file) => node.type === "source" && void uploadSource(node, file)}
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
             onModelChange={(model) => node.type === "scheduler" && updateSchedulerModel(node, model)}
-            onRun={() => node.type === "scheduler" && void runScheduler(node)}
+            onRun={() => node.type === "scheduler" && void runScheduler(node.id)}
+            onMediaLoad={(width, height) =>
+              fitImageNodeToMedia(node.id, width, height)
+            }
             onResume={() => node.type === "result" && (() => {
               const resumed = { ...node, status: "pending" as const, progress: "准备继续查询", startedAt: Date.now() };
               setGraph((current) => updateWorkflowResult(current, node.id, resumed));
@@ -897,11 +1448,48 @@ export function WorkflowCanvas() {
           onClose={() => setDetailId(null)}
         />
       ) : null}
+
+      {!isAgentOpen ? (
+        <button
+          aria-label="打开工作流 Agent"
+          className="fixed top-4 right-4 z-40 inline-flex h-10 items-center gap-2 rounded-full border border-black/8 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
+          data-workflow-isolated
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => setIsAgentOpen(true)}
+        >
+          <Bot aria-hidden="true" size={16} />
+          画布 Agent
+        </button>
+      ) : null}
+
+      <CanvasAgentSidebar
+        open={isAgentOpen}
+        snapshot={agentSnapshot}
+        conversationStorageKey={WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY}
+        legacyStorageKey=""
+        subtitle="GPT-5.6 Sol · 可规划并运行工作流"
+        emptyMessage="粘贴完整剧本后，我会先分析类型、主题、受众、情绪和时长，再逐批搭建人物、场景与道具资产库。"
+        intakePlaceholder="粘贴完整剧本或输入资产规划要求…"
+        focusedNodeId={agentContextNodeId ?? undefined}
+        onClose={() => {
+          setIsAgentOpen(false);
+          setAgentContextNodeId(null);
+        }}
+        onClearFocus={() => setAgentContextNodeId(null)}
+        onApplyOperations={applyAgentOperations}
+        getSnapshot={currentAgentSnapshot}
+        onPlanningInterrupted={updateAssetPlanningStatus}
+        onApproveFoundation={approveFoundation}
+        onConfirmOperation={confirmAgentOperation}
+        onReadImages={readAgentImages}
+        describeOperation={describeAgentOperation}
+      />
     </main>
   );
 }
 
-function WorkflowNodeCard({
+const WorkflowNodeCard = memo(function WorkflowNodeCard({
   node,
   assetUrl,
   assetError,
@@ -914,6 +1502,7 @@ function WorkflowNodeCard({
   onKindChange,
   onModelChange,
   onRun,
+  onMediaLoad,
   onResume,
   onPointerDown,
   onPointerMove,
@@ -932,6 +1521,7 @@ function WorkflowNodeCard({
   onKindChange: (kind: ComposerMode) => void;
   onModelChange: (model: string) => void;
   onRun: () => void;
+  onMediaLoad: (width: number, height: number) => void;
   onResume: () => void;
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
@@ -941,11 +1531,11 @@ function WorkflowNodeCard({
   const size = getWorkflowNodeSize(node);
   const kind = node.type === "scheduler" ? node.outputKind : node.kind;
   const Icon = kind === "image" ? ImageIcon : kind === "video" ? Video : FileText;
-  const title = node.type === "scheduler"
+  const title = node.label || (node.type === "scheduler"
     ? "通用调度"
     : node.type === "result"
       ? `结果 · ${kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}`
-      : `${kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}素材`;
+      : `${kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}素材`);
 
   return (
     <div
@@ -965,7 +1555,7 @@ function WorkflowNodeCard({
       }}
     >
       <header className="canvas-node-header">
-        <span className="canvas-node-kind"><Icon size={15} />{title}</span>
+        <span className="canvas-node-kind"><Icon size={15} /><span className="workflow-node-title">{title}</span></span>
         <button
           aria-label="删除节点"
           className="canvas-node-delete"
@@ -977,7 +1567,7 @@ function WorkflowNodeCard({
       </header>
 
       {node.type === "source" ? (
-        <div className="workflow-source-body">
+        <div className={`workflow-source-body${node.kind === "image" && assetUrl && !assetError ? " workflow-source-body-media" : ""}`}>
           {node.kind === "text" ? (
             <textarea
               aria-label="文本素材内容"
@@ -992,7 +1582,17 @@ function WorkflowNodeCard({
               {assetError ? <span>{assetError}</span> : assetUrl ? (
                 node.kind === "image" ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={assetUrl} alt={node.assetName || "上传图片"} />
+                  <img
+                    src={assetUrl}
+                    alt={node.assetName || "上传图片"}
+                    decoding="async"
+                    onLoad={(event) =>
+                      onMediaLoad(
+                        event.currentTarget.naturalWidth,
+                        event.currentTarget.naturalHeight,
+                      )
+                    }
+                  />
                 ) : (
                   // User-uploaded videos do not include a separate captions track.
                   // eslint-disable-next-line jsx-a11y/media-has-caption
@@ -1017,11 +1617,17 @@ function WorkflowNodeCard({
           onRun={onRun}
         />
       ) : (
-        <ResultBody node={node} onResume={onResume} />
+        <ResultBody node={node} onResume={onResume} onMediaLoad={onMediaLoad} />
       )}
     </div>
   );
-}
+}, (previous, next) =>
+  previous.node === next.node &&
+  previous.assetUrl === next.assetUrl &&
+  previous.assetError === next.assetError &&
+  previous.connectionTarget === next.connectionTarget &&
+  previous.running === next.running,
+);
 
 function SchedulerControls({ node, running, onChange, onKindChange, onModelChange, onRun }: {
   node: WorkflowSchedulerNode;
@@ -1036,7 +1642,7 @@ function SchedulerControls({ node, running, onChange, onKindChange, onModelChang
   return (
     <div className="workflow-scheduler" data-workflow-control onPointerDown={(event) => event.stopPropagation()}>
       <div className="workflow-field-row">
-        <label>输出类型<select value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
+        <label>输出类型<select disabled={node.assetRole === "scheduler"} value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
           <option value="text">文本</option><option value="image">图片</option><option value="video">视频</option>
         </select></label>
         <label>模型<select value={node.model} onChange={(event) => onModelChange(event.target.value)}>
@@ -1048,7 +1654,7 @@ function SchedulerControls({ node, running, onChange, onKindChange, onModelChang
         <label>比例<select value={node.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.target.value })}>{config?.aspectRatios.map((value) => <option key={value}>{value}</option>)}</select></label>
         <label>清晰度<select value={node.resolution} onChange={(event) => onChange({ resolution: event.target.value })}>{config?.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
         {node.outputKind === "video" ? <label>时长<select value={node.duration} onChange={(event) => onChange({ duration: event.target.value })}>{config?.durations.map((value) => <option key={value} value={value}>{value} 秒</option>)}</select></label> : null}
-        <label>数量<select value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>数量<select disabled={node.assetRole === "scheduler"} value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
       </div> : null}
       {node.error ? <p className="workflow-scheduler-error">{node.error}</p> : null}
       <button className="workflow-run" disabled={running} type="button" onClick={onRun}>
@@ -1059,23 +1665,35 @@ function SchedulerControls({ node, running, onChange, onKindChange, onModelChang
   );
 }
 
-function ResultBody({ node, onResume }: { node: WorkflowResultNode; onResume: () => void }) {
+function ResultBody({ node, onResume, onMediaLoad }: { node: WorkflowResultNode; onResume: () => void; onMediaLoad: (width: number, height: number) => void }) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
   if (node.kind === "image" && node.resultUrl) return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img className="workflow-result-media" src={node.resultUrl} alt="工作流生成图片" />
+    <img
+      className="workflow-result-media"
+      src={node.resultUrl}
+      alt="工作流生成图片"
+      decoding="async"
+      onLoad={(event) =>
+        onMediaLoad(
+          event.currentTarget.naturalWidth,
+          event.currentTarget.naturalHeight,
+        )
+      }
+    />
   );
   if (node.kind === "video" && node.resultUrl) return (
     // Generated videos do not include a separate captions track.
     // eslint-disable-next-line jsx-a11y/media-has-caption
     <video className="workflow-result-media" src={node.resultUrl} controls preload="metadata" />
   );
+  if (node.status === "ready") return <div className="canvas-node-loading"><span>{node.progress || "待生成"}</span></div>;
   if (node.status === "paused") return <div className="canvas-node-loading"><span>{node.progress}</span><button className="workflow-resume" type="button" data-workflow-control onClick={onResume}><RotateCcw size={13} />继续查询</button></div>;
   return <div className="canvas-node-loading"><LoaderCircle className="animate-spin" size={20} /><span>{node.progress || "处理中"}</span></div>;
 }
 
-function WorkflowNodeOverlay({ node, onConnectDown, onConnectMove, onConnectUp, onResizeDown, onResizeMove, onResizeUp }: {
+const WorkflowNodeOverlay = memo(function WorkflowNodeOverlay({ node, onConnectDown, onConnectMove, onConnectUp, onResizeDown, onResizeMove, onResizeUp }: {
   node: WorkflowNode;
   onConnectDown: (event: PointerEvent<HTMLButtonElement>) => void;
   onConnectMove: (event: PointerEvent<HTMLButtonElement>) => void;
@@ -1113,7 +1731,7 @@ function WorkflowNodeOverlay({ node, onConnectDown, onConnectMove, onConnectUp, 
       />)}
     </div>
   </>;
-}
+}, (previous, next) => previous.node === next.node);
 
 function WorkflowCreationMenu({ point, onCreate }: { point: CreationMenu; onCreate: (type: ComposerMode | "scheduler") => void }) {
   const items = [

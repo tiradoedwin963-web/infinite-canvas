@@ -45,16 +45,56 @@ test("server-renders the infinite canvas with the LingkeAI composer", async () =
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
 });
 
-test("loads the image tool manual through the agent route", async () => {
-  const [route, manual] = await Promise.all([
+test("loads the creation, workflow, and asset tool manuals through the agent route", async () => {
+  const [route, agentInstructions, manual, workflowManual, assetManual] = await Promise.all([
     readFile(new URL("../app/api/ai/agent/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../agent.md", import.meta.url), "utf8"),
     readFile(new URL("../tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../workflow-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../story-asset-tools.md", import.meta.url), "utf8"),
   ]);
   assert.match(route, /tools\.md\?raw/);
+  assert.match(route, /workflow-tools\.md\?raw/);
+  assert.match(route, /story-asset-tools\.md\?raw/);
   assert.match(route, /toolManual/);
+  assert.match(route, /workflowToolManual/);
+  assert.match(route, /storyAssetToolManual/);
+  assert.match(agentInstructions, /progress_summary/);
+  assert.match(agentInstructions, /不得输出逐步推理、隐含思维链/);
   assert.match(manual, /gemini-3-pro-image-preview/);
   assert.match(manual, /gpt-image-2/);
   assert.doesNotMatch(manual, /gpt-5\.6-sol|doubao-seedance/);
+  assert.match(workflowManual, /create_story_workflow/);
+  assert.match(workflowManual, /run_story_workflow/);
+  assert.match(assetManual, /create_story_analysis/);
+  assert.match(assetManual, /create_story_asset_batch/);
+  assert.match(assetManual, /run_story_assets/);
+  assert.match(assetManual, /visual_style/);
+  assert.match(assetManual, /foundation_role/);
+  assert.match(assetManual, /图1为主角结果，图2为核心配角结果/);
+});
+
+test("streams sanitized agent progress and keeps operations behind the final result", async () => {
+  const [route, provider, sidebar, stream] = await Promise.all([
+    readFile(new URL("../app/api/ai/agent/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ai/agent-provider.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/canvas-agent-sidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ai/agent-stream.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /text\/event-stream/);
+  assert.match(route, /request\.signal/);
+  assert.match(route, /send\("progress"/);
+  assert.match(route, /send\("result"/);
+  assert.match(provider, /stream: true/);
+  assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
+  assert.match(stream, /extractProgressSummary/);
+  assert.match(stream, /item\.event === "result"/);
+  assert.match(sidebar, /readAgentSseResponse/);
+  assert.match(sidebar, /处理摘要：/);
+  assert.match(sidebar, /确认基础角色并继续/);
+  assert.match(sidebar, /awaiting-foundation-approval/);
+  assert.match(sidebar, /已等待/);
+  assert.match(sidebar, /runAgentRequestWithTimeout/);
 });
 
 test("removes the disposable starter surface", async () => {
@@ -279,7 +319,7 @@ test("removes the disposable starter surface", async () => {
   assert.match(agentSidebar, /aria-label="新建 Agent 对话"/);
   assert.match(agentSidebar, /Agent 历史对话列表/);
   assert.match(agentSidebar, /isDangerousAgentOperation/);
-  assert.match(agentSidebar, /正在读取画布并思考/);
+  assert.match(agentSidebar, /正在读取画布并处理/);
   assert.match(agentSidebar, /全部确认（\{pendingConfirmations\.length\}）/);
   assert.match(agentSidebar, /runAgentConfirmationWithTimeout/);
   assert.match(agentSidebar, /确认内容已失效/);
@@ -320,10 +360,52 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflow, /文本生成/);
   assert.match(workflow, /图片生成/);
   assert.match(workflow, /视频生成/);
+  assert.match(workflow, /<CanvasAgentSidebar/);
+  assert.match(workflow, /WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY/);
+  assert.match(workflow, /describeWorkflowRun/);
+  assert.match(workflow, /advanceWorkflowBatch/);
+  assert.match(workflow, /提交状态未知/);
+  assert.match(workflow, /aria-label="打开工作流 Agent"/);
+  assert.match(workflow, /先分析类型、主题、受众、情绪和时长/);
+  assert.match(workflow, /粘贴完整剧本或输入资产规划要求/);
+  assert.match(workflow, /生成选中资产/);
+  assert.match(workflow, /createStoryAssetBatchRun/);
+  assert.match(workflow, /markStoryAssetPlanning/);
+  assert.match(workflow, /fitWorkflowImageNode/);
+  assert.match(workflow, /createWorkflowViewportController/);
+  assert.match(workflow, /workflowGridTransform/);
+  assert.match(workflow, /className="workflow-grid"/);
+  assert.match(workflow, /world\.style\.transform/);
+  assert.match(workflow, /controller\.pan\(-deltaX, -deltaY\)/);
+  assert.match(workflow, /controller\.zoom\(anchor, wheelZoomFactor\(deltaY, true\)\)/);
+  assert.doesNotMatch(workflow, /setViewport\(\(current\)/);
+  assert.doesNotMatch(workflow, /style\.setProperty\("--canvas-/);
+  assert.match(workflow, /createWorkflowGraphPersistence/);
+  assert.match(workflow, /createWorkflowRafBatcher/);
+  assert.match(workflow, /resizeRenderRef\.current\.schedule\(update\)/);
+  assert.match(workflow, /marqueeRenderRef\.current\.schedule\(next\)/);
+  assert.match(workflow, /connectionRenderRef\.current\.schedule\(next\)/);
+  assert.match(workflow, /persistenceRef\.current\?\.schedule\(graph\)/);
+  assert.match(workflow, /const WorkflowNodeCard = memo/);
+  assert.match(workflow, /const WorkflowNodeOverlay = memo/);
+  assert.match(workflow, /const edgePaths = useMemo/);
+  assert.match(workflow, /isAgentOpen[\s\S]*?createWorkflowAgentSnapshot/);
+  assert.match(workflow, /event\.currentTarget\.naturalWidth/);
+  assert.match(workflow, /decoding="async"/);
+  assert.match(workflow, /workflow-source-body-media/);
   assert.match(workflowGraph, /lingke-workflow-canvas-v1/);
+  assert.match(workflowGraph, /export function createStoryWorkflow/);
+  assert.match(workflowGraph, /export function fitWorkflowImageNode/);
   assert.match(workflowGraph, /export function createConnectedScheduler/);
   assert.match(styles, /\.canvas-mode-switch \{/);
   assert.match(styles, /\.workflow-scheduler \{/);
+  assert.match(styles, /\.workflow-source-body-media \{/);
+  assert.match(styles, /\.workflow-node-title \{/);
+  assert.match(styles, /\.workflow-selection-run \{/);
+  assert.match(styles, /\.workflow-canvas \{[\s\S]*?background-image: none;/);
+  assert.match(styles, /\.workflow-grid \{[\s\S]*?contain: strict;/);
+  assert.match(styles, /data-workflow-viewport-active[\s\S]*?will-change: transform;/);
+  assert.match(styles, /\.workflow-node \{[\s\S]*?content-visibility: auto;/);
   assert.match(viteConfig, /port: 3001/);
   assert.match(viteConfig, /strictPort: true/);
 });

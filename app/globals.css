@@ -47,6 +47,32 @@ body {
   pointer-events: none;
 }
 
+.workflow-canvas {
+  background-image: none;
+}
+
+.workflow-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  contain: strict;
+  transform-origin: 0 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle,
+    var(--canvas-dot) 1.1px,
+    transparent 1.2px
+  );
+  background-size: 24px 24px;
+}
+
+.workflow-canvas[data-workflow-viewport-active] .workflow-grid,
+.workflow-canvas[data-workflow-viewport-active] .canvas-world,
+.workflow-node-transforming {
+  will-change: transform;
+}
+
 .canvas-edges {
   position: absolute;
   top: 0;
@@ -747,7 +773,14 @@ body {
 }
 
 .workflow-node {
+  contain: layout style;
+  content-visibility: auto;
   cursor: grab;
+}
+
+.workflow-canvas .canvas-node-handle-layer,
+.workflow-canvas .canvas-node-resize-layer {
+  contain: layout style;
 }
 
 .workflow-node-scheduler {
@@ -767,6 +800,50 @@ body {
   display: grid;
   overflow: hidden;
   padding: 12px;
+}
+
+.workflow-source-body-media {
+  padding: 0;
+}
+
+.workflow-source-body-media .workflow-upload {
+  border: 0;
+  border-radius: 0 0 19px 19px;
+}
+
+.workflow-node .canvas-node-kind,
+.workflow-node-title {
+  min-width: 0;
+}
+
+.workflow-selection-run {
+  position: absolute;
+  z-index: 22;
+  border: 0;
+  background: #18181b;
+  color: white;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgb(24 24 27 / 18%);
+  cursor: pointer;
+}
+
+.workflow-selection-run:hover {
+  background: #27272a;
+}
+
+.workflow-node-title {
+  display: block;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-node .canvas-node-kind svg,
+.workflow-node .canvas-node-delete {
+  flex: 0 0 auto;
 }
 
 .workflow-source-body textarea {

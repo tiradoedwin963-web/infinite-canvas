@@ -26,7 +26,24 @@ const clientConfig = {
   apiKey: "secret",
   instructions: "RUNTIME_AGENT_MD_MARKER",
   toolManual: "RUNTIME_IMAGE_TOOL_MANUAL_MARKER",
+  workflowToolManual: "RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER",
+  storyAssetToolManual: "RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER",
 };
+
+function upstreamSseResponse(content) {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const character of content) {
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: character } }] })}\n\n`,
+        ));
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  }), { headers: { "content-type": "text/event-stream" } });
+}
 
 test("validates agent history and requires a final user message", () => {
   assert.equal(validateAgentRequest(request()).messages[0].content, "整理画布");
@@ -35,6 +52,20 @@ test("validates agent history and requires a final user message", () => {
     () => validateAgentRequest(request({ messages: [{ role: "assistant", content: "ok" }] })),
     /请输入/,
   );
+});
+
+test("preserves a complete long script while keeping only the last 20 messages", () => {
+  const completeScript = `${"剧".repeat(25_326)}剧本已完`;
+  assert.equal(completeScript.length, 25_330);
+  const messages = Array.from({ length: 21 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: index === 20 ? `  ${completeScript}  ` : `消息 ${index}`,
+  }));
+  const validated = validateAgentRequest(request({ messages, phase: "active" }));
+  assert.equal(validated.messages.length, 20);
+  assert.equal(validated.messages[0].content, "消息 1");
+  assert.equal(validated.messages.at(-1).content, completeScript);
+  assert.match(validated.messages.at(-1).content, /剧本已完$/);
 });
 
 test("validates inspected image count, type, and total size", () => {
@@ -62,6 +93,7 @@ test("validates inspected image count, type, and total size", () => {
 
 test("calls the fixed agent model and parses its JSON response", async () => {
   let upstreamRequest;
+  const summaries = [];
   const client = createCanvasAgentClient(
     { ...clientConfig, baseUrl: "https://lingke.example/" },
     async (url, init) => {
@@ -71,20 +103,61 @@ test("calls the fixed agent model and parses its JSON response", async () => {
       });
     },
   );
-  const response = await client.respond(validateAgentRequest(request()));
+  const response = await client.respond(validateAgentRequest(request()), {
+    onProgress: (text) => summaries.push(text),
+  });
   assert.equal(response.workflowState, "clarifying");
+  assert.equal(response.progressSummary, "已完成当前阶段处理，正在校验可应用结果。");
+  assert.deepEqual(summaries, [response.progressSummary]);
   assert.equal(upstreamRequest.url, "https://lingke.example/v1/chat/completions");
   assert.equal(upstreamRequest.body.model, "gpt-5.6-sol");
+  assert.equal(upstreamRequest.body.stream, true);
   assert.equal(upstreamRequest.init.headers.Authorization, "Bearer secret");
   assert.match(JSON.stringify(upstreamRequest.body.messages), /画布快照/);
   assert.match(JSON.stringify(upstreamRequest.body.messages), /RUNTIME_AGENT_MD_MARKER/);
   const systemMessage = upstreamRequest.body.messages[0].content;
   assert.match(systemMessage, /RUNTIME_IMAGE_TOOL_MANUAL_MARKER/);
+  assert.match(systemMessage, /RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER/);
+  assert.match(systemMessage, /RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER/);
   assert.match(systemMessage, /"mode":"text","model":"gpt-5\.6-sol"/);
   assert.match(systemMessage, /"model":"gemini-3-pro-image-preview"/);
   assert.match(systemMessage, /"aspectRatios":\["1:1","4:3","3:4","16:9","9:16"\]/);
   assert.match(systemMessage, /model 字段只能填写 model 值/);
   assert.doesNotMatch(systemMessage, /text:gpt-5\.6-sol/);
+});
+
+test("streams only the controlled progress summary and returns the validated result", async () => {
+  const summaries = [];
+  const raw = JSON.stringify({
+    progress_summary: "已读取22场；识别10名独立人物。",
+    message: "已完成分析。",
+    workflow_state: "active",
+    operations: [],
+  });
+  const client = createCanvasAgentClient(
+    clientConfig,
+    async (_url, init) => {
+      assert.equal(init.signal.aborted, false);
+      return upstreamSseResponse(raw);
+    },
+  );
+  const controller = new AbortController();
+  const response = await client.respond(
+    validateAgentRequest(request({
+      phase: "active",
+      messages: [
+        { role: "user", content: "剧本" },
+        { role: "assistant", content: "请补充" },
+        { role: "user", content: "剧本已完" },
+      ],
+    })),
+    { signal: controller.signal, onProgress: (text) => summaries.push(text) },
+  );
+  assert.equal(response.progressSummary, "已读取22场；识别10名独立人物。");
+  assert.equal(response.message, "已完成分析。");
+  assert.equal(summaries.at(-1), response.progressSummary);
+  assert.ok(summaries.length > 2);
+  assert.ok(summaries.every((summary) => !/operations|node_id/.test(summary)));
 });
 
 test("normalizes an image draft without making a second agent request", async () => {
@@ -133,6 +206,62 @@ test("rejects model output that tries to execute on the intake turn", async () =
   await assert.rejects(() => client.respond(validateAgentRequest(request())), /首轮必须/);
 });
 
+test("requires a complete script to create analysis before storyboards", async () => {
+  const client = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({
+      message: "已完成剧本分析。",
+      workflow_state: "active",
+      operations: [{
+        type: "create_story_analysis",
+        ref: "story-1",
+        title: "夜班电梯",
+        analysis: {
+          genre: "悬疑",
+          theme: "信任",
+          audience: "短剧用户",
+          emotion: "紧张到释然",
+          estimated_duration: "90 秒",
+          visual_style: "写实水粉、柔和边缘与低饱和夜景",
+        },
+        project_aspect_ratio: "9:16",
+        image_model: "gemini-3-pro-image-preview",
+      }],
+    }) } }],
+  }));
+  const response = await client.respond(validateAgentRequest(request({
+    canvas: { ...canvas, mode: "workflow" },
+  })));
+  assert.equal(response.operations[0].type, "create_story_analysis");
+  assert.equal(response.operations[0].imageModel, "gemini-3-pro-image-preview");
+  assert.equal(response.operations[0].projectAspectRatio, "9:16");
+
+  const legacyClient = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({
+      message: "直接建分镜",
+      workflow_state: "active",
+      operations: [{
+        type: "create_story_workflow",
+        ref: "story-1",
+        title: "夜班电梯",
+        global_context: "固定角色和场景",
+        chunk_index: 0,
+        is_final: true,
+        shots: [{
+          ref: "shot-01",
+          title: "停电",
+          script: "灯灭了。",
+          image_prompt: "电梯内静态关键帧",
+          video_prompt: "灯光熄灭",
+        }],
+      }],
+    }) } }],
+  }));
+  await assert.rejects(
+    () => legacyClient.respond(validateAgentRequest(request({ canvas: { ...canvas, mode: "workflow" } }))),
+    /必须先进行剧本分析/,
+  );
+});
+
 test("sends inspected images only in the current request", async () => {
   let body;
   const client = createCanvasAgentClient(
@@ -177,4 +306,28 @@ test("sanitizes upstream errors and invalid model output", async () => {
     async () => Response.json({ choices: [{ message: { content: "not-json" } }] }),
   );
   await assert.rejects(() => invalidClient.respond(validateAgentRequest(request())), /无法识别/);
+
+  const contextClient = createCanvasAgentClient(
+    clientConfig,
+    async () => Response.json(
+      { error: { message: "context_length_exceeded", secret: "sk-sensitive" } },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(
+    () => contextClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      /超过上游模型上下文限制/.test(error.message) &&
+      !/sensitive/.test(error.message),
+  );
+
+  const bodyClient = createCanvasAgentClient(
+    clientConfig,
+    async () => Response.json({ error: "too large" }, { status: 413 }),
+  );
+  await assert.rejects(
+    () => bodyClient.respond(validateAgentRequest(request())),
+    /超过上游模型上下文限制/,
+  );
 });

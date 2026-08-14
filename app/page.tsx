@@ -1164,6 +1164,9 @@ function CreationCanvas() {
         ? "已删除本地节点并停止查询；远端任务可能仍继续产生费用。"
         : "已删除节点及其连线。";
     }
+    if (operation.type === "run_story_workflow") {
+      throw new Error("短剧工作流操作不能在创作画布执行。");
+    }
 
     const modelId = normalizeAgentModelId(operation.mode, operation.model);
     const model = getModelConfig(operation.mode, modelId);

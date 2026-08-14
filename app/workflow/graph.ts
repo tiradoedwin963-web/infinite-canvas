@@ -5,11 +5,16 @@ import {
   type ComposerMode,
 } from "../ai/models.ts";
 import type { TaskStatusResponse } from "../ai/types";
+import type { AgentCreateStoryWorkflowOperation } from "../ai/agent.ts";
 
 export const WORKFLOW_STORAGE_KEY = "lingke-workflow-canvas-v1";
 export const WORKFLOW_VERSION = 1;
 export const WORKFLOW_NODE_WIDTH = 288;
 export const WORKFLOW_NODE_HEIGHT = 200;
+export const WORKFLOW_NODE_HEADER_HEIGHT = 42;
+export const WORKFLOW_IMAGE_PREVIEW_EDGE = 288;
+const WORKFLOW_MEDIA_MIN_EDGE = 96;
+const WORKFLOW_MEDIA_MAX_EDGE = 1200;
 
 export type WorkflowNodeStatus =
   | "ready"
@@ -19,12 +24,55 @@ export type WorkflowNodeStatus =
   | "failed"
   | "paused";
 
+export type WorkflowStoryRole =
+  | "project"
+  | "analysis"
+  | "asset-spec"
+  | "asset-scheduler"
+  | "asset-result"
+  | "shot"
+  | "storyboard-scheduler"
+  | "storyboard"
+  | "video-scheduler"
+  | "clip";
+
+export type WorkflowAssetKind = "character" | "scene" | "prop";
+export type WorkflowAssetRole = "spec" | "scheduler" | "result";
+export type WorkflowAssetPlanningStage =
+  | "character"
+  | "scene"
+  | "prop"
+  | "complete";
+export type WorkflowAssetPlanningStatus =
+  | "planning"
+  | "awaiting-foundation-generation"
+  | "awaiting-foundation-approval"
+  | "stopped"
+  | "failed"
+  | "complete";
+
 type WorkflowNodeBase = {
   id: string;
   x: number;
   y: number;
   width?: number;
   height?: number;
+  label?: string;
+  storyId?: string;
+  shotRef?: string;
+  storyRole?: WorkflowStoryRole;
+  assetRef?: string;
+  assetKind?: WorkflowAssetKind;
+  assetRole?: WorkflowAssetRole;
+  foundationRole?: "lead" | "support";
+  assetStrategy?: "foundation-pair-v1";
+  foundationApprovedAt?: number;
+  storyVisualStyle?: string;
+  planningStage?: WorkflowAssetPlanningStage;
+  planningStatus?: WorkflowAssetPlanningStatus;
+  planningChunkIndex?: number;
+  projectAspectRatio?: string;
+  storyImageModel?: string;
 };
 
 export type WorkflowSourceNode = WorkflowNodeBase & {
@@ -117,7 +165,53 @@ function validBase(node: Partial<WorkflowNode>) {
         node.width > 0 &&
         typeof node.height === "number" &&
         Number.isFinite(node.height) &&
-        node.height > 0))
+        node.height > 0)) &&
+    (node.label === undefined || typeof node.label === "string") &&
+    (node.storyId === undefined || typeof node.storyId === "string") &&
+    (node.shotRef === undefined || typeof node.shotRef === "string") &&
+    (node.storyRole === undefined ||
+      [
+        "project",
+        "analysis",
+        "asset-spec",
+        "asset-scheduler",
+        "asset-result",
+        "shot",
+        "storyboard-scheduler",
+        "storyboard",
+        "video-scheduler",
+        "clip",
+      ].includes(node.storyRole)) &&
+    (node.assetRef === undefined || typeof node.assetRef === "string") &&
+    (node.assetKind === undefined ||
+      ["character", "scene", "prop"].includes(node.assetKind)) &&
+    (node.assetRole === undefined ||
+      ["spec", "scheduler", "result"].includes(node.assetRole)) &&
+    (node.foundationRole === undefined ||
+      ["lead", "support"].includes(node.foundationRole)) &&
+    (node.assetStrategy === undefined ||
+      node.assetStrategy === "foundation-pair-v1") &&
+    (node.foundationApprovedAt === undefined ||
+      (typeof node.foundationApprovedAt === "number" &&
+        Number.isFinite(node.foundationApprovedAt))) &&
+    (node.storyVisualStyle === undefined ||
+      typeof node.storyVisualStyle === "string") &&
+    (node.planningStage === undefined ||
+      ["character", "scene", "prop", "complete"].includes(node.planningStage)) &&
+    (node.planningStatus === undefined ||
+      [
+        "planning",
+        "awaiting-foundation-generation",
+        "awaiting-foundation-approval",
+        "stopped",
+        "failed",
+        "complete",
+      ].includes(node.planningStatus)) &&
+    (node.planningChunkIndex === undefined ||
+      (Number.isInteger(node.planningChunkIndex) && node.planningChunkIndex >= 0)) &&
+    (node.projectAspectRatio === undefined ||
+      typeof node.projectAspectRatio === "string") &&
+    (node.storyImageModel === undefined || typeof node.storyImageModel === "string")
   );
 }
 
@@ -237,6 +331,175 @@ export function createWorkflowNode(
   };
 }
 
+export function createStoryWorkflow(
+  graph: WorkflowGraph,
+  operation: AgentCreateStoryWorkflowOperation,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): { graph: WorkflowGraph; storyId: string } {
+  if (!operation.isFinal || operation.chunkIndex !== 0 || !operation.shots.length) {
+    throw new Error("短剧工作流方案尚未完整，未创建节点。");
+  }
+  const shotRefs = operation.shots.map((shot) => shot.ref);
+  if (new Set(shotRefs).size !== shotRefs.length) {
+    throw new Error("短剧工作流包含重复分镜编号。");
+  }
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  operation.shots.forEach((shot) => {
+    shot.referenceNodeIds.forEach((nodeId) => {
+      const node = nodesById.get(nodeId);
+      const usable =
+        node &&
+        node.type !== "scheduler" &&
+        node.kind === "image" &&
+        ((node.type === "source" && Boolean(node.assetId)) ||
+          (node.type === "result" && node.status === "success" && Boolean(node.resultUrl)));
+      if (!usable) throw new Error(`分镜 ${shot.ref} 引用了不可用的图片节点 ${nodeId}。`);
+    });
+  });
+
+  const storyId = idFactory();
+  const right = graph.nodes.reduce((maximum, node) => {
+    const size = getWorkflowNodeSize(node);
+    return Math.max(maximum, node.x + size.width);
+  }, -160);
+  const top = graph.nodes.length
+    ? Math.min(...graph.nodes.map((node) => node.y))
+    : 0;
+  const originX = right + 160;
+  const originY = top;
+  const columnGap = 120;
+  const columnStep = WORKFLOW_NODE_WIDTH + columnGap;
+  const rowStep = 440;
+  const createdNodes: WorkflowNode[] = [];
+  const createdEdges: WorkflowEdge[] = [];
+  const connect = (sourceId: string, targetId: string) => {
+    createdEdges.push({ id: idFactory(), sourceId, targetId });
+  };
+
+  const projectId = idFactory();
+  createdNodes.push({
+    id: projectId,
+    x: originX,
+    y: originY,
+    type: "source",
+    kind: "text",
+    text: operation.globalContext,
+    label: `${operation.title} · 项目设定`,
+    storyId,
+    storyRole: "project",
+  });
+
+  operation.shots.forEach((shot, index) => {
+    const y = originY + rowStep * (index + 1);
+    const shotId = idFactory();
+    const imageSchedulerId = idFactory();
+    const imageResultId = idFactory();
+    const videoSchedulerId = idFactory();
+    const videoResultId = idFactory();
+    const metadata = { storyId, shotRef: shot.ref };
+    createdNodes.push(
+      {
+        id: shotId,
+        x: originX,
+        y,
+        type: "source",
+        kind: "text",
+        text: shot.script,
+        label: `${shot.ref} · ${shot.title}`,
+        ...metadata,
+        storyRole: "shot",
+      },
+      {
+        id: imageSchedulerId,
+        x: originX + columnStep,
+        y,
+        width: WORKFLOW_NODE_WIDTH,
+        height: 360,
+        type: "scheduler",
+        outputKind: "image",
+        model: operation.imageModel,
+        prompt: shot.imagePrompt,
+        aspectRatio: operation.aspectRatio,
+        resolution: operation.imageResolution,
+        duration: "",
+        outputCount: 1,
+        error: "",
+        label: `${shot.ref} · 分镜图片`,
+        ...metadata,
+        storyRole: "storyboard-scheduler",
+      },
+      {
+        id: imageResultId,
+        x: originX + columnStep * 2,
+        y,
+        type: "result",
+        kind: "image",
+        schedulerId: imageSchedulerId,
+        text: `${shot.ref} 分镜图片占位`,
+        model: operation.imageModel,
+        status: "ready",
+        progress: "待生成",
+        error: "",
+        label: `${shot.ref} · 分镜图片占位`,
+        ...metadata,
+        storyRole: "storyboard",
+      },
+      {
+        id: videoSchedulerId,
+        x: originX + columnStep * 3,
+        y,
+        width: WORKFLOW_NODE_WIDTH,
+        height: 360,
+        type: "scheduler",
+        outputKind: "video",
+        model: operation.videoModel,
+        prompt: shot.videoPrompt,
+        aspectRatio: operation.aspectRatio,
+        resolution: operation.videoResolution,
+        duration: shot.duration,
+        outputCount: 1,
+        error: "",
+        label: `${shot.ref} · 视频片段`,
+        ...metadata,
+        storyRole: "video-scheduler",
+      },
+      {
+        id: videoResultId,
+        x: originX + columnStep * 4,
+        y,
+        type: "result",
+        kind: "video",
+        schedulerId: videoSchedulerId,
+        text: `${shot.ref} 视频片段占位`,
+        model: operation.videoModel,
+        status: "ready",
+        progress: "待生成",
+        error: "",
+        label: `${shot.ref} · 视频片段占位`,
+        ...metadata,
+        storyRole: "clip",
+      },
+    );
+    connect(projectId, imageSchedulerId);
+    connect(shotId, imageSchedulerId);
+    shot.referenceNodeIds.forEach((nodeId) => connect(nodeId, imageSchedulerId));
+    connect(imageSchedulerId, imageResultId);
+    connect(projectId, videoSchedulerId);
+    connect(shotId, videoSchedulerId);
+    connect(imageResultId, videoSchedulerId);
+    connect(videoSchedulerId, videoResultId);
+  });
+
+  return {
+    storyId,
+    graph: {
+      ...graph,
+      nodes: [...graph.nodes, ...createdNodes],
+      edges: [...graph.edges, ...createdEdges],
+    },
+  };
+}
+
 export function getWorkflowNodeSize(node: WorkflowNode) {
   return {
     width: node.width ?? WORKFLOW_NODE_WIDTH,
@@ -303,6 +566,57 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function constrainWorkflowMediaSize(width: number, height: number) {
+  const minimumScale = WORKFLOW_MEDIA_MIN_EDGE / Math.min(width, height);
+  const maximumScale = WORKFLOW_MEDIA_MAX_EDGE / Math.max(width, height);
+  const scale =
+    minimumScale > maximumScale
+      ? maximumScale
+      : clamp(1, minimumScale, maximumScale);
+  return { width: width * scale, height: height * scale };
+}
+
+export function fitWorkflowImageNode(
+  graph: WorkflowGraph,
+  nodeId: string,
+  naturalWidth: number,
+  naturalHeight: number,
+): WorkflowGraph {
+  if (
+    !Number.isFinite(naturalWidth) ||
+    naturalWidth <= 0 ||
+    !Number.isFinite(naturalHeight) ||
+    naturalHeight <= 0
+  ) {
+    return graph;
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  if (
+    !node ||
+    node.type === "scheduler" ||
+    node.kind !== "image" ||
+    node.width !== undefined ||
+    node.height !== undefined
+  ) {
+    return graph;
+  }
+  const current = getWorkflowNodeSize(node);
+  const previewScale =
+    WORKFLOW_IMAGE_PREVIEW_EDGE / Math.max(naturalWidth, naturalHeight);
+  const visual = constrainWorkflowMediaSize(
+    naturalWidth * previewScale,
+    naturalHeight * previewScale,
+  );
+  const width = visual.width;
+  const height = visual.height + WORKFLOW_NODE_HEADER_HEIGHT;
+  return resizeWorkflowNode(graph, nodeId, {
+    x: node.x + (current.width - width) / 2,
+    y: node.y + (current.height - height) / 2,
+    width,
+    height,
+  });
+}
+
 export function resizedWorkflowNodeBounds(
   node: WorkflowNode,
   corner: WorkflowResizeCorner,
@@ -315,12 +629,35 @@ export function resizedWorkflowNodeBounds(
   const oppositeY = north ? node.y + size.height : node.y;
   const rawWidth = Math.max(1, west ? oppositeX - point.x : point.x - oppositeX);
   const rawHeight = Math.max(1, north ? oppositeY - point.y : point.y - oppositeY);
+  const image =
+    node.type !== "scheduler" && node.kind === "image";
   const media =
     node.type !== "scheduler" &&
     (node.kind === "image" || node.kind === "video");
   let width: number;
   let height: number;
-  if (media) {
+  if (image) {
+    const currentVisualWidth = size.width;
+    const currentVisualHeight = Math.max(
+      1,
+      size.height - WORKFLOW_NODE_HEADER_HEIGHT,
+    );
+    const rawVisualWidth = rawWidth;
+    const rawVisualHeight = Math.max(
+      1,
+      rawHeight - WORKFLOW_NODE_HEADER_HEIGHT,
+    );
+    const scale = Math.max(
+      rawVisualWidth / currentVisualWidth,
+      rawVisualHeight / currentVisualHeight,
+    );
+    const visual = constrainWorkflowMediaSize(
+      currentVisualWidth * scale,
+      currentVisualHeight * scale,
+    );
+    width = visual.width;
+    height = visual.height + WORKFLOW_NODE_HEADER_HEIGHT;
+  } else if (media) {
     const scale = Math.max(rawWidth / size.width, rawHeight / size.height);
     const requestedWidth = size.width * scale;
     const requestedHeight = size.height * scale;
@@ -520,6 +857,48 @@ export function createWorkflowRun(
   );
   if (!scheduler) return { graph, resultIds: [] };
   const count = scheduler.outputKind === "text" ? 1 : scheduler.outputCount;
+  const storyResults = graph.nodes.filter(
+    (node): node is WorkflowResultNode =>
+      node.type === "result" &&
+      node.schedulerId === scheduler.id &&
+      Boolean(node.storyId) &&
+      (node.storyRole === "storyboard" ||
+        node.storyRole === "clip" ||
+        node.storyRole === "asset-result"),
+  );
+  if (storyResults.length) {
+    if (
+      storyResults.some(
+        (node) => node.status === "pending" || node.status === "running",
+      )
+    ) {
+      return { graph, resultIds: [] };
+    }
+    const reusable = storyResults.slice(0, count);
+    return {
+      resultIds: reusable.map((node) => node.id),
+      graph: {
+        ...graph,
+        nodes: graph.nodes.map((node) =>
+          reusable.some((candidate) => candidate.id === node.id)
+            ? {
+                ...node,
+                ...(node.type === "result" && node.kind === "image"
+                  ? { width: undefined, height: undefined }
+                  : {}),
+                status: "pending" as const,
+                progress: "等待提交",
+                error: "",
+                model: scheduler.model,
+                resultUrl: undefined,
+                taskId: undefined,
+                startedAt: now,
+              }
+            : node,
+        ),
+      },
+    };
+  }
   let next = graph;
   const resultIds: string[] = [];
   for (let index = 0; index < count; index += 1) {
