@@ -1213,3 +1213,29 @@
 - `docs/canvas.md`：记录独立点阵层、绘制隔离、RAF 合帧和临时 `will-change` 行为。
 - `progress.md`：追加本轮实施、验证、文件清单与回滚说明。
 - 回滚方式：本轮需在当前未提交的工作流、资产库、SSE 和第一轮性能改动之上独立提交，提交后执行 `git revert <本轮提交哈希>`；一次性清空的是浏览器本地状态，代码回滚不会自动恢复已删除节点。
+
+## 2026-08-15 - Task: 增加备案前独立 Docker 部署能力
+
+### What was done
+- 为画布增加 Node 22 多阶段镜像和独立 Compose，应用只在 Docker 网络内提供 3000 端口，由独立 Caddy 对外发布 3011。
+- Caddy 使用内部 CA为服务器 IP提供自签名 HTTPS，对页面和全部 API统一执行 Basic Auth，并关闭 SSE 代理缓冲。
+- 增加北京服务器首次部署、私有仓库只读拉取、模型密钥保护、更新、验收和回滚说明；明确不修改现有 Python 服务及备案前的 80/443 边界。
+
+### Testing
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，116 项测试全部通过。
+- `docker compose -f deploy/canvas/compose.production.yml config --quiet`：通过，三个必填运行变量均经过 Compose 校验。
+- `docker build -t infinite-canvas:deployment-test .`：通过，Node 22 Alpine 镜像完成生产构建；测试容器首页返回成功后已停止并删除。
+- `caddy validate --config /etc/caddy/Caddyfile`：通过，自签名 HTTPS、Basic Auth 和反向代理配置有效。
+- `git diff --check`：通过，无空白符错误。
+- 镜像构建中的 `npm ci` 报告 17 个依赖审计项（2 low、15 high）；本轮未执行可能造成破坏性升级的 `npm audit fix --force`，需后续单独评估依赖升级。
+
+### Notes
+- `.dockerignore`：排除依赖、构建产物、本地环境变量和开发缓存，防止密钥进入镜像上下文。
+- `Dockerfile`：构建并运行 Vinext Node 22 生产服务。
+- `deploy/canvas/compose.production.yml`：定义独立应用、Caddy、健康检查、日志轮转和持久卷。
+- `deploy/canvas/Caddyfile`：配置 3011 自签名 HTTPS、Basic Auth 和 SSE 反向代理。
+- `docs/deployment.md`：记录服务器部署、更新、验收与回滚流程。
+- `README.md`：增加服务器部署文档入口。
+- `progress.md`：追加本轮实施、验证、风险和回滚说明。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>` 移除部署能力；服务器仅停止 `/opt/infinite-canvas` 的 `app`、`caddy` 容器且不删除卷，禁止操作 `/opt/wecom-smart-service` 或执行 `docker compose down -v`。

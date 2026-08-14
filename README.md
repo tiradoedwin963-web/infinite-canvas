@@ -21,3 +21,5 @@ npm test
 ```
 
 详细交互与分支职责见 [`docs/canvas.md`](docs/canvas.md)。
+
+北京服务器的 Docker 部署、更新和回滚流程见 [`docs/deployment.md`](docs/deployment.md)。
