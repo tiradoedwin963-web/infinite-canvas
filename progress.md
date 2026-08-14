@@ -1239,3 +1239,18 @@
 - `README.md`：增加服务器部署文档入口。
 - `progress.md`：追加本轮实施、验证、风险和回滚说明。
 - 回滚方式：提交后执行 `git revert <本轮提交哈希>` 移除部署能力；服务器仅停止 `/opt/infinite-canvas` 的 `app`、`caddy` 容器且不删除卷，禁止操作 `/opt/wecom-smart-service` 或执行 `docker compose down -v`。
+
+## 2026-08-15 - Task: 修复 IP 直连的自签名 TLS 握手
+
+### What was done
+- 为备案前的 IP 入口配置 Caddy 默认 SNI，使不发送 SNI 的 IP 字面量客户端也能选择 `82.157.204.208` 的内部 CA证书。
+
+### Testing
+- `caddy validate --config /etc/caddy/Caddyfile`：通过。
+- 本地独立 Caddy 容器通过 `--connect-to` 模拟 IP 字面量且无 SNI 的访问，TLS 握手成功并按预期返回未认证 `401`；测试容器随后已停止并删除。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `deploy/canvas/Caddyfile`：增加 `default_sni 82.157.204.208`。
+- `progress.md`：追加本轮修复、验证与回滚说明。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；回滚会恢复 IP 直连 TLS 失败，不影响应用容器和现有 Python 服务。
