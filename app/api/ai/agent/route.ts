@@ -9,6 +9,8 @@ import toolManual from "@/tools.md?raw";
 import workflowToolManual from "@/workflow-tools.md?raw";
 import storyAssetToolManual from "@/story-asset-tools.md?raw";
 
+const AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000;
+
 function getClient() {
   const baseUrl = process.env.LINGKE_BASE_URL;
   const apiKey = process.env.LINGKE_API_KEY;
@@ -42,13 +44,21 @@ export async function POST(request: Request) {
   const signal = AbortSignal.any([request.signal, upstreamController.signal]);
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      let lastActivitySentAt = 0;
       const send = (event: string, data: unknown) => {
         controller.enqueue(encoder.encode(encodeAgentSseEvent(event, data)));
+      };
+      const sendActivity = () => {
+        const now = Date.now();
+        if (now - lastActivitySentAt < AGENT_ACTIVITY_EVENT_INTERVAL_MS) return;
+        lastActivitySentAt = now;
+        send("activity", {});
       };
       void Promise.resolve()
         .then(() =>
           getClient().respond(input, {
             signal,
+            onActivity: sendActivity,
             onProgress: (text) => send("progress", { text }),
           }),
         )

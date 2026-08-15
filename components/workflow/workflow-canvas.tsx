@@ -96,6 +96,7 @@ import {
   WORKFLOW_PROJECTS_STORAGE_KEY,
   createWorkflowProject,
   ensureWorkflowProjectRegistry,
+  migrateActiveWorkflowAssetLayout,
   parseWorkflowViewport,
   projectSourceAssetIds,
   removeWorkflowProject,
@@ -332,6 +333,7 @@ export function WorkflowCanvas() {
 
   useEffect(() => {
     const registry = ensureWorkflowProjectRegistry(window.localStorage);
+    migrateActiveWorkflowAssetLayout(window.localStorage, registry);
     activeProjectIdRef.current = registry.activeProjectId;
     setProjects(registry);
     loadProject(registry.activeProjectId);

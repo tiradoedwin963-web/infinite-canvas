@@ -13,11 +13,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_REQUEST_TIMEOUT_MESSAGE,
   AGENT_CHAT_STORAGE_KEY,
   AGENT_CONVERSATIONS_STORAGE_KEY,
   MAX_AGENT_CONVERSATIONS,
   MAX_AGENT_MESSAGES,
+  AgentRequestTimeoutError,
   createAgentConversation,
   createAgentConversationTitle,
   describeDangerousOperation,
@@ -318,7 +318,7 @@ export function CanvasAgentSidebar({
     setStreamingSummary("");
     setRequestStartedAt(Date.now());
     setRequestClock(Date.now());
-    return runAgentRequestWithTimeout(async (requestSignal) => {
+    return runAgentRequestWithTimeout(async (requestSignal, markActivity) => {
       const response = await fetch("/api/ai/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -333,7 +333,11 @@ export function CanvasAgentSidebar({
         signal: requestSignal,
       });
       if (!response.ok) throw new Error(await readApiError(response));
-      return readAgentSseResponse(response, setStreamingSummary);
+      return readAgentSseResponse(
+        response,
+        setStreamingSummary,
+        markActivity,
+      );
     }, signal);
   }
 
@@ -695,8 +699,7 @@ export function CanvasAgentSidebar({
       }));
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
-      const timedOut =
-        error instanceof Error && error.message === AGENT_REQUEST_TIMEOUT_MESSAGE;
+      const timedOut = error instanceof AgentRequestTimeoutError;
       if (activeAssetStoryId) {
         onPlanningInterrupted?.(
           activeAssetStoryId,
@@ -717,8 +720,8 @@ export function CanvasAgentSidebar({
                   : "已停止画布 Agent 请求，未应用本轮操作。"
                 : timedOut
                   ? activeAssetStoryId
-                    ? `${AGENT_REQUEST_TIMEOUT_MESSAGE} 已完成的分析和资产节点已保留，可发送“继续资产规划”恢复。`
-                    : `${AGENT_REQUEST_TIMEOUT_MESSAGE} 未应用本轮操作。`
+                    ? `${error.message} 已完成的分析和资产节点已保留，可发送“继续资产规划”恢复。`
+                    : `${error.message} 未应用本轮操作。`
                 : error instanceof Error
                   ? error.message
                   : "画布 Agent 请求失败。",
@@ -972,6 +975,7 @@ export function CanvasAgentSidebar({
           animate={{ x: 0 }}
           exit={{ x: "100%" }}
           transition={{ type: "spring", stiffness: 260, damping: 30 }}
+          data-workflow-isolated
           onPointerDown={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
           onWheel={(event) => event.stopPropagation()}
@@ -1028,7 +1032,7 @@ export function CanvasAgentSidebar({
           {isHistoryOpen ? (
             <div
               aria-label="Agent 历史对话列表"
-              className="absolute top-[70px] right-3 left-3 z-20 max-h-[min(420px,70vh)] overflow-y-auto rounded-2xl border border-black/10 bg-white p-2 shadow-[0_18px_54px_rgba(35,32,28,0.2)]"
+              className="absolute top-[70px] right-3 left-3 z-20 max-h-[min(420px,70vh)] overflow-y-auto overscroll-y-contain rounded-2xl border border-black/10 bg-white p-2 shadow-[0_18px_54px_rgba(35,32,28,0.2)]"
             >
               <div className="flex items-center justify-between px-2 py-1.5">
                 <span className="text-xs font-semibold text-zinc-700">历史对话</span>
@@ -1081,7 +1085,7 @@ export function CanvasAgentSidebar({
             </div>
           ) : null}
 
-          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-5">
             {messages.length === 0 ? (
               <div className="mx-auto mt-[28vh] max-w-[270px] text-center text-sm leading-6 text-zinc-500">
                 {emptyMessage}

@@ -46,6 +46,7 @@ test("extracts only the partial progress summary from streamed JSON", () => {
 
 test("reads byte-split agent SSE without exposing result before completion", async () => {
   const progress = [];
+  let activityCount = 0;
   const result = {
     progressSummary: "已读取完整剧本。",
     message: "已完成分析。",
@@ -54,6 +55,7 @@ test("reads byte-split agent SSE without exposing result before completion", asy
     operations: [],
   };
   const body = [
+    encodeAgentSseEvent("activity", {}),
     encodeAgentSseEvent("progress", { text: "已读取" }),
     encodeAgentSseEvent("progress", { text: "已读取完整剧本。" }),
     encodeAgentSseEvent("result", result),
@@ -61,8 +63,13 @@ test("reads byte-split agent SSE without exposing result before completion", asy
   const response = new Response(byteStream(body), {
     headers: { "content-type": "text/event-stream; charset=utf-8" },
   });
-  const parsed = await readAgentSseResponse(response, (text) => progress.push(text));
+  const parsed = await readAgentSseResponse(
+    response,
+    (text) => progress.push(text),
+    () => { activityCount += 1; },
+  );
   assert.deepEqual(progress, ["已读取", "已读取完整剧本。"]);
+  assert.equal(activityCount, 4);
   assert.deepEqual(parsed, result);
 });
 

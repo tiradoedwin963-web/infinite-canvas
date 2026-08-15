@@ -12,9 +12,30 @@ export const MAX_AGENT_IMAGE_TOTAL_BYTES = 30 * 1024 * 1024;
 export const AGENT_CONFIRM_TIMEOUT_MS = 60_000;
 export const AGENT_CONFIRM_TIMEOUT_MESSAGE =
   "确认请求超过 60 秒，已停止本地等待。远端任务可能仍在继续，请先检查画布再重试，避免重复计费。";
-export const AGENT_REQUEST_TIMEOUT_MS = 120_000;
-export const AGENT_REQUEST_TIMEOUT_MESSAGE =
-  "画布 Agent 单次请求超过 120 秒，已停止等待。";
+export const AGENT_FIRST_RESPONSE_TIMEOUT_MS = 180_000;
+export const AGENT_INACTIVITY_TIMEOUT_MS = 120_000;
+export const AGENT_TOTAL_TIMEOUT_MS = 600_000;
+export const AGENT_FIRST_RESPONSE_TIMEOUT_MESSAGE =
+  "画布 Agent 180 秒内未开始返回结果，已停止等待。";
+export const AGENT_INACTIVITY_TIMEOUT_MESSAGE =
+  "画布 Agent 连续 120 秒未返回新内容，已停止等待。";
+export const AGENT_TOTAL_TIMEOUT_MESSAGE =
+  "画布 Agent 单批处理超过 10 分钟，已停止等待。";
+
+export type AgentRequestTimeoutKind =
+  | "first-response"
+  | "inactivity"
+  | "total";
+
+export class AgentRequestTimeoutError extends Error {
+  readonly kind: AgentRequestTimeoutKind;
+
+  constructor(kind: AgentRequestTimeoutKind, message: string) {
+    super(message);
+    this.name = "AgentRequestTimeoutError";
+    this.kind = kind;
+  }
+}
 
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
@@ -740,49 +761,77 @@ export async function runAgentConfirmationWithTimeout<T>(
 }
 
 export async function runAgentRequestWithTimeout<T>(
-  task: (signal: AbortSignal) => Promise<T>,
+  task: (signal: AbortSignal, markActivity: () => void) => Promise<T>,
   parentSignal?: AbortSignal,
-  timeoutMs = AGENT_REQUEST_TIMEOUT_MS,
+  timeout = {
+    firstResponseMs: AGENT_FIRST_RESPONSE_TIMEOUT_MS,
+    inactivityMs: AGENT_INACTIVITY_TIMEOUT_MS,
+    totalMs: AGENT_TOTAL_TIMEOUT_MS,
+  },
 ): Promise<T> {
   const controller = new AbortController();
-  let timedOut = false;
+  let firstResponseTimer: ReturnType<typeof setTimeout> | undefined;
+  let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: AgentRequestTimeoutError | undefined;
   let rejectAbort: ((reason: unknown) => void) | undefined;
   const abort = () => controller.abort(parentSignal?.reason);
-
-  if (parentSignal?.aborted) abort();
-  else parentSignal?.addEventListener("abort", abort, { once: true });
 
   const aborted = new Promise<never>((_, reject) => {
     rejectAbort = reject;
     controller.signal.addEventListener(
       "abort",
       () => {
-        reject(
-          timedOut
-            ? new Error(AGENT_REQUEST_TIMEOUT_MESSAGE)
-            : controller.signal.reason,
-        );
+        reject(timeoutError ?? controller.signal.reason);
       },
       { once: true },
     );
   });
 
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
+  const abortForTimeout = (
+    kind: AgentRequestTimeoutKind,
+    message: string,
+  ) => {
+    if (controller.signal.aborted) return;
+    timeoutError = new AgentRequestTimeoutError(kind, message);
+    controller.abort(timeoutError);
+  };
+  const markActivity = () => {
+    if (controller.signal.aborted) return;
+    if (firstResponseTimer) {
+      clearTimeout(firstResponseTimer);
+      firstResponseTimer = undefined;
+    }
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(
+      () => abortForTimeout("inactivity", AGENT_INACTIVITY_TIMEOUT_MESSAGE),
+      timeout.inactivityMs,
+    );
+  };
+
+  firstResponseTimer = setTimeout(
+    () => abortForTimeout("first-response", AGENT_FIRST_RESPONSE_TIMEOUT_MESSAGE),
+    timeout.firstResponseMs,
+  );
+  const totalTimer = setTimeout(
+    () => abortForTimeout("total", AGENT_TOTAL_TIMEOUT_MESSAGE),
+    timeout.totalMs,
+  );
+
+  if (parentSignal?.aborted) abort();
+  else parentSignal?.addEventListener("abort", abort, { once: true });
 
   try {
     if (controller.signal.aborted) {
-      rejectAbort?.(
-        timedOut
-          ? new Error(AGENT_REQUEST_TIMEOUT_MESSAGE)
-          : controller.signal.reason,
-      );
+      rejectAbort?.(timeoutError ?? controller.signal.reason);
     }
-    return await Promise.race([task(controller.signal), aborted]);
+    return await Promise.race([
+      task(controller.signal, markActivity),
+      aborted,
+    ]);
   } finally {
-    clearTimeout(timeoutId);
+    if (firstResponseTimer) clearTimeout(firstResponseTimer);
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    clearTimeout(totalTimer);
     parentSignal?.removeEventListener("abort", abort);
   }
 }

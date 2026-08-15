@@ -1372,3 +1372,66 @@
 - `tests/story-assets.test.mjs`: verifies foundation prompts contain the final-priority white-background rule.
 - `progress.md`: records the live regression, fix, browser acceptance, and verification evidence.
 - Rollback point: after commit, run `git revert <this-task-commit>`; before commit, revert only the files listed in this entry because they also contain earlier uncommitted workflow work.
+
+## 2026-08-15 - Task: 修复长剧本 Agent 超时与侧栏滚动穿透
+
+### What was done
+
+- 将 Agent 单批固定 120 秒超时改为活动续时：首个上游响应等待 180 秒，开始响应后连续 120 秒无活动判定停滞，并保留 10 分钟单批总上限。
+- 新增不携带模型内容的内部 `activity` SSE 事件，按最多每 5 秒一次传递真实上游响应活动；处理摘要、最终结果校验和画布操作安全边界保持不变。
+- 为共享 Agent 侧栏增加工作流手势隔离和滚动边界约束，使聊天记录与历史列表可以独立滚动且不会带动画布。
+- 超时提示现在区分首响应超时、响应停滞和总时长超限；主动停止、已完成节点保留和继续规划行为保持不变。
+
+### Testing
+
+- 先运行新增针对性测试并复现失败：旧实现没有活动回调、三级超时常量或侧栏隔离标记。
+- `node --test --experimental-strip-types tests/agent.test.mjs tests/agent-stream.test.mjs tests/agent-provider.test.mjs tests/rendered-html.test.mjs`：通过，36 项针对性测试全部通过。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，122 项自动化测试全部通过。
+- Chrome 浏览器验收 `http://localhost:3011/`：聊天记录在顶部、中部、底部及越过上下滚动边界时均只改变侧栏 `scrollTop`，工作流世界层和点阵层 transform 保持不变；控制台无 warning/error，未发起 Agent、图片或视频请求。
+- `git diff --check`：执行结果见本轮最终验证。
+
+### Notes
+
+- `app/ai/agent.ts`：实现首响应、停滞和总时长三级超时及可识别的超时错误。
+- `app/ai/agent-stream.ts`：读取内部活动事件并只刷新请求计时，不更新处理摘要。
+- `app/ai/agent-provider.ts`：从上游响应头和流事件报告真实活动，兼容普通 JSON 响应。
+- `app/api/ai/agent/route.ts`：以最多每 5 秒一次的频率向浏览器发送内部活动事件。
+- `components/canvas-agent-sidebar.tsx`：接入活动续时、分类型超时提示、工作流隔离标记和滚动边界约束。
+- `tests/agent.test.mjs`：覆盖首响应超时、活动续时、停滞、总上限和主动停止。
+- `tests/agent-stream.test.mjs`：验证活动事件不进入摘要且最终结果仍需完整返回。
+- `tests/agent-provider.test.mjs`：验证流式与普通 JSON 上游响应都会报告活动。
+- `tests/rendered-html.test.mjs`：验证活动事件节流、侧栏隔离和独立滚动结构。
+- `docs/canvas.md`：记录活动续时策略、内部事件安全边界和侧栏滚动行为。
+- `progress.md`：追加本轮实现、验证、文件清单与回滚方式。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；提交前仅对上述文件逐一执行 `git restore -- <文件>`，不触碰其他工作区内容。
+
+## 2026-08-15 - Task: 修复选中资产按钮并按资产类型分层布局
+
+### What was done
+
+- 恢复“生成选中资产”的指针命中，保持按钮位于选框上层且按下不会带动画布。
+- 新建短剧资产改为“剧本分析 → 基础角色 → 其他人物 → 场景 → 道具”从左到右分带，同类型资产在本带内纵向追加，缺少的类型不保留空带。
+- 增加当前活动项目的一次性布局迁移；只改资产节点坐标，保留节点内容、尺寸、状态、任务信息、连线和其他项目。
+
+### Testing
+
+- 先运行新增针对性测试并确认旧实现缺少资产分带重排和活动项目迁移出口。
+- `node --test tests/story-assets.test.mjs tests/workflow-projects.test.mjs tests/rendered-html.test.mjs`：通过，18 项针对性测试全部通过。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，125 项自动化测试全部通过。
+- `git diff --check`：通过。
+- Chrome 验收 `http://localhost:3011/`：当前白雪公主项目中剧本分析、基础角色、其他人物、场景和道具说明列依次位于 `x=0/408/1632/2856/4080`；框选两项资产后显示“生成选中资产（2）”，计算样式为 `pointer-events: auto`，真实点击已触发费用确认框且未接受确认，未提交付费生成请求。
+
+### Notes
+
+- `app/globals.css`：为选中资产批量按钮恢复指针命中。
+- `app/workflow/story-assets.ts`：新增资产类型分带布局与纯重排函数，并让新建批次直接落在正确逻辑带。
+- `app/workflow/projects.ts`：新增只执行一次的当前活动项目布局迁移标记与执行入口。
+- `components/workflow/workflow-canvas.tsx`：在首次加载活动项目前执行一次性布局迁移。
+- `tests/story-assets.test.mjs`：覆盖全类型分带、同类型追加、缺失类型压缩及非坐标数据保持。
+- `tests/workflow-projects.test.mjs`：覆盖只迁移活动项目一次且不修改其他项目。
+- `tests/rendered-html.test.mjs`：验证批量按钮在自身样式规则内具有上层级和指针命中。
+- `docs/canvas.md`：记录资产分带、一次性活动项目迁移和选中资产批量入口。
+- `progress.md`：追加本轮实现、验证证据和回滚方式。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；提交前只反向修改本条记录列出的文件，不使用整个工作区恢复，以免覆盖未提交的超时与侧栏滚动改动。

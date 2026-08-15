@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  AGENT_REQUEST_TIMEOUT_MESSAGE,
+  AGENT_FIRST_RESPONSE_TIMEOUT_MESSAGE,
+  AGENT_INACTIVITY_TIMEOUT_MESSAGE,
+  AGENT_TOTAL_TIMEOUT_MESSAGE,
+  AgentRequestTimeoutError,
   createAgentConversation,
   createAgentConversationTitle,
   describeDangerousOperation,
@@ -407,7 +410,7 @@ test("confirmation timeout aborts the signal and reports the remote-task warning
   assert.equal(result, "done");
 });
 
-test("agent request timeout distinguishes timeout from a manual stop", async () => {
+test("agent request timeout distinguishes first response, inactivity, total, and manual stop", async () => {
   let timeoutSignal;
   await assert.rejects(
     runAgentRequestWithTimeout(
@@ -416,11 +419,51 @@ test("agent request timeout distinguishes timeout from a manual stop", async () 
         return new Promise(() => {});
       },
       undefined,
-      5,
+      { firstResponseMs: 5, inactivityMs: 20, totalMs: 40 },
     ),
-    (error) => error instanceof Error && error.message === AGENT_REQUEST_TIMEOUT_MESSAGE,
+    (error) =>
+      error instanceof AgentRequestTimeoutError &&
+      error.kind === "first-response" &&
+      error.message === AGENT_FIRST_RESPONSE_TIMEOUT_MESSAGE,
   );
   assert.equal(timeoutSignal.aborted, true);
+
+  let markActivity;
+  const inactive = runAgentRequestWithTimeout(
+    (_signal, activity) => {
+      markActivity = activity;
+      return new Promise(() => {});
+    },
+    undefined,
+    { firstResponseMs: 20, inactivityMs: 8, totalMs: 50 },
+  );
+  markActivity();
+  await new Promise((resolve) => setTimeout(resolve, 4));
+  markActivity();
+  await assert.rejects(
+    inactive,
+    (error) =>
+      error instanceof AgentRequestTimeoutError &&
+      error.kind === "inactivity" &&
+      error.message === AGENT_INACTIVITY_TIMEOUT_MESSAGE,
+  );
+
+  const total = runAgentRequestWithTimeout(
+    (signal, activity) => {
+      const interval = setInterval(activity, 2);
+      signal.addEventListener("abort", () => clearInterval(interval), { once: true });
+      return new Promise(() => {});
+    },
+    undefined,
+    { firstResponseMs: 10, inactivityMs: 10, totalMs: 18 },
+  );
+  await assert.rejects(
+    total,
+    (error) =>
+      error instanceof AgentRequestTimeoutError &&
+      error.kind === "total" &&
+      error.message === AGENT_TOTAL_TIMEOUT_MESSAGE,
+  );
 
   const manualController = new AbortController();
   const stopped = runAgentRequestWithTimeout(
@@ -435,12 +478,13 @@ test("agent request timeout distinguishes timeout from a manual stop", async () 
   );
 
   const result = await runAgentRequestWithTimeout(
-    async (signal) => {
+    async (signal, markActivity) => {
       assert.equal(signal.aborted, false);
+      markActivity();
       return "done";
     },
     undefined,
-    20,
+    { firstResponseMs: 20, inactivityMs: 20, totalMs: 40 },
   );
   assert.equal(result, "done");
 });

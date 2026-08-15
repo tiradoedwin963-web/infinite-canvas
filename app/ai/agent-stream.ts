@@ -84,10 +84,13 @@ export function extractProgressSummary(raw: string) {
 export async function readAgentSseResponse(
   response: Response,
   onProgress: (text: string) => void,
+  onActivity: () => void = () => {},
 ): Promise<AgentResponse> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("text/event-stream")) {
-    return (await response.json()) as AgentResponse;
+    const result = (await response.json()) as AgentResponse;
+    onActivity();
+    return result;
   }
   if (!response.body) throw new Error("画布 Agent 流式响应已中断。");
 
@@ -98,13 +101,16 @@ export async function readAgentSseResponse(
 
   const consume = (events: AgentSseEvent[]) => {
     for (const item of events) {
+      onActivity();
       let payload: unknown;
       try {
         payload = JSON.parse(item.data);
       } catch {
         throw new Error("画布 Agent 返回了无法识别的流式事件。");
       }
-      if (item.event === "progress") {
+      if (item.event === "activity") {
+        continue;
+      } else if (item.event === "progress") {
         const text =
           payload && typeof payload === "object" && "text" in payload
             ? Reflect.get(payload, "text")

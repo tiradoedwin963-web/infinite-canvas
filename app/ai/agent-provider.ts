@@ -206,6 +206,7 @@ function extractStreamText(payload: unknown): { text: string; replace: boolean }
 async function readOpenAiStream(
   response: Response,
   onProgress?: (text: string) => void,
+  onActivity?: () => void,
 ) {
   if (!response.body) {
     throw new CanvasAgentError("画布 Agent 流式响应已中断。", 502);
@@ -218,6 +219,7 @@ async function readOpenAiStream(
 
   const consume = (events: ReturnType<typeof splitSseEvents>["events"]) => {
     for (const event of events) {
+      onActivity?.();
       if (event.data === "[DONE]") continue;
       let payload: unknown;
       try {
@@ -302,6 +304,7 @@ export function createCanvasAgentClient(
       options: {
         signal?: AbortSignal;
         onProgress?: (text: string) => void;
+        onActivity?: () => void;
       } = {},
     ): Promise<AgentResponse> {
       const context = {
@@ -372,10 +375,15 @@ export function createCanvasAgentClient(
         }
         throw upstreamFailure(response, payload);
       }
+      options.onActivity?.();
       const contentType = response.headers.get("content-type") ?? "";
       let content = "";
       if (contentType.toLowerCase().includes("text/event-stream")) {
-        content = await readOpenAiStream(response, options.onProgress);
+        content = await readOpenAiStream(
+          response,
+          options.onProgress,
+          options.onActivity,
+        );
       } else {
         let payload: unknown;
         try {

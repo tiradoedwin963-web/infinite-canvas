@@ -966,6 +966,7 @@ body {
 .workflow-selection-run {
   position: absolute;
   z-index: 22;
+  pointer-events: auto;
   border: 0;
   background: #18181b;
   color: white;

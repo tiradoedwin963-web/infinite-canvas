@@ -91,6 +91,8 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(route, /text\/event-stream/);
   assert.match(route, /request\.signal/);
   assert.match(route, /send\("progress"/);
+  assert.match(route, /send\("activity"/);
+  assert.match(route, /AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000/);
   assert.match(route, /send\("result"/);
   assert.match(provider, /stream: true/);
   assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
@@ -330,6 +332,8 @@ test("removes the disposable starter surface", async () => {
   assert.match(agentSidebar, /全部确认（\{pendingConfirmations\.length\}）/);
   assert.match(agentSidebar, /runAgentConfirmationWithTimeout/);
   assert.match(agentSidebar, /确认内容已失效/);
+  assert.match(agentSidebar, /data-workflow-isolated/);
+  assert.match(agentSidebar, /overflow-y-auto overscroll-y-contain/);
   assert.match(page, /signal: AbortSignal/);
   assert.match(page, /fetch\(node\.resultUrl, \{ signal \}\)/);
   assert.match(page, /createGenerationNodes\(\s*graphRef\.current,/);
@@ -413,7 +417,9 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(styles, /\.workflow-scheduler \{/);
   assert.match(styles, /\.workflow-source-body-media \{/);
   assert.match(styles, /\.workflow-node-title \{/);
-  assert.match(styles, /\.workflow-selection-run \{/);
+  const selectionRunRule = styles.match(/\.workflow-selection-run\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(selectionRunRule, /z-index: 22;/);
+  assert.match(selectionRunRule, /pointer-events: auto;/);
   assert.match(styles, /\.workflow-canvas \{[\s\S]*?background-image: none;/);
   assert.match(styles, /\.workflow-grid \{[\s\S]*?contain: strict;/);
   assert.match(styles, /data-workflow-viewport-active[\s\S]*?will-change: transform;/);

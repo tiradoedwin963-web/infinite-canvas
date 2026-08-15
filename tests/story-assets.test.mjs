@@ -21,6 +21,7 @@ import {
   createStoryAnalysis,
   createStoryAssetBatch,
   markStoryAssetPlanning,
+  relayoutStoryAssets,
   storyFoundationState,
   syncStoryFoundationStatuses,
 } from "../app/workflow/story-assets.ts";
@@ -443,4 +444,139 @@ test("approves both foundation images before wiring every later asset as image 1
   assert.equal(rerunAnalysis.foundationApprovedAt, undefined);
   assert.equal(rerunAnalysis.planningStatus, "awaiting-foundation-generation");
   assert.equal(rerun.graph.nodes.filter((node) => !node.foundationRole && node.assetRef).length, 9);
+});
+
+test("lays out foundation, character, scene, and prop asset bands from left to right", () => {
+  const idFactory = ids();
+  const analysis = createStoryAnalysis(
+    emptyWorkflowGraph(),
+    foundationAnalysisOperation(),
+    idFactory,
+  );
+  let graph = createStoryAssetBatch(
+    analysis.graph,
+    batch(analysis.storyId, "character", 0, false, [
+      asset("lead", "阿宁", { foundationRole: "lead" }),
+      asset("support", "阿海", { foundationRole: "support" }),
+    ]),
+    idFactory,
+  ).graph;
+  graph = updateWorkflowResult(graph, storyFoundationState(graph, analysis.storyId).lead.id, {
+    status: "success",
+    resultUrl: "https://example.com/lead.png",
+  });
+  graph = updateWorkflowResult(graph, storyFoundationState(graph, analysis.storyId).support.id, {
+    status: "success",
+    resultUrl: "https://example.com/support.png",
+  });
+  graph = approveStoryFoundation(
+    syncStoryFoundationStatuses(graph),
+    analysis.storyId,
+    123,
+  );
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "character", 1, false, [asset("villager-1", "年轻村民")]),
+    idFactory,
+  ).graph;
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "character", 2, true, [asset("villager-2", "年长村民")]),
+    idFactory,
+  ).graph;
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "scene", 0, true, [asset("scene", "村庄广场")]),
+    idFactory,
+  ).graph;
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "prop", 0, true, [asset("prop", "旧雨伞")]),
+    idFactory,
+  ).graph;
+
+  const spec = (ref) => graph.nodes.find((node) =>
+    node.assetRef === ref && node.assetRole === "spec"
+  );
+  const result = (ref) => graph.nodes.find((node) =>
+    node.assetRef === ref && node.assetRole === "result"
+  );
+  const analysisNode = graph.nodes.find((node) => node.storyRole === "analysis");
+  assert.ok(analysisNode.x < spec("lead").x);
+  assert.equal(spec("lead").x, spec("support").x);
+  assert.equal(spec("villager-1").x, spec("villager-2").x);
+  assert.notEqual(spec("villager-1").y, spec("villager-2").y);
+  assert.ok(result("lead").x < spec("villager-1").x);
+  assert.ok(result("villager-1").x < spec("scene").x);
+  assert.ok(result("scene").x < spec("prop").x);
+
+  const moved = {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.storyId === analysis.storyId && node.assetRef
+        ? { ...node, x: node.x - 900, y: node.y + 37 }
+        : node
+    ),
+  };
+  const relaid = relayoutStoryAssets(moved);
+  const withoutPositions = (nodes) => nodes.map((node) =>
+    Object.fromEntries(
+      Object.entries(node).filter(([key]) => key !== "x" && key !== "y"),
+    )
+  );
+  assert.deepEqual(
+    withoutPositions(relaid.nodes),
+    withoutPositions(moved.nodes),
+  );
+  assert.deepEqual(relaid.edges, moved.edges);
+  assert.equal(
+    relaid.nodes.find((node) => node.assetRef === "lead" && node.assetRole === "spec").x,
+    spec("lead").x,
+  );
+});
+
+test("compresses missing asset kinds without leaving an empty band", () => {
+  const idFactory = ids();
+  const analysis = createStoryAnalysis(
+    emptyWorkflowGraph(),
+    foundationAnalysisOperation(),
+    idFactory,
+  );
+  let graph = createStoryAssetBatch(
+    analysis.graph,
+    batch(analysis.storyId, "character", 0, false, [
+      asset("lead", "阿宁", { foundationRole: "lead" }),
+      asset("support", "阿海", { foundationRole: "support" }),
+    ]),
+    idFactory,
+  ).graph;
+  graph = updateWorkflowResult(graph, storyFoundationState(graph, analysis.storyId).lead.id, {
+    status: "success",
+    resultUrl: "https://example.com/lead.png",
+  });
+  graph = updateWorkflowResult(graph, storyFoundationState(graph, analysis.storyId).support.id, {
+    status: "success",
+    resultUrl: "https://example.com/support.png",
+  });
+  graph = approveStoryFoundation(syncStoryFoundationStatuses(graph), analysis.storyId, 123);
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "character", 1, true, []),
+    idFactory,
+  ).graph;
+  graph = createStoryAssetBatch(
+    graph,
+    batch(analysis.storyId, "scene", 0, true, [asset("scene", "村庄广场")]),
+    idFactory,
+  ).graph;
+  const leadNodes = graph.nodes.filter((node) => node.assetRef === "lead");
+  const leadSpec = leadNodes.find((node) => node.assetRole === "spec");
+  const leadScheduler = leadNodes.find((node) => node.assetRole === "scheduler");
+  const sceneSpec = graph.nodes.find((node) =>
+    node.assetRef === "scene" && node.assetRole === "spec"
+  );
+  assert.equal(
+    sceneSpec.x - leadSpec.x,
+    3 * (leadScheduler.x - leadSpec.x),
+  );
 });

@@ -17,6 +17,22 @@ type IdFactory = () => string;
 
 const COLUMN_STEP = WORKFLOW_NODE_WIDTH + 120;
 const ROW_STEP = 440;
+const ASSET_BAND_STEP = COLUMN_STEP * 3;
+
+type StoryAssetBand = "foundation" | AgentStoryAssetKind;
+
+const ASSET_BAND_ORDER: StoryAssetBand[] = [
+  "foundation",
+  "character",
+  "scene",
+  "prop",
+];
+
+const ASSET_ROLE_COLUMN = {
+  spec: 0,
+  scheduler: 1,
+  result: 2,
+} as const;
 
 const NEXT_STAGE: Record<AgentStoryAssetKind, AgentStoryAssetKind | "complete"> = {
   character: "scene",
@@ -197,6 +213,80 @@ function findAnalysis(graph: WorkflowGraph, storyId: string) {
   );
 }
 
+function storyAssetBand(node: WorkflowNode): StoryAssetBand | undefined {
+  if (node.foundationRole) return "foundation";
+  return node.assetKind;
+}
+
+function storyAssetGroups(graph: WorkflowGraph, storyId: string) {
+  const groups = new Map<
+    string,
+    { assetRef: string; band: StoryAssetBand; nodes: WorkflowNode[] }
+  >();
+  for (const node of graph.nodes) {
+    if (node.storyId !== storyId || !node.assetRef) continue;
+    const band = storyAssetBand(node);
+    if (!band) continue;
+    const existing = groups.get(node.assetRef);
+    if (existing) {
+      existing.nodes.push(node);
+    } else {
+      groups.set(node.assetRef, {
+        assetRef: node.assetRef,
+        band,
+        nodes: [node],
+      });
+    }
+  }
+  return [...groups.values()];
+}
+
+function orderedAssetBands(
+  groups: ReturnType<typeof storyAssetGroups>,
+  pendingBand?: StoryAssetBand,
+) {
+  const present = new Set(groups.map((group) => group.band));
+  if (pendingBand) present.add(pendingBand);
+  return ASSET_BAND_ORDER.filter((band) => present.has(band));
+}
+
+function assetBandX(
+  analysisX: number,
+  bands: StoryAssetBand[],
+  band: StoryAssetBand,
+) {
+  return analysisX + COLUMN_STEP + bands.indexOf(band) * ASSET_BAND_STEP;
+}
+
+export function relayoutStoryAssets(graph: WorkflowGraph) {
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const analysis of graph.nodes) {
+    if (analysis.storyRole !== "analysis" || !analysis.storyId) continue;
+    const groups = storyAssetGroups(graph, analysis.storyId);
+    const bands = orderedAssetBands(groups);
+    for (const band of bands) {
+      const bandX = assetBandX(analysis.x, bands, band);
+      groups.filter((group) => group.band === band).forEach((group, row) => {
+        for (const node of group.nodes) {
+          if (!node.assetRole) continue;
+          positions.set(node.id, {
+            x: bandX + ASSET_ROLE_COLUMN[node.assetRole] * COLUMN_STEP,
+            y: analysis.y + ROW_STEP * (row + 1),
+          });
+        }
+      });
+    }
+  }
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    const position = positions.get(node.id);
+    if (!position || (node.x === position.x && node.y === position.y)) return node;
+    changed = true;
+    return { ...node, ...position };
+  }) as WorkflowNode[];
+  return changed ? { ...graph, nodes } : graph;
+}
+
 function foundationResult(
   graph: WorkflowGraph,
   storyId: string,
@@ -357,11 +447,15 @@ export function createStoryAssetBatch(
     existingRefs.add(asset.ref);
   }
 
-  const existingAssetCount = new Set(
-    graph.nodes
-      .filter((node) => node.storyId === operation.storyId && node.assetRef)
-      .map((node) => node.assetRef),
-  ).size;
+  const targetBand: StoryAssetBand = foundationBatch
+    ? "foundation"
+    : operation.assetKind;
+  const existingGroups = storyAssetGroups(graph, operation.storyId);
+  const bands = orderedAssetBands(existingGroups, targetBand);
+  const bandX = assetBandX(analysis.x, bands, targetBand);
+  const existingBandCount = existingGroups.filter(
+    (group) => group.band === targetBand,
+  ).length;
   const imageModel = "gpt-image-2";
   const visualStyle = analysis.storyVisualStyle || "当前项目统一视觉风格";
   const leadResult = foundationStrategy
@@ -377,7 +471,7 @@ export function createStoryAssetBatch(
   const createdEdges = [] as WorkflowGraph["edges"];
 
   operation.assets.forEach((asset, index) => {
-    const y = analysis.y + ROW_STEP * (existingAssetCount + index + 1);
+    const y = analysis.y + ROW_STEP * (existingBandCount + index + 1);
     const metadata = {
       storyId: operation.storyId,
       assetRef: asset.ref,
@@ -390,7 +484,7 @@ export function createStoryAssetBatch(
     createdNodes.push(
       {
         id: specId,
-        x: analysis.x,
+        x: bandX,
         y,
         type: "source",
         kind: "text",
@@ -402,7 +496,7 @@ export function createStoryAssetBatch(
       },
       {
         id: schedulerId,
-        x: analysis.x + COLUMN_STEP,
+        x: bandX + COLUMN_STEP,
         y,
         width: WORKFLOW_NODE_WIDTH,
         height: 360,
@@ -426,7 +520,7 @@ export function createStoryAssetBatch(
       },
       {
         id: resultId,
-        x: analysis.x + COLUMN_STEP * 2,
+        x: bandX + COLUMN_STEP * 2,
         y,
         type: "result",
         kind: "image",

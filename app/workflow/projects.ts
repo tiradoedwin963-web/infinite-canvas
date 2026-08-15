@@ -7,8 +7,11 @@ import {
   parseWorkflowGraph,
   type WorkflowGraph,
 } from "./graph.ts";
+import { relayoutStoryAssets } from "./story-assets.ts";
 
 export const WORKFLOW_PROJECTS_STORAGE_KEY = "lingke-workflow-projects-v1";
+export const WORKFLOW_ASSET_LAYOUT_MIGRATION_KEY =
+  "lingke-workflow-asset-kind-layout-v1";
 export const WORKFLOW_PROJECTS_VERSION = 1;
 
 export type WorkflowProject = {
@@ -207,6 +210,23 @@ export function ensureWorkflowProjectRegistry(
   storage.removeItem(WORKFLOW_BATCH_STORAGE_KEY);
   storage.removeItem(WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY);
   return registry;
+}
+
+export function migrateActiveWorkflowAssetLayout(
+  storage: StorageLike,
+  registry: WorkflowProjectRegistry,
+) {
+  if (storage.getItem(WORKFLOW_ASSET_LAYOUT_MIGRATION_KEY) === "done") {
+    return false;
+  }
+  const graphKey = workflowProjectGraphKey(registry.activeProjectId);
+  const graph = parseWorkflowGraph(storage.getItem(graphKey));
+  const migrated = relayoutStoryAssets(graph);
+  if (migrated !== graph) {
+    storage.setItem(graphKey, JSON.stringify(migrated));
+  }
+  storage.setItem(WORKFLOW_ASSET_LAYOUT_MIGRATION_KEY, "done");
+  return true;
 }
 
 export function projectSourceAssetIds(graph: WorkflowGraph) {

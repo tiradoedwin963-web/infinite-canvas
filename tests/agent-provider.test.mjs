@@ -128,6 +128,7 @@ test("calls the fixed agent model and parses its JSON response", async () => {
 
 test("streams only the controlled progress summary and returns the validated result", async () => {
   const summaries = [];
+  let activityCount = 0;
   const raw = JSON.stringify({
     progress_summary: "已读取22场；识别10名独立人物。",
     message: "已完成分析。",
@@ -151,13 +152,33 @@ test("streams only the controlled progress summary and returns the validated res
         { role: "user", content: "剧本已完" },
       ],
     })),
-    { signal: controller.signal, onProgress: (text) => summaries.push(text) },
+    {
+      signal: controller.signal,
+      onProgress: (text) => summaries.push(text),
+      onActivity: () => { activityCount += 1; },
+    },
   );
   assert.equal(response.progressSummary, "已读取22场；识别10名独立人物。");
   assert.equal(response.message, "已完成分析。");
   assert.equal(summaries.at(-1), response.progressSummary);
   assert.ok(summaries.length > 2);
+  assert.ok(activityCount > raw.length);
   assert.ok(summaries.every((summary) => !/operations|node_id/.test(summary)));
+});
+
+test("reports activity for a non-streaming fallback response", async () => {
+  let activityCount = 0;
+  const client = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({
+      message: "请补充需求。",
+      workflow_state: "clarifying",
+      operations: [],
+    }) } }],
+  }));
+  await client.respond(validateAgentRequest(request()), {
+    onActivity: () => { activityCount += 1; },
+  });
+  assert.equal(activityCount, 1);
 });
 
 test("normalizes an image draft without making a second agent request", async () => {
