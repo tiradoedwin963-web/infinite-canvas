@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { hashPassword, verifyPassword } from "../app/server/password.ts";
+import { requestOrigin } from "../app/server/request-origin.ts";
 import { safeUpstreamUrl, workflowObjectKey } from "../app/server/storage-rules.ts";
 import { parseWorkflowGraph } from "../app/workflow/graph.ts";
 
@@ -49,6 +50,24 @@ test("generated result ingestion rejects local and non-HTTPS URLs", () => {
   assert.throws(() => safeUpstreamUrl("https://127.0.0.1/a.png"));
   assert.throws(() => safeUpstreamUrl("https://localhost/a.png"));
   assert.equal(safeUpstreamUrl("https://cdn.example.com/a.png").hostname, "cdn.example.com");
+});
+
+test("same-origin checks honor the public origin forwarded by the trusted proxy", () => {
+  const proxied = new Request("http://app:3000/api/auth/login", {
+    headers: {
+      origin: "https://82.157.204.208:3011",
+      "x-forwarded-host": "82.157.204.208:3011",
+      "x-forwarded-proto": "https",
+    },
+  });
+  const invalidProxy = new Request("http://app:3000/api/auth/login", {
+    headers: {
+      "x-forwarded-host": "82.157.204.208:3011",
+      "x-forwarded-proto": "javascript",
+    },
+  });
+  assert.equal(requestOrigin(proxied), "https://82.157.204.208:3011");
+  assert.equal(requestOrigin(invalidProxy), "http://app:3000");
 });
 
 test("cloud routes enforce ownership, revisions, private cookies and isolated Postgres", async () => {

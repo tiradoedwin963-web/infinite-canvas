@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getDatabase, type AuthenticatedUser } from "./database";
 import { cloudPersistenceEnabled } from "./config";
+import { requestOrigin } from "./request-origin";
 
 export const SESSION_COOKIE = "canvas_session";
 const SESSION_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -21,8 +22,7 @@ function cookieValue(request: Request, name: string) {
 export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
   if (!origin) return;
-  const url = new URL(request.url);
-  if (origin !== `${url.protocol}//${url.host}`) {
+  if (origin !== requestOrigin(request)) {
     throw new Response(JSON.stringify({ error: "请求来源无效。" }), {
       status: 403,
       headers: { "Content-Type": "application/json" },

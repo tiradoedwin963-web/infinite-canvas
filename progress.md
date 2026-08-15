@@ -1559,3 +1559,26 @@
 - `vite.config.ts`：确保 VPS Node 构建使用 postgres.js 的 Node 适配器。
 - `progress.md`：追加本轮实现、验证、文件清单和回滚说明。
 - 回滚方式：提交后执行 `git revert $(git log --format=%H --grep='^feat: persist workflow projects and assets$' -1)`；回滚代码不会删除 PostgreSQL 卷或 COS 数据，禁止执行 `docker compose down -v`。
+
+## 2026-08-16 - Task: 修复 Caddy 反向代理下的登录同源校验
+
+### What was done
+
+- 修复生产环境中浏览器 HTTPS 来源与容器内部 HTTP 请求地址不同而误拒绝合法登录的问题。
+- 同源校验优先使用 Caddy 传入的公网协议与主机；头信息非法时回退内部地址并拒绝请求。
+
+### Testing
+
+- `node --test tests/cloud-persistence.test.mjs`：通过，包含代理后公网来源还原与非法协议回退用例。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，133 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+
+- `app/server/auth.ts`：根据可信反向代理头信息校验公网请求来源。
+- `app/server/request-origin.ts`：独立计算容器直连或反向代理后的有效请求来源。
+- `tests/cloud-persistence.test.mjs`：覆盖反向代理同源与异源拒绝。
+- `docs/deployment.md`：记录代理来源校验及应用端口内网边界。
+- `progress.md`：追加本轮修复、验证与回滚记录。
+- 回滚方式：提交后执行 `git revert <本轮修复提交哈希>`；不删除 PostgreSQL 卷或 COS 对象。
