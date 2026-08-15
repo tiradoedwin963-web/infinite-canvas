@@ -64,4 +64,5 @@ test("workflow cloud image cards use cached thumbnails while detail and generati
   assert.match(browserAssets, /request\.onblocked/);
   assert.match(browserAssets, /onversionchange.*close/s);
   assert.match(thumbnailRuntime, /createRequire\(`\$\{process\.cwd\(\)\}\/package\.json`\)/);
+  assert.match(thumbnailRuntime, /sharpRuntime \?\?= loadRuntimeDependency\("sharp"\)/);
 });

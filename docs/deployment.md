@@ -89,7 +89,7 @@ sudo docker compose --env-file .env.production \
 npm run assets:backfill-thumbnails
 ```
 
-生产构建在 Node 运行时加载 Sharp，由镜像中的原生模块执行缩略图转换；不要把 Sharp 的原生加载器打包进 Vinext 服务端产物，否则 Alpine 无法选择对应的原生二进制。
+生产构建仅在需要创建缺失缩略图时于 Node 运行时加载 Sharp，由镜像中的原生模块执行转换；读取已存在缩略图不会加载原生转换器。不要把 Sharp 的原生加载器打包进 Vinext 服务端产物，否则 Alpine 无法选择对应的原生二进制。
 
 更新后重新检查容器、未认证 `401`、认证 `200` 和日志：
 

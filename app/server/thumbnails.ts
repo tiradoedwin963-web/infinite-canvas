@@ -1,7 +1,12 @@
 import { createRequire } from "node:module";
 
 const loadRuntimeDependency = createRequire(`${process.cwd()}/package.json`);
-const sharp = loadRuntimeDependency("sharp") as typeof import("sharp");
+let sharpRuntime: typeof import("sharp") | undefined;
+
+function getSharp() {
+  sharpRuntime ??= loadRuntimeDependency("sharp") as typeof import("sharp");
+  return sharpRuntime;
+}
 
 export const THUMBNAIL_MAX_EDGE = 640;
 export const THUMBNAIL_WEBP_QUALITY = 82;
@@ -14,7 +19,7 @@ export function objectBodyBytes(body: unknown): Uint8Array {
 }
 
 export async function createImageThumbnail(body: Uint8Array) {
-  const output = await sharp(body)
+  const output = await getSharp()(body)
     .rotate()
     .resize({
       width: THUMBNAIL_MAX_EDGE,

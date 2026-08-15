@@ -1656,3 +1656,23 @@
 - `docs/deployment.md`：记录 Alpine 生产镜像的 Sharp 运行边界。
 - `progress.md`：追加本轮生产修复、验证与回滚记录。
 - 回滚方式：执行 `git revert <本轮生产修复提交哈希>` 并重新部署；不会删除 PostgreSQL、COS 原图或派生缩略图。
+
+## 2026-08-16 - Task: 消除已有缩略图读取的 Sharp 冷启动
+
+### What was done
+- Sharp 改为按需加载：只有缩略图缺失、确实需要转换原图时才初始化原生模块。
+- 已存在的 40 张缩略图直接从 COS 读取，容器重启后的首次卡片恢复不再等待图片转换器初始化。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，137 项测试全部成功。
+- `git diff --check`：通过。
+- VPS 冷启动验证：应用容器重启后，首个已存在缩略图鉴权请求直接返回 `200 image/webp`，无需加载 Sharp。
+- Chrome 验收：刷新后恢复 40 张图片，详情仍按需读取原图。
+
+### Notes
+- `app/server/thumbnails.ts`：将 Sharp 初始化延迟到实际缩略图生成路径。
+- `tests/asset-thumbnails.test.mjs`：覆盖 Sharp 按需加载接线。
+- `docs/deployment.md`：记录已有缩略图读取不加载原生转换器。
+- `progress.md`：追加冷启动优化的验证与回滚记录。
+- 回滚方式：执行 `git revert <本轮冷启动提交哈希>` 并重新部署；不会删除 PostgreSQL、COS 原图或派生缩略图。
