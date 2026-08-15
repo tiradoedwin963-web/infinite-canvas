@@ -37,6 +37,7 @@ export type TaskResult = {
   assetId?: string;
   assetName?: string;
   assetMimeType?: string;
+  assetVersion?: string;
 };
 
 export type TaskStatusResponse = {

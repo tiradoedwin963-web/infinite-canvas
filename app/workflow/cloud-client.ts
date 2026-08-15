@@ -21,6 +21,7 @@ export type CloudProjectDocument = {
   revision: number;
   conversation: AgentConversationStore;
   conversationRevision: number;
+  assetVersions: Record<string, string>;
 };
 
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit) {
@@ -71,10 +72,12 @@ export async function loadCloudProject(projectId: string): Promise<CloudProjectD
     revision: number;
     conversation: AgentConversationStore;
     conversation_revision: number;
+    asset_versions: Record<string, string>;
   }>(`/api/workflow/projects/${encodeURIComponent(projectId)}`, { cache: "no-store" });
   return {
     ...payload,
     conversationRevision: payload.conversation_revision,
+    assetVersions: payload.asset_versions,
   };
 }
 
@@ -146,16 +149,36 @@ export async function uploadCloudAsset(input: {
     body: input.file,
   });
   if (!uploaded.ok) throw new Error("素材上传到对象存储失败。");
-  await requestJson("/api/workflow/assets/complete", jsonRequest("POST", {
+  const completed = await requestJson<{ assetVersion: string }>(
+    "/api/workflow/assets/complete",
+    jsonRequest("POST", {
     assetId: ticket.assetId,
-  }));
-  return ticket.assetId;
+    }),
+  );
+  return { assetId: ticket.assetId, assetVersion: completed.assetVersion };
 }
 
-export async function readCloudAsset(assetId: string) {
-  const response = await fetch(`/api/workflow/assets/${encodeURIComponent(assetId)}`);
+export async function readCloudAsset(assetId: string, version?: string) {
+  const response = await fetch(cloudAssetUrl(assetId, version));
   if (!response.ok) throw new Error("素材已失效，请重新上传。");
   return response.blob();
+}
+
+export function cloudAssetUrl(assetId: string, version?: string, thumbnail = false) {
+  const query = new URLSearchParams();
+  if (version) query.set("v", version);
+  if (thumbnail) query.set("variant", "thumbnail");
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return `/api/workflow/assets/${encodeURIComponent(assetId)}${suffix}`;
+}
+
+export async function readCloudAssetThumbnail(assetId: string, version: string) {
+  const response = await fetch(cloudAssetUrl(assetId, version, true));
+  if (!response.ok) throw new Error("素材缩略图加载失败。");
+  return {
+    blob: await response.blob(),
+    cacheable: response.headers.get("x-canvas-asset-variant") === "thumbnail",
+  };
 }
 
 export async function deleteCloudAsset(assetId: string) {

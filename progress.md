@@ -1584,3 +1584,36 @@
 - `docs/deployment.md`：记录代理来源校验及应用端口内网边界。
 - `progress.md`：追加本轮修复、验证与回滚记录。
 - 回滚方式：提交后执行 `git revert <本轮修复提交哈希>`；不删除 PostgreSQL 卷或 COS 对象。
+## 2026-08-16 - Task: 优化工作流云端图片刷新与加载性能
+
+### What was done
+- 为云端图片增加 640px、WebP 82% 的 COS 派生缩略图，画布卡片使用缩略图，详情、Agent 读图和生成参考继续读取原图。
+- 使用素材校验值或更新时间作为内容版本，并在浏览器 IndexedDB v2 中按账号和资产持久缓存缩略图；刷新最多并发恢复 6 项并优先当前视口附近节点。
+- 图片上传和生成转存时自动创建缩略图；素材或项目删除时同步清理派生对象。增加幂等双并发补建脚本，用于现有云端图片且不触发付费生成。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，137 项测试全部成功；覆盖缩略图自动旋转、比例、640px 上限、不放大小图、缓存隔离及原图读取接线。
+- `git diff --check`：通过。
+- `docker build -t infinite-canvas:thumbnail-test .`：通过；Node 22 Alpine 生产镜像内 Sharp 可生成 640×213 WebP 缩略图。
+
+### Notes
+- `app/ai/types.ts`：生成任务结果增加可选素材内容版本。
+- `app/api/workflow/assets/[id]/route.ts`：增加鉴权缩略图读取、懒补建、ETag、缓存头及原图/缩略图删除。
+- `app/api/workflow/assets/complete/route.ts`：图片直传完成后计算版本并尽力创建缩略图。
+- `app/api/workflow/projects/[id]/route.ts`：返回项目素材版本并在删除项目时清理派生缩略图。
+- `app/canvas/assets.ts`：升级浏览器数据库到 v2 并增加账号隔离的云端缩略图缓存。
+- `app/server/result-ingest.ts`：生成结果转存原图时同步创建或失效对应缩略图。
+- `app/server/storage-rules.ts`：增加派生对象键和内容版本规则。
+- `app/server/thumbnails.ts`：集中实现缩略图尺寸、质量、自动旋转和对象内容转换。
+- `app/workflow/cloud-client.ts`：增加版本化原图、缩略图读取及上传完成版本返回。
+- `components/cloud-session-gate.tsx`：退出账号时清理该账号的浏览器缩略图缓存。
+- `components/workflow/workflow-canvas.tsx`：接入缓存恢复、视口优先队列、加载占位和详情原图读取。
+- `docs/canvas.md`：记录生产缩略图缓存、恢复顺序和原图使用边界。
+- `docs/deployment.md`：记录缩略图补建、鉴权和清理命令。
+- `package.json`：增加 Sharp 运行依赖和缩略图补建命令。
+- `package-lock.json`：锁定 Sharp 生产依赖。
+- `scripts/backfill-asset-thumbnails.mjs`：增加幂等、双并发的现有图片补建工具。
+- `tests/asset-thumbnails.test.mjs`：增加缩略图生成、隔离和读取链路回归测试。
+- `progress.md`：追加本轮实现、验证、文件清单和回滚说明。
+- 回滚方式：执行 `git revert <本轮提交哈希>` 并重新部署；回滚不删除 PostgreSQL、COS 原图或已生成的派生缩略图，禁止执行 `docker compose down -v`。

@@ -3,6 +3,7 @@ import { getDatabase } from "@/app/server/database";
 import { cleanProjectName, validateGraph, validateViewport } from "@/app/server/workflow-store";
 import { parseWorkflowBatchRun } from "@/app/workflow/agent";
 import { deleteObject } from "@/app/server/object-storage";
+import { assetContentVersion, workflowThumbnailObjectKey } from "@/app/server/storage-rules";
 
 type Context = { params: Promise<{ id: string }> };
 
@@ -21,7 +22,22 @@ export async function GET(request: Request, context: Context) {
       LIMIT 1
     `;
     if (!rows[0]) return Response.json({ error: "项目不存在。" }, { status: 404 });
-    return Response.json(rows[0], { headers: { "Cache-Control": "no-store" } });
+    const assets = await getDatabase()<{
+      id: string;
+      checksum: string | null;
+      updated_at: Date | string;
+    }[]>`
+      SELECT id, checksum, updated_at FROM canvas_assets
+      WHERE project_id = ${id} AND owner_id = ${user.id} AND status = 'ready'
+    `;
+    const assetVersions = Object.fromEntries(assets.map((asset) => [
+      asset.id,
+      assetContentVersion(asset.checksum, asset.updated_at),
+    ]));
+    return Response.json(
+      { ...rows[0], asset_versions: assetVersions },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     return responseFromError(error, "无法读取项目。");
   }
@@ -89,7 +105,10 @@ export async function DELETE(request: Request, context: Context) {
       DELETE FROM canvas_projects WHERE id = ${id} AND owner_id = ${user.id} RETURNING id
     `;
     if (!deleted[0]) return Response.json({ error: "项目不存在。" }, { status: 404 });
-    await Promise.allSettled(assets.map((asset) => deleteObject(asset.object_key)));
+    await Promise.allSettled(assets.flatMap((asset) => [
+      deleteObject(asset.object_key),
+      deleteObject(workflowThumbnailObjectKey(asset.object_key)),
+    ]));
     await ensureReplacement(user.id);
     return Response.json({ ok: true });
   } catch (error) {

@@ -4,7 +4,8 @@ import type { AuthenticatedUser } from "./database";
 import { getDatabase } from "./database";
 import { deleteObject, workflowObjectKey, writeObject } from "./object-storage";
 import { projectBelongsToUser } from "./workflow-store";
-import { safeUpstreamUrl } from "./storage-rules.ts";
+import { safeUpstreamUrl, workflowThumbnailObjectKey } from "./storage-rules.ts";
+import { createImageThumbnail } from "./thumbnails.ts";
 
 export { safeUpstreamUrl } from "./storage-rules.ts";
 
@@ -78,9 +79,18 @@ export async function persistTaskResults(input: {
     const objectKey = existing[0]?.object_key ?? workflowObjectKey(input.user.id, input.projectId, assetId);
     const extension = mimeType.split("/")[1]?.replace(/[^a-z0-9]/g, "") || "bin";
     const name = `${result.kind}-${input.resultId}-${index + 1}.${extension}`;
+    const checksum = createHash("sha256").update(body).digest("hex");
     await writeObject({ key: objectKey, body, mimeType });
+    if (result.kind === "image") {
+      const thumbnailKey = workflowThumbnailObjectKey(objectKey);
+      try {
+        const thumbnail = await createImageThumbnail(body);
+        await writeObject({ key: thumbnailKey, body: thumbnail, mimeType: "image/webp" });
+      } catch {
+        await deleteObject(thumbnailKey).catch(() => undefined);
+      }
+    }
     try {
-      const checksum = createHash("sha256").update(body).digest("hex");
       if (existing[0]) {
         await sql`
           UPDATE canvas_assets
@@ -100,7 +110,10 @@ export async function persistTaskResults(input: {
         `;
       }
     } catch (error) {
-      if (!existing[0]) await deleteObject(objectKey);
+      if (!existing[0]) {
+        await deleteObject(objectKey);
+        await deleteObject(workflowThumbnailObjectKey(objectKey)).catch(() => undefined);
+      }
       throw error;
     }
     return {
@@ -109,6 +122,7 @@ export async function persistTaskResults(input: {
       assetId,
       assetName: name,
       assetMimeType: mimeType,
+      assetVersion: checksum,
     };
   }));
 }

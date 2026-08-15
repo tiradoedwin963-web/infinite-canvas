@@ -11,6 +11,7 @@
 - 现有 `/opt/wecom-smart-service`、Python API、Worker、PostgreSQL、Redis 及其数据卷不得修改或重启
 - 画布 PostgreSQL 使用独立数据卷且不发布端口，不连接现有 Python 项目的 PostgreSQL
 - 工作流图片和视频保存到北京地域的私有腾讯云 COS，匿名读取被拒绝
+- 工作流画布使用 COS 派生的 640px WebP 缩略图；详情、Agent 读图和生成参考仍读取原图
 - 模型密钥、Basic Auth 哈希、数据库密码、管理员哈希和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
 
 浏览器首次访问会提示证书不受信任；备案和域名准备完成后，应切换到可信域名证书和标准 443 入口。
@@ -80,6 +81,14 @@ sudo docker compose --env-file .env.production \
   -f deploy/canvas/compose.production.yml up -d --build
 ```
 
+首次升级到缩略图版本后，执行幂等补建脚本。脚本最多同时处理两张图片，已存在的缩略图会跳过，不调用图片生成接口：
+
+```bash
+sudo docker compose --env-file .env.production \
+  -f deploy/canvas/compose.production.yml exec -T app \
+  npm run assets:backfill-thumbnails
+```
+
 更新后重新检查容器、未认证 `401`、认证 `200` 和日志：
 
 ```bash
@@ -106,6 +115,7 @@ docker compose --env-file .env.production -f deploy/canvas/compose.production.ym
 - 更新 `.env.production` 前创建权限为 `600` 的服务器本地备份，不输出变量值。
 - PostgreSQL 数据保存在独立 `postgres_data` 卷；代码回滚不会删除数据库和 COS 对象。
 - 素材读取必须经过应用账号鉴权；视频接口保留 `Range` 请求和 `206` 响应。
+- 图片缩略图与原图使用相同账号鉴权；删除素材或项目会同时清理两类 COS 对象。
 - 检查画布容器前后都应记录 `/opt/wecom-smart-service` 的 API、Worker、PostgreSQL、Redis 状态，禁止重启或修改它们。
 
 ## 回滚

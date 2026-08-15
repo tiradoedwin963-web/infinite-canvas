@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { assertSameOrigin, requireSessionUser, responseFromError } from "@/app/server/auth";
 import { getDatabase } from "@/app/server/database";
-import { inspectObject } from "@/app/server/object-storage";
+import { inspectObject, readObject, writeObject } from "@/app/server/object-storage";
+import { assetContentVersion, workflowThumbnailObjectKey } from "@/app/server/storage-rules";
+import { createImageThumbnail, objectBodyBytes } from "@/app/server/thumbnails";
 
 export async function POST(request: Request) {
   try {
@@ -30,12 +33,32 @@ export async function POST(request: Request) {
     if ((object.headers?.["content-type"] || "").toLowerCase() !== asset.mime_type.toLowerCase()) {
       return Response.json({ error: "素材类型校验失败。" }, { status: 400 });
     }
+    let checksum: string | null = null;
+    if (asset.mime_type.startsWith("image/")) {
+      try {
+        const original = await readObject(asset.object_key);
+        const body = objectBodyBytes(original.Body);
+        checksum = createHash("sha256").update(body).digest("hex");
+        const thumbnail = await createImageThumbnail(body);
+        await writeObject({
+          key: workflowThumbnailObjectKey(asset.object_key),
+          body: thumbnail,
+          mimeType: "image/webp",
+        });
+      } catch {
+        // The verified original remains authoritative; the read route can repair its thumbnail later.
+      }
+    }
     const updated = await sql`
-      UPDATE canvas_assets SET status = 'ready', updated_at = now()
+      UPDATE canvas_assets
+      SET status = 'ready', checksum = ${checksum}, updated_at = now()
       WHERE id = ${asset.id} AND owner_id = ${user.id}
-      RETURNING id, name, mime_type, byte_size
+      RETURNING id, name, mime_type, byte_size, checksum, updated_at
     `;
-    return Response.json(updated[0]);
+    return Response.json({
+      ...updated[0],
+      assetVersion: assetContentVersion(updated[0].checksum, updated[0].updated_at),
+    });
   } catch (error) {
     return responseFromError(error, "无法确认素材上传结果。");
   }

@@ -3,6 +3,16 @@ import { isIP } from "node:net";
 export function workflowObjectKey(userId: string, projectId: string, assetId: string) {
   return `users/${userId}/projects/${projectId}/assets/${assetId}`;
 }
+
+export function workflowThumbnailObjectKey(objectKey: string) {
+  return `${objectKey}.thumbnail.webp`;
+}
+
+export function assetContentVersion(checksum: string | null | undefined, updatedAt: unknown) {
+  if (checksum) return checksum;
+  if (updatedAt instanceof Date) return updatedAt.toISOString();
+  return String(updatedAt ?? "");
+}
 export function safeUpstreamUrl(raw: string) {
   const url = new URL(raw);
   if (url.protocol !== "https:") throw new Error("上游素材地址不安全。");

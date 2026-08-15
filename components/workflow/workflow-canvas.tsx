@@ -33,7 +33,15 @@ import type {
   GenerateResponse,
   TaskStatusResponse,
 } from "@/app/ai/types";
-import { deleteAsset, readAsset, saveAsset } from "@/app/canvas/assets";
+import {
+  deleteAsset,
+  deleteCloudProjectThumbnails,
+  deleteCloudThumbnail,
+  readAsset,
+  readCloudThumbnail,
+  saveAsset,
+  saveCloudThumbnail,
+} from "@/app/canvas/assets";
 import {
   wheelZoomFactor,
   type Viewport,
@@ -118,12 +126,14 @@ import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 import { useCloudSession } from "@/components/cloud-session-gate";
 import {
   activateCloudProject,
+  cloudAssetUrl,
   createCloudProject,
   deleteCloudAsset,
   deleteCloudProject,
   loadCloudProject,
   loadCloudProjects,
   readCloudAsset,
+  readCloudAssetThumbnail,
   saveCloudConversation,
   saveCloudProject,
   uploadCloudAsset,
@@ -259,7 +269,7 @@ async function workflowImageToFile(
 }
 
 export function WorkflowCanvas() {
-  const { remote } = useCloudSession();
+  const { remote, user } = useCloudSession();
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const [graph, setGraph] = useState<WorkflowGraph>(emptyWorkflowGraph);
   const [hydrated, setHydrated] = useState(false);
@@ -270,6 +280,7 @@ export function WorkflowCanvas() {
   const [connection, setConnection] = useState<ConnectionState | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
+  const [assetVersions, setAssetVersions] = useState<Record<string, string>>({});
   const [assetErrors, setAssetErrors] = useState<Record<string, string>>({});
   const [runningSchedulers, setRunningSchedulers] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -303,6 +314,8 @@ export function WorkflowCanvas() {
   const pollingTasks = useRef(new Set<string>());
   const loadedAssets = useRef(new Set<string>());
   const assetUrlsRef = useRef<Record<string, string>>({});
+  const assetVersionsRef = useRef<Record<string, string>>({});
+  const assetRestoreGenerationRef = useRef(0);
   const graphRef = useRef<WorkflowGraph>(emptyWorkflowGraph());
   const selectedIdsRef = useRef<string[]>(selectedIds);
   const isAgentOpenRef = useRef(isAgentOpen);
@@ -332,11 +345,13 @@ export function WorkflowCanvas() {
   selectedIdsRef.current = selectedIds;
   isAgentOpenRef.current = isAgentOpen;
   canvasSizeRef.current = canvasSize;
+  assetVersionsRef.current = assetVersions;
 
   const applyProjectState = useCallback((
     restored: WorkflowGraph,
     restoredViewport: Viewport,
     restoredBatch: WorkflowBatchRun | null,
+    restoredAssetVersions: Record<string, string> = {},
   ) => {
     const safeRestored = {
       ...restored,
@@ -354,10 +369,12 @@ export function WorkflowCanvas() {
     Object.values(assetUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     assetUrlsRef.current = {};
     loadedAssets.current.clear();
+    assetRestoreGenerationRef.current += 1;
     pollingTasks.current.clear();
     graphRef.current = safeRestored;
     setGraph(safeRestored);
     setAssetUrls({});
+    setAssetVersions(restoredAssetVersions);
     setAssetErrors({});
     setSelectedIds([]);
     setCreationMenu(null);
@@ -385,6 +402,7 @@ export function WorkflowCanvas() {
       parseWorkflowBatchRun(
         window.localStorage.getItem(workflowProjectBatchKey(projectId)),
       ),
+      {},
     );
   }, [applyProjectState]);
 
@@ -407,6 +425,7 @@ export function WorkflowCanvas() {
       parseWorkflowGraph(JSON.stringify(project.graph)),
       project.viewport,
       project.batch,
+      project.assetVersions,
     );
   }, [applyProjectState]);
 
@@ -628,10 +647,45 @@ export function WorkflowCanvas() {
     assetUrlsRef.current = assetUrls;
   }, [assetUrls]);
 
-  const restoreAsset = useCallback(async (assetId: string) => {
+  const restoreAsset = useCallback(async (
+    node: WorkflowSourceNode | WorkflowResultNode,
+    projectId: string,
+    restoreGeneration: number,
+  ) => {
+    const assetId = node.assetId;
+    if (!assetId) return;
     try {
-      const blob = remote ? await readCloudAsset(assetId) : await readAsset(assetId);
+      let blob: Blob | undefined;
+      if (remote && node.kind === "image" && user) {
+        const version = assetVersionsRef.current[assetId] || "unknown";
+        try {
+          blob = await readCloudThumbnail({ userId: user.id, assetId, version });
+        } catch {
+          // A browser cache failure must not prevent the cloud thumbnail fallback.
+        }
+        if (!blob) {
+          const loaded = await readCloudAssetThumbnail(assetId, version);
+          blob = loaded.blob;
+          if (loaded.cacheable) {
+            void saveCloudThumbnail({
+              userId: user.id,
+              projectId,
+              assetId,
+              version,
+              blob,
+            });
+          }
+        }
+      } else {
+        blob = remote
+          ? await readCloudAsset(assetId, assetVersionsRef.current[assetId])
+          : await readAsset(assetId);
+      }
       if (!blob) throw new Error();
+      if (
+        assetRestoreGenerationRef.current !== restoreGeneration ||
+        activeProjectIdRef.current !== projectId
+      ) return;
       const url = URL.createObjectURL(blob);
       setAssetUrls((current) => {
         if (current[assetId]) URL.revokeObjectURL(current[assetId]);
@@ -643,21 +697,53 @@ export function WorkflowCanvas() {
         return next;
       });
     } catch {
+      if (
+        assetRestoreGenerationRef.current !== restoreGeneration ||
+        activeProjectIdRef.current !== projectId
+      ) return;
       setAssetErrors((current) => ({ ...current, [assetId]: "素材已失效，请重新上传。" }));
     }
-  }, [remote]);
+  }, [remote, user]);
 
   useEffect(() => {
     if (!hydrated) return;
-    graph.nodes.forEach((node) => {
-      if (
-        (node.type !== "source" && node.type !== "result") ||
-        !node.assetId ||
-        loadedAssets.current.has(node.assetId)
-      ) return;
-      loadedAssets.current.add(node.assetId);
-      void restoreAsset(node.assetId);
-    });
+    const projectId = activeProjectIdRef.current;
+    const restoreGeneration = assetRestoreGenerationRef.current;
+    const viewportCenter = {
+      x: (canvasSizeRef.current.width / 2 - viewportRef.current.x) / viewportRef.current.scale,
+      y: (canvasSizeRef.current.height / 2 - viewportRef.current.y) / viewportRef.current.scale,
+    };
+    const candidates = graph.nodes
+      .filter((node): node is WorkflowSourceNode | WorkflowResultNode =>
+        (node.type === "source" || node.type === "result") &&
+        Boolean(node.assetId) &&
+        !loadedAssets.current.has(node.assetId!),
+      )
+      .sort((left, right) => {
+        const leftSize = getWorkflowNodeSize(left);
+        const rightSize = getWorkflowNodeSize(right);
+        const leftDistance = Math.hypot(
+          left.x + leftSize.width / 2 - viewportCenter.x,
+          left.y + leftSize.height / 2 - viewportCenter.y,
+        );
+        const rightDistance = Math.hypot(
+          right.x + rightSize.width / 2 - viewportCenter.x,
+          right.y + rightSize.height / 2 - viewportCenter.y,
+        );
+        return leftDistance - rightDistance;
+      });
+    let nextIndex = 0;
+    async function worker() {
+      while (nextIndex < candidates.length) {
+        const node = candidates[nextIndex++];
+        if (!node.assetId || loadedAssets.current.has(node.assetId)) continue;
+        loadedAssets.current.add(node.assetId);
+        await restoreAsset(node, projectId, restoreGeneration);
+      }
+    }
+    void Promise.all(
+      Array.from({ length: Math.min(6, candidates.length) }, () => worker()),
+    );
   }, [graph.nodes, hydrated, restoreAsset]);
 
   useEffect(() => () => {
@@ -860,6 +946,30 @@ export function WorkflowCanvas() {
       if (!response.ok) throw new Error(await readApiError(response));
       const status = (await response.json()) as TaskStatusResponse;
       if (activeProjectIdRef.current !== projectId) return;
+      const versions = status.results.filter((result) => result.assetId && result.assetVersion);
+      if (versions.length) {
+        const changedAssetIds = versions
+          .filter((result) =>
+            assetVersionsRef.current[result.assetId!] &&
+            assetVersionsRef.current[result.assetId!] !== result.assetVersion,
+          )
+          .map((result) => result.assetId!);
+        changedAssetIds.forEach((assetId) => loadedAssets.current.delete(assetId));
+        if (changedAssetIds.length) {
+          setAssetUrls((current) => {
+            const next = { ...current };
+            changedAssetIds.forEach((assetId) => {
+              if (next[assetId]) URL.revokeObjectURL(next[assetId]);
+              delete next[assetId];
+            });
+            return next;
+          });
+        }
+        setAssetVersions((current) => ({
+          ...current,
+          ...Object.fromEntries(versions.map((result) => [result.assetId!, result.assetVersion!])),
+        }));
+      }
       setGraph((current) => applyWorkflowTaskStatus(current, node.id, status));
     } catch (error) {
       if (activeProjectIdRef.current !== projectId) return;
@@ -1197,21 +1307,30 @@ export function WorkflowCanvas() {
       }));
       return;
     }
-    const assetId = remote
+    const uploaded = remote
       ? await uploadCloudAsset({
           projectId: activeProjectIdRef.current,
           nodeId: node.id,
           file,
         })
-      : crypto.randomUUID();
+      : { assetId: crypto.randomUUID(), assetVersion: "" };
+    const { assetId } = uploaded;
     if (!remote) await saveAsset(assetId, file);
     if (node.assetId) {
       const previousUrl = assetUrls[node.assetId];
       if (previousUrl) URL.revokeObjectURL(previousUrl);
-      if (!remote) void deleteAsset(node.assetId);
+      if (remote) {
+        void deleteCloudAsset(node.assetId);
+        if (user) void deleteCloudThumbnail(user.id, node.assetId);
+      } else {
+        void deleteAsset(node.assetId);
+      }
     }
     const url = URL.createObjectURL(file);
     loadedAssets.current.add(assetId);
+    if (remote && uploaded.assetVersion) {
+      setAssetVersions((current) => ({ ...current, [assetId]: uploaded.assetVersion }));
+    }
     setAssetUrls((current) => ({ ...current, [assetId]: url }));
     setAssetErrors((current) => {
       const next = { ...current };
@@ -1311,7 +1430,7 @@ export function WorkflowCanvas() {
         workflowImageToFile(
           node,
           remote
-            ? async (assetId) => readCloudAsset(assetId)
+            ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
             : readAsset,
         )
       ));
@@ -1455,7 +1574,9 @@ export function WorkflowCanvas() {
         if (!node) throw new Error(`未找到可读取的工作流图片节点 ${nodeId}。`);
         const file = await workflowImageToFile(
           node,
-          remote ? readCloudAsset : readAsset,
+          remote
+            ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
+            : readAsset,
         );
         return {
           nodeId,
@@ -1680,6 +1801,7 @@ export function WorkflowCanvas() {
     if (remote) {
       try {
         await deleteCloudProject(active.id);
+        if (user) await deleteCloudProjectThumbnails(user.id, active.id);
         const registry = await loadCloudProjects();
         activeProjectIdRef.current = registry.activeProjectId;
         setProjects(registry);
@@ -1810,7 +1932,13 @@ export function WorkflowCanvas() {
       const url = assetUrlsRef.current[node.assetId];
       if (url) URL.revokeObjectURL(url);
       void (remote ? deleteCloudAsset(node.assetId) : deleteAsset(node.assetId));
+      if (remote && user) void deleteCloudThumbnail(user.id, node.assetId);
       setAssetUrls((current) => {
+        const next = { ...current };
+        delete next[node.assetId!];
+        return next;
+      });
+      setAssetVersions((current) => {
         const next = { ...current };
         delete next[node.assetId!];
         return next;
@@ -2138,6 +2266,8 @@ export function WorkflowCanvas() {
             assetError={(node.type === "source" || node.type === "result") && node.assetId
               ? assetErrors[node.assetId]
               : assetErrors[node.id]}
+            assetLoading={(node.type === "source" || node.type === "result") &&
+              Boolean(node.assetId) && !assetUrls[node.assetId!] && !assetErrors[node.assetId!]}
             connectionTarget={connection?.targetId === node.id}
             inputPorts={inputPortsByTarget.get(node.id) ?? []}
             pendingInputKind={connection?.targetId === node.id ? connectionKind : undefined}
@@ -2206,7 +2336,9 @@ export function WorkflowCanvas() {
         <WorkflowDetail
           node={detailNode}
           assetUrl={(detailNode.type === "source" || detailNode.type === "result") && detailNode.assetId
-            ? assetUrls[detailNode.assetId]
+            ? remote
+              ? cloudAssetUrl(detailNode.assetId, assetVersions[detailNode.assetId])
+              : assetUrls[detailNode.assetId]
             : undefined}
           onClose={() => setDetailId(null)}
         />
@@ -2278,6 +2410,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   node,
   assetUrl,
   assetError,
+  assetLoading,
   connectionTarget,
   inputPorts,
   pendingInputKind,
@@ -2299,6 +2432,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   node: WorkflowNode;
   assetUrl?: string;
   assetError?: string;
+  assetLoading: boolean;
   connectionTarget: boolean;
   inputPorts: WorkflowInputPort[];
   pendingInputKind?: ComposerMode;
@@ -2375,6 +2509,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
                     src={assetUrl}
                     alt={node.assetName || "上传图片"}
                     decoding="async"
+                    loading="lazy"
                     onLoad={(event) =>
                       onMediaLoad(
                         event.currentTarget.naturalWidth,
@@ -2387,6 +2522,8 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
                   // eslint-disable-next-line jsx-a11y/media-has-caption
                   <video src={assetUrl} controls preload="metadata" />
                 )
+              ) : assetLoading ? (
+                <><LoaderCircle className="animate-spin" size={20} /><span>素材加载中…</span></>
               ) : <><Plus size={20} /><span>上传一{node.kind === "image" ? "张图片" : "段视频"}</span></>}
               <input
                 type="file"
@@ -2411,6 +2548,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
         <ResultBody
           node={node}
           assetUrl={assetUrl}
+          assetLoading={assetLoading}
           onResume={onResume}
           onMediaLoad={onMediaLoad}
         />
@@ -2421,6 +2559,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   previous.node === next.node &&
   previous.assetUrl === next.assetUrl &&
   previous.assetError === next.assetError &&
+  previous.assetLoading === next.assetLoading &&
   previous.connectionTarget === next.connectionTarget &&
   previous.pendingInputKind === next.pendingInputKind &&
   sameWorkflowInputPorts(previous.inputPorts, next.inputPorts) &&
@@ -2493,15 +2632,16 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
   );
 }
 
-function ResultBody({ node, assetUrl, onResume, onMediaLoad }: {
+function ResultBody({ node, assetUrl, assetLoading, onResume, onMediaLoad }: {
   node: WorkflowResultNode;
   assetUrl?: string;
+  assetLoading: boolean;
   onResume: () => void;
   onMediaLoad: (width: number, height: number) => void;
 }) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
-  const mediaUrl = assetUrl || node.resultUrl;
+  const mediaUrl = assetUrl || (node.assetId ? undefined : node.resultUrl);
   if (node.kind === "image" && mediaUrl) return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
@@ -2509,6 +2649,7 @@ function ResultBody({ node, assetUrl, onResume, onMediaLoad }: {
       src={mediaUrl}
       alt="工作流生成图片"
       decoding="async"
+      loading="lazy"
       onLoad={(event) =>
         onMediaLoad(
           event.currentTarget.naturalWidth,
@@ -2522,6 +2663,7 @@ function ResultBody({ node, assetUrl, onResume, onMediaLoad }: {
     // eslint-disable-next-line jsx-a11y/media-has-caption
     <video className="workflow-result-media" src={mediaUrl} controls preload="metadata" />
   );
+  if (assetLoading) return <div className="canvas-node-loading"><LoaderCircle className="animate-spin" size={20} /><span>素材加载中…</span></div>;
   if (node.status === "ready") return <div className="canvas-node-loading"><span>{node.progress || "待生成"}</span></div>;
   if (node.status === "paused") return <div className="canvas-node-loading"><span>{node.progress}</span><button className="workflow-resume" type="button" data-workflow-control onClick={onResume}><RotateCcw size={13} />继续查询</button></div>;
   return <div className="canvas-node-loading"><LoaderCircle className="animate-spin" size={20} /><span>{node.progress || "处理中"}</span></div>;

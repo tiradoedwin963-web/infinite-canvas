@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { deleteCloudUserThumbnails } from "@/app/canvas/assets";
 
 export type CloudUser = { id: string; username: string; isAdmin: boolean };
 
@@ -102,6 +103,7 @@ function CloudAccount({ user, onLoggedOut }: { user: CloudUser; onLoggedOut: () 
   const [adminOpen, setAdminOpen] = useState(false);
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
+    await deleteCloudUserThumbnails(user.id).catch(() => undefined);
     onLoggedOut();
   }
   return (
