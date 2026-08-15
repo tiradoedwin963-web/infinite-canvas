@@ -8,6 +8,8 @@ import {
 } from "./agent.ts";
 import { DEFAULT_MODEL_BY_MODE, getModelConfig } from "./models.ts";
 
+const STORY_ASSET_DEFAULT_IMAGE_MODEL = "gpt-image-2";
+
 function parseRatio(value: string) {
   const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
   if (!match) return null;
@@ -141,14 +143,22 @@ export function normalizeAgentImageResponse(response: AgentResponse): AgentRespo
 export function normalizeAgentStoryAnalysisOperation(
   operation: AgentCreateStoryAnalysisOperation,
 ): AgentCreateStoryAnalysisOperation {
-  const imageModel = operation.imageModel || DEFAULT_MODEL_BY_MODE.image;
-  const model = getModelConfig("image", imageModel);
-  if (!model) throw new Error(`Agent 选择了未知的图片模型 ${imageModel}。`);
+  const requestedImageModel = operation.imageModel || STORY_ASSET_DEFAULT_IMAGE_MODEL;
+  if (!getModelConfig("image", requestedImageModel)) {
+    throw new Error(`Agent 选择了未知的图片模型 ${requestedImageModel}。`);
+  }
+  const imageModel = STORY_ASSET_DEFAULT_IMAGE_MODEL;
+  const model = getModelConfig("image", imageModel)!;
   const requestedRatio = operation.projectAspectRatio || "9:16";
   const projectAspectRatio = closestRatio(requestedRatio, model.aspectRatios);
-  const adjustments = requestedRatio === projectAspectRatio
-    ? []
-    : [`短剧比例由 ${requestedRatio} 调整为 ${projectAspectRatio}。`];
+  const adjustments = [
+    ...(requestedImageModel === imageModel
+      ? []
+      : [`资产图片模型由 ${requestedImageModel} 调整为 ${imageModel}。`]),
+    ...(requestedRatio === projectAspectRatio
+      ? []
+      : [`短剧比例由 ${requestedRatio} 调整为 ${projectAspectRatio}。`]),
+  ];
   return {
     ...operation,
     imageModel,
@@ -160,28 +170,17 @@ export function normalizeAgentStoryAnalysisOperation(
 export function normalizeAgentStoryAssetBatchOperation(
   operation: AgentCreateStoryAssetBatchOperation,
 ): AgentCreateStoryAssetBatchOperation {
-  const model = getModelConfig("image", DEFAULT_MODEL_BY_MODE.image)!;
   const adjustments: string[] = [];
   const assets = operation.assets.map((asset) => {
-    const requestedRatio = asset.aspectRatio ||
-      (operation.assetKind === "character"
-        ? "16:9"
-        : operation.assetKind === "prop"
-          ? "1:1"
-          : "");
-    const aspectRatio = requestedRatio
-      ? closestRatio(requestedRatio, model.aspectRatios)
-      : "";
-    const resolution = closestResolution(
-      asset.resolution || "2K",
-      model.resolutions,
-      "2K",
-    );
+    const requestedRatio = asset.aspectRatio || "16:9";
+    const requestedResolution = asset.resolution || "1K";
+    const aspectRatio = "16:9";
+    const resolution = "1K";
     if (requestedRatio !== aspectRatio) {
       adjustments.push(`${asset.name} 比例由 ${requestedRatio} 调整为 ${aspectRatio}。`);
     }
-    if (asset.resolution && asset.resolution !== resolution) {
-      adjustments.push(`${asset.name} 分辨率由 ${asset.resolution} 调整为 ${resolution}。`);
+    if (requestedResolution !== resolution) {
+      adjustments.push(`${asset.name} 分辨率由 ${requestedResolution} 调整为 ${resolution}。`);
     }
     return { ...asset, aspectRatio, resolution };
   });

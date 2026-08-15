@@ -68,6 +68,10 @@ test("coalesces workflow viewport changes into one frame and one idle commit", (
   assert.equal(frames.size(), 0);
   assert.equal(timers.size(), 0);
   assert.deepEqual(active, [true, false, true, false]);
+  controller.replace({ x: 7, y: 9, scale: 0.5 });
+  assert.deepEqual(controller.current(), { x: 7, y: 9, scale: 0.5 });
+  assert.deepEqual(applied.at(-1), { x: 7, y: 9, scale: 0.5 });
+  assert.deepEqual(committed.at(-1), { x: 7, y: 9, scale: 0.5 });
   controller.dispose();
 });
 

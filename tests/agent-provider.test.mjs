@@ -232,7 +232,8 @@ test("requires a complete script to create analysis before storyboards", async (
     canvas: { ...canvas, mode: "workflow" },
   })));
   assert.equal(response.operations[0].type, "create_story_analysis");
-  assert.equal(response.operations[0].imageModel, "gemini-3-pro-image-preview");
+  assert.equal(response.operations[0].imageModel, "gpt-image-2");
+  assert.match(response.operations[0].adjustments.join(" "), /gemini-3-pro-image-preview.*gpt-image-2/);
   assert.equal(response.operations[0].projectAspectRatio, "9:16");
 
   const legacyClient = createCanvasAgentClient(clientConfig, async () => Response.json({

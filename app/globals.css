@@ -772,6 +772,153 @@ body {
   color: #fff;
 }
 
+.workflow-project-switcher {
+  position: fixed;
+  top: 70px;
+  left: 18px;
+  z-index: 79;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid rgba(42, 41, 38, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 8px 24px rgba(53, 50, 45, 0.1);
+  backdrop-filter: blur(14px);
+}
+
+.workflow-project-switcher select {
+  width: min(220px, 34vw);
+  height: 32px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 28px 0 9px;
+  background: #f5f3f0;
+  color: #3f3c37;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  outline: none;
+}
+
+.workflow-project-switcher button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #77736d;
+  cursor: pointer;
+}
+
+.workflow-project-switcher button:hover,
+.workflow-project-switcher button:focus-visible {
+  background: #f1efec;
+  color: #292824;
+  outline: none;
+}
+
+.workflow-project-switcher button:last-of-type:hover,
+.workflow-project-switcher button:last-of-type:focus-visible {
+  background: #fff0ef;
+  color: #bd3e37;
+}
+
+.workflow-project-switcher select:disabled,
+.workflow-project-switcher button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workflow-project-status {
+  padding: 0 7px;
+  color: #77736d;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.workflow-project-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(31, 29, 27, 0.22);
+  backdrop-filter: blur(3px);
+}
+
+.workflow-project-editor {
+  width: min(360px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid rgba(42, 41, 38, 0.12);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(42, 39, 35, 0.22);
+}
+
+.workflow-project-editor h2 {
+  margin: 0 0 16px;
+  color: #292824;
+  font-size: 16px;
+}
+
+.workflow-project-editor label {
+  display: grid;
+  gap: 7px;
+  color: #77736d;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workflow-project-editor input {
+  height: 40px;
+  border: 1px solid rgba(42, 41, 38, 0.16);
+  border-radius: 10px;
+  padding: 0 11px;
+  color: #292824;
+  font: inherit;
+  outline: none;
+}
+
+.workflow-project-editor input:focus {
+  border-color: rgba(42, 41, 38, 0.42);
+  box-shadow: 0 0 0 3px rgba(42, 41, 38, 0.07);
+}
+
+.workflow-project-editor p {
+  margin: 8px 0 0;
+  color: #bd3e37;
+  font-size: 12px;
+}
+
+.workflow-project-editor > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.workflow-project-editor button {
+  height: 36px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 14px;
+  background: #f1efec;
+  color: #57534e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workflow-project-editor button[type="submit"] {
+  background: #292824;
+  color: #fff;
+}
+
 .workflow-node {
   contain: layout style;
   content-visibility: auto;

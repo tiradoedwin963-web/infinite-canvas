@@ -72,6 +72,13 @@ test("loads the creation, workflow, and asset tool manuals through the agent rou
   assert.match(assetManual, /visual_style/);
   assert.match(assetManual, /foundation_role/);
   assert.match(assetManual, /图1为主角结果，图2为核心配角结果/);
+  assert.match(agentInstructions, /角色 IP 风险/);
+  assert.match(agentInstructions, /不得为“是否改成原创近似方案”再次询问用户/);
+  assert.match(agentInstructions, /必须同时去掉商业版本名称和该公版角色名称/);
+  assert.match(manual, /特定商业版本/);
+  assert.match(assetManual, /`visual_style` 同样不得出现角色、品牌、工作室或版本名称/);
+  assert.match(workflowManual, /分镜原文只用于画布查看/);
+  assert.match(assetManual, /资产说明节点只用于画布管理/);
 });
 
 test("streams sanitized agent progress and keeps operations behind the final result", async () => {
@@ -361,7 +368,11 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflow, /图片生成/);
   assert.match(workflow, /视频生成/);
   assert.match(workflow, /<CanvasAgentSidebar/);
-  assert.match(workflow, /WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY/);
+  assert.match(workflow, /workflowProjectConversationKey/);
+  assert.match(workflow, /workflow-project-switcher/);
+  assert.match(workflow, /createWorkflowProject/);
+  assert.match(workflow, /renameWorkflowProject/);
+  assert.match(workflow, /removeWorkflowProject/);
   assert.match(workflow, /describeWorkflowRun/);
   assert.match(workflow, /advanceWorkflowBatch/);
   assert.match(workflow, /提交状态未知/);
@@ -398,6 +409,7 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflowGraph, /export function fitWorkflowImageNode/);
   assert.match(workflowGraph, /export function createConnectedScheduler/);
   assert.match(styles, /\.canvas-mode-switch \{/);
+  assert.match(styles, /\.workflow-project-switcher \{/);
   assert.match(styles, /\.workflow-scheduler \{/);
   assert.match(styles, /\.workflow-source-body-media \{/);
   assert.match(styles, /\.workflow-node-title \{/);

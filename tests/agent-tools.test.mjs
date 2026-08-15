@@ -116,7 +116,7 @@ test("normalizes story analysis and asset image defaults", () => {
     projectAspectRatio: "2:3",
     imageModel: "",
   });
-  assert.equal(analysis.imageModel, "gemini-3-pro-image-preview");
+  assert.equal(analysis.imageModel, "gpt-image-2");
   assert.equal(analysis.projectAspectRatio, "3:4");
 
   const batch = normalizeAgentStoryAssetBatchOperation({
@@ -136,8 +136,22 @@ test("normalizes story analysis and asset image defaults", () => {
       resolution: "3K",
     }],
   });
-  assert.equal(batch.assets[0].aspectRatio, "1:1");
-  assert.equal(batch.assets[0].resolution, "2K");
+  assert.equal(batch.assets[0].aspectRatio, "16:9");
+  assert.equal(batch.assets[0].resolution, "1K");
+
+  const defaults = normalizeAgentStoryAssetBatchOperation({
+    ...batch,
+    assets: [{ ...batch.assets[0], aspectRatio: "", resolution: "" }],
+  });
+  assert.equal(defaults.assets[0].aspectRatio, "16:9");
+  assert.equal(defaults.assets[0].resolution, "1K");
+
+  const legacyModel = normalizeAgentStoryAnalysisOperation({
+    ...analysis,
+    imageModel: "gemini-3-pro-image-preview",
+  });
+  assert.equal(legacyModel.imageModel, "gpt-image-2");
+  assert.match(legacyModel.adjustments.join(" "), /gemini-3-pro-image-preview.*gpt-image-2/);
 });
 
 test("keeps the tool manual aligned with every configured image model", async () => {
@@ -171,7 +185,10 @@ test("documents the complete asset planning rules", async () => {
   assert.match(manual, /create_story_asset_batch/);
   assert.match(manual, /run_story_assets/);
   assert.match(manual, /正面全身.*左侧面全身.*右侧面全身/s);
-  assert.match(manual, /每一次场景出现都建立独立资产/);
+  assert.match(manual, /同一地点跨场次只建立一个空间母版/);
+  assert.match(manual, /45° 鸟瞰/);
+  assert.match(manual, /不得只输出单一平面图/);
+  assert.match(manual, /gpt-image-2/);
   assert.match(manual, /品牌商品.*汽车/);
-  assert.match(manual, /2K/);
+  assert.match(manual, /16:9 \/ 1K/);
 });

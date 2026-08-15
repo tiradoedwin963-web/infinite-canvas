@@ -821,6 +821,20 @@ export function buildWorkflowPrompt(
   return [...inputs.text, ownPrompt.trim()].filter(Boolean).join("\n\n");
 }
 
+export function buildWorkflowGenerationPrompt(
+  inputs: WorkflowInputs,
+  scheduler: WorkflowSchedulerNode,
+): string {
+  if (
+    scheduler.storyRole === "asset-scheduler" ||
+    scheduler.storyRole === "storyboard-scheduler" ||
+    scheduler.storyRole === "video-scheduler"
+  ) {
+    return scheduler.prompt.trim();
+  }
+  return buildWorkflowPrompt(inputs, scheduler.prompt);
+}
+
 function availableResultPosition(
   graph: WorkflowGraph,
   scheduler: WorkflowSchedulerNode,

@@ -43,7 +43,7 @@ function analysisOperation() {
       estimatedDuration: "90 秒",
     },
     projectAspectRatio: "9:16",
-    imageModel: "gemini-3-pro-image-preview",
+    imageModel: "gpt-image-2",
   };
 }
 
@@ -78,7 +78,7 @@ function asset(ref, name, overrides = {}) {
     occurrences: ["第一场"],
     imagePrompt: `${name}资产参考图`,
     aspectRatio: "16:9",
-    resolution: "2K",
+    resolution: "1K",
     ...overrides,
   };
 }
@@ -100,14 +100,14 @@ function plannedGraph() {
   const scenes = createStoryAssetBatch(
     characters.graph,
     batch(analysis.storyId, "scene", 0, true, [
-      asset("scene-01", "雨夜路口", { aspectRatio: "9:16" }),
+      asset("scene-01", "雨夜路口"),
     ]),
     idFactory,
   );
   const props = createStoryAssetBatch(
     scenes.graph,
     batch(analysis.storyId, "prop", 0, true, [
-      asset("prop-01", "红伞", { aspectRatio: "1:1" }),
+      asset("prop-01", "红伞"),
     ]),
     idFactory,
   );
@@ -132,7 +132,9 @@ test("creates a persisted analysis node and three-node asset groups by stage", (
     assert.ok(nodes.every((node) => node.assetKind === kind));
     const scheduler = nodes.find((node) => node.assetRole === "scheduler");
     const result = nodes.find((node) => node.assetRole === "result");
-    assert.equal(scheduler.resolution, "2K");
+    assert.equal(scheduler.model, "gpt-image-2");
+    assert.equal(scheduler.aspectRatio, "16:9");
+    assert.equal(scheduler.resolution, "1K");
     assert.equal(result.status, "ready");
     assert.ok(created.graph.edges.some((edge) => edge.sourceId === scheduler.id && edge.targetId === result.id));
   }
@@ -288,6 +290,8 @@ test("gates new stories behind a parallel lead and support foundation pair", () 
     readWorkflowInputs(foundations.graph, node.id).images.length === 0
   ));
   assert.ok(foundationSchedulers.every((node) => /粗粝水粉笔触/.test(node.prompt)));
+  assert.ok(foundationSchedulers.every((node) => /纯白 #FFFFFF/.test(node.prompt)));
+  assert.ok(foundationSchedulers.every((node) => /最终背景要求优先/.test(node.prompt)));
   assert.throws(() => createStoryAssetBatch(
     foundations.graph,
     batch(analysis.storyId, "character", 1, true, [asset("other", "村民")]),
@@ -303,6 +307,40 @@ test("gates new stories behind a parallel lead and support foundation pair", () 
   const parallel = advanceWorkflowBatch(prepared.graph, prepared.batch);
   assert.equal(parallel.readySchedulerIds.length, 2);
   assert.match(describeStoryAssetRun(foundations.graph, operation), /并行/);
+});
+
+test("keeps risky IP names in labels but out of Agent-authored asset prompts", () => {
+  const idFactory = ids();
+  const analysis = createStoryAnalysis(
+    emptyWorkflowGraph(),
+    foundationAnalysisOperation(),
+    idFactory,
+  );
+  const created = createStoryAssetBatch(
+    analysis.graph,
+    batch(analysis.storyId, "character", 0, false, [
+      asset("lead", "迪士尼版白雪公主", {
+        foundationRole: "lead",
+        description: "年轻女性，鹅蛋脸，短黑卷发，纤细体型，蓝灰羊毛旅行裙与暗红披肩",
+        imagePrompt: "年轻女性角色综合设定图，短黑卷发，蓝灰羊毛旅行裙，克制而勇敢的神情",
+      }),
+      asset("support", "原创王后", {
+        foundationRole: "support",
+        description: "原创中年王后",
+        imagePrompt: "原创中年王后综合设定图",
+      }),
+    ]),
+    idFactory,
+  );
+  const spec = created.graph.nodes.find((node) =>
+    node.assetRef === "lead" && node.assetRole === "spec"
+  );
+  const schedulerNode = created.graph.nodes.find((node) =>
+    node.assetRef === "lead" && node.assetRole === "scheduler"
+  );
+  assert.match(spec.label, /迪士尼版白雪公主/);
+  assert.doesNotMatch(schedulerNode.prompt, /迪士尼|白雪公主/);
+  assert.match(schedulerNode.prompt, /短黑卷发|蓝灰羊毛旅行裙/);
 });
 
 test("approves both foundation images before wiring every later asset as image 1 and image 2", () => {
@@ -360,8 +398,8 @@ test("approves both foundation images before wiring every later asset as image 1
 
   for (const [ref, pattern] of [
     ["villager", /将图1中人物换成/],
-    ["scene", /不要复制、出现或突出图1和图2的人物/],
-    ["prop", /不要出现人物/],
+    ["scene", /45° 鸟瞰斜俯视/],
+    ["prop", /主体 3\/4 展示视角.*正面、背面、侧面和顶部视图/s],
   ]) {
     const scheduler = graph.nodes.find((node) =>
       node.type === "scheduler" && node.assetRef === ref
@@ -370,7 +408,17 @@ test("approves both foundation images before wiring every later asset as image 1
     assert.deepEqual(inputs.images.map((node) => node.assetRef), ["lead", "support"]);
     assert.match(scheduler.prompt, pattern);
     assert.match(scheduler.prompt, /粗粝水粉笔触/);
+    assert.match(scheduler.prompt, /纯白 #FFFFFF/);
   }
+  const sceneScheduler = graph.nodes.find((node) =>
+    node.type === "scheduler" && node.assetRef === "scene"
+  );
+  assert.match(sceneScheduler.prompt, /不得出现图1、图2或其他人物/);
+  assert.match(sceneScheduler.prompt, /临时时间.*临时天气.*临时灯光/);
+  const propScheduler = graph.nodes.find((node) =>
+    node.type === "scheduler" && node.assetRef === "prop"
+  );
+  assert.match(propScheduler.prompt, /不得只输出单一平面图/);
 
   const restored = parseWorkflowGraph(JSON.stringify(graph));
   assert.equal(restored.version, 1);

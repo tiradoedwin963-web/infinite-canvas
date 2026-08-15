@@ -89,6 +89,7 @@ type CanvasAgentSidebarProps = {
   ) => Promise<string>;
   onReadImages: (nodeIds: string[]) => Promise<AgentInspectedImage[]>;
   describeOperation?: (operation: AgentDangerousOperation) => string;
+  onBusyChange?: (busy: boolean) => void;
 };
 
 async function readApiError(response: Response) {
@@ -119,6 +120,7 @@ export function CanvasAgentSidebar({
   onConfirmOperation,
   onReadImages,
   describeOperation = describeDangerousOperation,
+  onBusyChange,
 }: CanvasAgentSidebarProps) {
   const [conversationStore, setConversationStore] = useState<AgentConversationStore>(
     EMPTY_CONVERSATION_STORE,
@@ -264,6 +266,15 @@ export function CanvasAgentSidebar({
     const interval = window.setInterval(() => setRequestClock(Date.now()), 1_000);
     return () => window.clearInterval(interval);
   }, [isSending]);
+
+  useEffect(() => {
+    onBusyChange?.(isSending || isConfirmationBusy);
+  }, [isConfirmationBusy, isSending, onBusyChange]);
+
+  useEffect(() => () => {
+    planningAbortRef.current?.abort();
+    onBusyChange?.(false);
+  }, [onBusyChange]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });

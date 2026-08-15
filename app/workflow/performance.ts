@@ -120,6 +120,16 @@ export function createWorkflowViewportController(options: {
   };
 
   return {
+    replace(next: Viewport) {
+      if (frame !== null) cancelFrame(frame);
+      if (timer !== null) clearTimer(timer);
+      frame = null;
+      timer = null;
+      viewport = next;
+      options.apply(viewport);
+      options.commit(viewport);
+      setActive(false);
+    },
     pan(deltaX: number, deltaY: number) {
       viewport = panViewport(viewport, deltaX, deltaY);
       schedule();

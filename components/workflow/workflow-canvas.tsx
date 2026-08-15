@@ -5,6 +5,7 @@ import {
   FileText,
   Image as ImageIcon,
   LoaderCircle,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -16,7 +17,6 @@ import {
 import type { CSSProperties, PointerEvent } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY,
   describeDangerousOperation,
   type AgentDangerousOperation,
   type AgentInspectedImage,
@@ -39,7 +39,7 @@ import {
 } from "@/app/canvas/viewport";
 import {
   applyWorkflowTaskStatus,
-  buildWorkflowPrompt,
+  buildWorkflowGenerationPrompt,
   connectWorkflowNodes,
   createConnectedScheduler,
   createWorkflowNode,
@@ -61,7 +61,6 @@ import {
   workflowEdgePath,
   workflowNodesIntersecting,
   workflowSelectionBounds,
-  WORKFLOW_STORAGE_KEY,
   type WorkflowBounds,
   type WorkflowGraph,
   type WorkflowNode,
@@ -71,7 +70,6 @@ import {
   type WorkflowSourceNode,
 } from "@/app/workflow/graph";
 import {
-  WORKFLOW_BATCH_STORAGE_KEY,
   advanceWorkflowBatch,
   applyWorkflowAgentOperations,
   createWorkflowAgentSnapshot,
@@ -94,6 +92,20 @@ import {
   createWorkflowViewportController,
   workflowGridTransform,
 } from "@/app/workflow/performance";
+import {
+  WORKFLOW_PROJECTS_STORAGE_KEY,
+  createWorkflowProject,
+  ensureWorkflowProjectRegistry,
+  parseWorkflowViewport,
+  projectSourceAssetIds,
+  removeWorkflowProject,
+  renameWorkflowProject,
+  workflowProjectBatchKey,
+  workflowProjectConversationKey,
+  workflowProjectGraphKey,
+  workflowProjectViewportKey,
+  type WorkflowProjectRegistry,
+} from "@/app/workflow/projects";
 import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 
 const DOT_SPACING = 24;
@@ -146,6 +158,11 @@ type ConnectionState = {
   point: { x: number; y: number };
   moved: boolean;
   targetId?: string;
+};
+type ProjectEditorState = {
+  mode: "create" | "rename";
+  value: string;
+  error: string;
 };
 
 function screenToWorld(viewport: Viewport, point: { x: number; y: number }) {
@@ -227,6 +244,9 @@ export function WorkflowCanvas() {
   const [agentContextNodeId, setAgentContextNodeId] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [batchRun, setBatchRun] = useState<WorkflowBatchRun | null>(null);
+  const [projects, setProjects] = useState<WorkflowProjectRegistry | null>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -258,16 +278,17 @@ export function WorkflowCanvas() {
     ReturnType<typeof createWorkflowGraphPersistence> | null
   >(null);
   const runningSchedulersRef = useRef(new Set<string>());
+  const activeProjectIdRef = useRef("");
 
   graphRef.current = graph;
   selectedIdsRef.current = selectedIds;
   isAgentOpenRef.current = isAgentOpen;
   canvasSizeRef.current = canvasSize;
 
-  useEffect(() => {
-    const restored = parseWorkflowGraph(
-      window.localStorage.getItem(WORKFLOW_STORAGE_KEY),
-    );
+  const loadProject = useCallback((projectId: string) => {
+    const restored = parseWorkflowGraph(window.localStorage.getItem(
+      workflowProjectGraphKey(projectId),
+    ));
     const safeRestored = {
       ...restored,
       nodes: restored.nodes.map((node) =>
@@ -281,20 +302,51 @@ export function WorkflowCanvas() {
           : node,
       ),
     };
+    const restoredViewport = parseWorkflowViewport(window.localStorage.getItem(
+      workflowProjectViewportKey(projectId),
+    ));
+    Object.values(assetUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+    assetUrlsRef.current = {};
+    loadedAssets.current.clear();
+    pollingTasks.current.clear();
     graphRef.current = safeRestored;
     setGraph(safeRestored);
+    setAssetUrls({});
+    setAssetErrors({});
+    setSelectedIds([]);
+    setCreationMenu(null);
+    setSchedulerMenu(null);
+    setMarquee(null);
+    setConnection(null);
+    setDetailId(null);
+    setAgentContextNodeId(null);
     setBatchRun(
       parseWorkflowBatchRun(
-        window.localStorage.getItem(WORKFLOW_BATCH_STORAGE_KEY),
+        window.localStorage.getItem(workflowProjectBatchKey(projectId)),
       ),
     );
-    setHydrated(true);
+    viewportRef.current = restoredViewport;
+    setViewport(restoredViewport);
+    viewportControllerRef.current?.replace(restoredViewport);
   }, []);
 
   useEffect(() => {
+    const registry = ensureWorkflowProjectRegistry(window.localStorage);
+    activeProjectIdRef.current = registry.activeProjectId;
+    setProjects(registry);
+    loadProject(registry.activeProjectId);
+    setHydrated(true);
+  }, [loadProject]);
+
+  useEffect(() => {
+    const projectId = projects?.activeProjectId;
+    if (!projectId) return;
     const persistence = createWorkflowGraphPersistence({
       write: (next) =>
-        window.localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(next)),
+        window.localStorage.setItem(
+          workflowProjectGraphKey(projectId),
+          JSON.stringify(next),
+        ),
     });
     persistenceRef.current = persistence;
     const flush = () => persistence.flush();
@@ -310,11 +362,11 @@ export function WorkflowCanvas() {
       persistence.dispose();
       if (persistenceRef.current === persistence) persistenceRef.current = null;
     };
-  }, []);
+  }, [projects?.activeProjectId]);
 
   useEffect(() => {
-    if (hydrated) persistenceRef.current?.schedule(graph);
-  }, [graph, hydrated]);
+    if (hydrated && projects?.activeProjectId) persistenceRef.current?.schedule(graph);
+  }, [graph, hydrated, projects?.activeProjectId]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -325,16 +377,26 @@ export function WorkflowCanvas() {
   }, [graph, hydrated]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    const projectId = projects?.activeProjectId;
+    if (!hydrated || !projectId) return;
     if (batchRun) {
       window.localStorage.setItem(
-        WORKFLOW_BATCH_STORAGE_KEY,
+        workflowProjectBatchKey(projectId),
         JSON.stringify(batchRun),
       );
     } else {
-      window.localStorage.removeItem(WORKFLOW_BATCH_STORAGE_KEY);
+      window.localStorage.removeItem(workflowProjectBatchKey(projectId));
     }
-  }, [batchRun, hydrated]);
+  }, [batchRun, hydrated, projects?.activeProjectId]);
+
+  useEffect(() => {
+    const projectId = projects?.activeProjectId;
+    if (!hydrated || !projectId) return;
+    window.localStorage.setItem(
+      workflowProjectViewportKey(projectId),
+      JSON.stringify(viewport),
+    );
+  }, [hydrated, projects?.activeProjectId, viewport]);
 
   useEffect(() => {
     if (hydrated && graph.nodes.length === 0 && batchRun) setBatchRun(null);
@@ -570,6 +632,7 @@ export function WorkflowCanvas() {
 
   const pollTask = useCallback(async (node: WorkflowResultNode) => {
     if (!node.taskId || pollingTasks.current.has(node.taskId)) return;
+    const projectId = activeProjectIdRef.current;
     if (Date.now() > workflowAutoPollDeadline(node)) {
       setGraph((current) => updateWorkflowResult(current, node.id, {
         status: "paused",
@@ -584,8 +647,10 @@ export function WorkflowCanvas() {
       );
       if (!response.ok) throw new Error(await readApiError(response));
       const status = (await response.json()) as TaskStatusResponse;
+      if (activeProjectIdRef.current !== projectId) return;
       setGraph((current) => applyWorkflowTaskStatus(current, node.id, status));
     } catch (error) {
+      if (activeProjectIdRef.current !== projectId) return;
       setGraph((current) => updateWorkflowResult(current, node.id, {
         progress: error instanceof Error ? error.message : "任务查询失败，稍后重试",
       }));
@@ -1010,7 +1075,7 @@ export function WorkflowCanvas() {
       }));
       return;
     }
-    const prompt = buildWorkflowPrompt(inputs, scheduler.prompt);
+    const prompt = buildWorkflowGenerationPrompt(inputs, scheduler);
     if (!prompt) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "请填写提示词或连接文本节点。" }));
       return;
@@ -1206,6 +1271,176 @@ export function WorkflowCanvas() {
     return describeDangerousOperation(operation);
   }
 
+  function persistActiveProject() {
+    const projectId = activeProjectIdRef.current;
+    if (!projectId) return;
+    persistenceRef.current?.flush();
+    let graphToSave = graphRef.current;
+    if (agentBusy) {
+      graphRef.current.nodes.forEach((node) => {
+        if (
+          node.storyRole === "analysis" &&
+          node.storyId &&
+          node.planningStatus === "planning"
+        ) {
+          graphToSave = markStoryAssetPlanning(graphToSave, node.storyId, "stopped");
+        }
+      });
+    }
+    window.localStorage.setItem(
+      workflowProjectGraphKey(projectId),
+      JSON.stringify(graphToSave),
+    );
+    window.localStorage.setItem(
+      workflowProjectViewportKey(projectId),
+      JSON.stringify(viewportRef.current),
+    );
+    if (batchRun) {
+      window.localStorage.setItem(
+        workflowProjectBatchKey(projectId),
+        JSON.stringify(batchRun),
+      );
+    } else {
+      window.localStorage.removeItem(workflowProjectBatchKey(projectId));
+    }
+  }
+
+  function activateProject(registry: WorkflowProjectRegistry, projectId: string) {
+    if (projectId === activeProjectIdRef.current) return;
+    if (runningSchedulersRef.current.size) {
+      window.alert("生成请求正在提交，请等待任务 ID 保存后再切换项目。");
+      return;
+    }
+    persistActiveProject();
+    const next = { ...registry, activeProjectId: projectId };
+    window.localStorage.setItem(WORKFLOW_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+    activeProjectIdRef.current = projectId;
+    setProjects(next);
+    setAgentBusy(false);
+    loadProject(projectId);
+  }
+
+  function addProject() {
+    if (!projects) return;
+    if (runningSchedulersRef.current.size) {
+      window.alert("生成请求正在提交，请等待任务 ID 保存后再新建项目。");
+      return;
+    }
+    setProjectEditor({
+      mode: "create",
+      value: `新项目 ${projects.projects.length + 1}`,
+      error: "",
+    });
+  }
+
+  function saveProjectName() {
+    if (!projects || !projectEditor) return;
+    try {
+      if (projectEditor.mode === "create") {
+        const created = createWorkflowProject(projects, projectEditor.value);
+        window.localStorage.setItem(
+          workflowProjectGraphKey(created.project.id),
+          JSON.stringify(emptyWorkflowGraph()),
+        );
+        window.localStorage.setItem(
+          workflowProjectViewportKey(created.project.id),
+          JSON.stringify({ x: 0, y: 0, scale: 1 }),
+        );
+        setProjectEditor(null);
+        activateProject(created.registry, created.project.id);
+        return;
+      }
+      const next = renameWorkflowProject(
+        projects,
+        projects.activeProjectId,
+        projectEditor.value,
+      );
+      window.localStorage.setItem(WORKFLOW_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      setProjects(next);
+      setProjectEditor(null);
+    } catch (error) {
+      setProjectEditor((current) => current
+        ? {
+            ...current,
+            error: error instanceof Error ? error.message : "无法保存项目名称。",
+          }
+        : current
+      );
+    }
+  }
+
+  function renameActiveProject() {
+    if (!projects) return;
+    const active = projects.projects.find(
+      (project) => project.id === projects.activeProjectId,
+    );
+    if (!active) return;
+    setProjectEditor({ mode: "rename", value: active.name, error: "" });
+  }
+
+  function deleteActiveProject() {
+    if (!projects) return;
+    if (runningSchedulersRef.current.size) {
+      window.alert("生成请求正在提交，请等待任务 ID 保存后再删除项目。");
+      return;
+    }
+    const active = projects.projects.find(
+      (project) => project.id === projects.activeProjectId,
+    );
+    if (!active) return;
+    const remoteCount = graphRef.current.nodes.filter((node) =>
+      node.type === "result" && Boolean(node.taskId) &&
+      (node.status === "pending" || node.status === "running")
+    ).length;
+    const warning = [
+      `删除项目“${active.name}”？`,
+      `将删除 ${graphRef.current.nodes.length} 个节点及该项目的 Agent 对话。`,
+      ...(remoteCount
+        ? [`其中 ${remoteCount} 个远端任务可能仍会继续并产生费用，删除只能停止本地查询。`]
+        : []),
+      "此操作无法撤销。",
+    ].join("\n");
+    if (!window.confirm(warning)) return;
+
+    persistActiveProject();
+    const removedAssetIds = projectSourceAssetIds(graphRef.current);
+    const remainingProjects = projects.projects.filter((project) => project.id !== active.id);
+    const remainingAssetIds = new Set<string>();
+    remainingProjects.forEach((project) => {
+      const candidate = parseWorkflowGraph(window.localStorage.getItem(
+        workflowProjectGraphKey(project.id),
+      ));
+      projectSourceAssetIds(candidate).forEach((assetId) => remainingAssetIds.add(assetId));
+    });
+    removedAssetIds.forEach((assetId) => {
+      if (!remainingAssetIds.has(assetId)) void deleteAsset(assetId);
+    });
+    window.localStorage.removeItem(workflowProjectGraphKey(active.id));
+    window.localStorage.removeItem(workflowProjectBatchKey(active.id));
+    window.localStorage.removeItem(workflowProjectConversationKey(active.id));
+    window.localStorage.removeItem(workflowProjectViewportKey(active.id));
+
+    const next = removeWorkflowProject(projects, active.id);
+    const replacement = next.projects.find((project) =>
+      !projects.projects.some((current) => current.id === project.id)
+    );
+    if (replacement) {
+      window.localStorage.setItem(
+        workflowProjectGraphKey(replacement.id),
+        JSON.stringify(emptyWorkflowGraph()),
+      );
+      window.localStorage.setItem(
+        workflowProjectViewportKey(replacement.id),
+        JSON.stringify({ x: 0, y: 0, scale: 1 }),
+      );
+    }
+    window.localStorage.setItem(WORKFLOW_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+    activeProjectIdRef.current = next.activeProjectId;
+    setProjects(next);
+    setAgentBusy(false);
+    loadProject(next.activeProjectId);
+  }
+
   function deleteNode(node: WorkflowNode) {
     if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
@@ -1306,6 +1541,59 @@ export function WorkflowCanvas() {
       onPointerUp={finishCanvasPointer}
       onPointerCancel={finishCanvasPointer}
     >
+      {projects ? (
+        <div className="workflow-project-switcher" data-workflow-isolated>
+          <select
+            aria-label="当前工作流项目"
+            disabled={runningSchedulers.size > 0}
+            value={projects.activeProjectId}
+            onChange={(event) => activateProject(projects, event.target.value)}
+          >
+            {projects.projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
+          <button aria-label="新建项目" title="新建项目" type="button" onClick={addProject}>
+            <Plus size={15} />
+          </button>
+          <button aria-label="重命名项目" title="重命名项目" type="button" onClick={renameActiveProject}>
+            <Pencil size={14} />
+          </button>
+          <button aria-label="删除项目" title="删除项目" type="button" onClick={deleteActiveProject}>
+            <Trash2 size={15} />
+          </button>
+          {agentBusy ? <span className="workflow-project-status">Agent 处理中</span> : null}
+        </div>
+      ) : null}
+      {projectEditor ? (
+        <div className="workflow-project-editor-backdrop" data-workflow-isolated>
+          <form
+            className="workflow-project-editor"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveProjectName();
+            }}
+          >
+            <h2>{projectEditor.mode === "create" ? "新建项目" : "重命名项目"}</h2>
+            <label>
+              项目名称
+              <input
+                value={projectEditor.value}
+                onChange={(event) => setProjectEditor({
+                  ...projectEditor,
+                  value: event.target.value,
+                  error: "",
+                })}
+              />
+            </label>
+            {projectEditor.error ? <p>{projectEditor.error}</p> : null}
+            <div>
+              <button type="button" onClick={() => setProjectEditor(null)}>取消</button>
+              <button type="submit">保存</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
       <div
         ref={gridRef}
         aria-hidden="true"
@@ -1464,9 +1752,12 @@ export function WorkflowCanvas() {
       ) : null}
 
       <CanvasAgentSidebar
+        key={projects?.activeProjectId ?? "workflow-agent"}
         open={isAgentOpen}
         snapshot={agentSnapshot}
-        conversationStorageKey={WORKFLOW_AGENT_CONVERSATIONS_STORAGE_KEY}
+        conversationStorageKey={projects
+          ? workflowProjectConversationKey(projects.activeProjectId)
+          : "workflow-agent-conversations-pending"}
         legacyStorageKey=""
         subtitle="GPT-5.6 Sol · 可规划并运行工作流"
         emptyMessage="粘贴完整剧本后，我会先分析类型、主题、受众、情绪和时长，再逐批搭建人物、场景与道具资产库。"
@@ -1484,6 +1775,7 @@ export function WorkflowCanvas() {
         onConfirmOperation={confirmAgentOperation}
         onReadImages={readAgentImages}
         describeOperation={describeAgentOperation}
+        onBusyChange={setAgentBusy}
       />
     </main>
   );

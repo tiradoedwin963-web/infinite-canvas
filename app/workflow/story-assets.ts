@@ -4,7 +4,6 @@ import type {
   AgentRunStoryAssetsOperation,
   AgentStoryAssetKind,
 } from "../ai/agent.ts";
-import { DEFAULT_MODEL_BY_MODE } from "../ai/models.ts";
 import {
   WORKFLOW_NODE_WIDTH,
   getWorkflowNodeSize,
@@ -30,6 +29,9 @@ const ASSET_KIND_LABEL: Record<AgentStoryAssetKind, string> = {
   scene: "场景",
   prop: "道具",
 };
+
+const WHITE_BACKGROUND_RULE =
+  "最终背景要求优先于前文中的任何背景描述：忽略王宫、森林、羊皮纸或其他环境背景要求，全部资产内容只置于均匀纯白 #FFFFFF 背景中；不得出现环境背景、装饰底纹、渐变、文字、标签或水印。";
 
 function analysisText(operation: AgentCreateStoryAnalysisOperation) {
   return [
@@ -74,7 +76,33 @@ function foundationPrompt(
     asset.imagePrompt,
     `统一视觉风格：${visualStyle}`,
     "人物综合参考图必须包含正面全身、左侧面全身、右侧面全身、中性表情和剧情中最重要的三种表情；同一图内保持脸型、发型、服装、体型和配色一致。",
+    WHITE_BACKGROUND_RULE,
   ].filter(Boolean).join("\n\n");
+}
+
+function standalonePrompt(
+  kind: AgentStoryAssetKind,
+  asset: AgentCreateStoryAssetBatchOperation["assets"][number],
+) {
+  if (kind === "character") {
+    return foundationPrompt(asset, "当前项目统一视觉风格");
+  }
+  if (kind === "scene") {
+    return [
+      `生成稳定物理地点“${asset.description}”的空间母版。`,
+      asset.imagePrompt,
+      "采用 45° 鸟瞰斜俯视构图，将完整地点表现为纯白背景上的独立场景岛；清楚展示出入口、墙体、门窗、通道、固定家具、关键陈设和空间关系。",
+      "只保留固定布局与剧本明确的永久环境特征；不包含人物、临时动作、分镜机位、镜头运动、临时时间、临时天气、临时灯光或人物站位。",
+      WHITE_BACKGROUND_RULE,
+    ].join("\n\n");
+  }
+  return [
+    `生成独立道具“${asset.description}”的多视角细节参考板。`,
+    asset.imagePrompt,
+    "同一张 16:9 画面必须包含主体 3/4 展示视角、正面、背面、侧面和顶部视图，并提供 2 至 3 个材质、连接结构、功能部位或稳定识别特征的局部特写。",
+    "所有视图必须严格表现同一个道具，保持造型、比例、材质、颜色和细节一致；不得只输出单一平面图，不得出现人物。",
+    WHITE_BACKGROUND_RULE,
+  ].join("\n\n");
 }
 
 function dependentPrompt(
@@ -89,21 +117,28 @@ function dependentPrompt(
       `保持图1原创的${visualStyle}，匹配背景、画笔纹理、边缘质量、色彩渲染、光影和分辨率质感。`,
       "不要平滑、锐化、去噪、照片化或改变原创绘画风格。",
       asset.imagePrompt,
+      WHITE_BACKGROUND_RULE,
     ].join("\n\n");
   }
   if (kind === "scene") {
     return [
-      `以图1主角和图2核心配角作为同一故事世界与原创绘画风格参考，生成场景：${asset.description}。`,
+      `以图1主角和图2核心配角作为同一故事世界与原创绘画风格参考，生成稳定物理地点“${asset.description}”的空间母版。`,
       `严格匹配${visualStyle}，以及两张参考图的绘画媒介、笔触、边缘质量、色彩和光影。`,
-      "场景中不要复制、出现或突出图1和图2的人物，不要添加照片细节，不要平滑、锐化或去噪。",
       asset.imagePrompt,
+      "采用 45° 鸟瞰斜俯视构图，将完整地点表现为纯白背景上的独立场景岛；清楚展示出入口、墙体、门窗、通道、固定家具、关键陈设和空间关系。",
+      "只保留固定布局与剧本明确的永久环境特征；场景中不得出现图1、图2或其他人物，也不包含临时动作、分镜机位、镜头运动、临时时间、临时天气、临时灯光或人物站位。",
+      "不要添加照片细节，不要平滑、锐化或去噪。",
+      WHITE_BACKGROUND_RULE,
     ].join("\n\n");
   }
   return [
-    `以图1主角和图2核心配角作为同一故事世界与原创绘画风格参考，生成独立道具：${asset.description}。`,
+    `以图1主角和图2核心配角作为同一故事世界与原创绘画风格参考，生成独立道具“${asset.description}”的多视角细节参考板。`,
     `严格匹配${visualStyle}，以及两张参考图的绘画媒介、笔触、边缘质量、色彩、光影和分辨率质感。`,
-    "突出道具造型、材质和辨识细节，不要出现人物，不要照片化、平滑、锐化或去噪。",
     asset.imagePrompt,
+    "同一张 16:9 画面必须包含主体 3/4 展示视角、正面、背面、侧面和顶部视图，并提供 2 至 3 个材质、连接结构、功能部位或稳定识别特征的局部特写。",
+    "所有视图必须严格表现同一个道具，保持造型、比例、材质、颜色和细节一致；不得只输出单一平面图，不得出现人物。",
+    "不要照片化、平滑、锐化或去噪。",
+    WHITE_BACKGROUND_RULE,
   ].join("\n\n");
 }
 
@@ -270,10 +305,8 @@ export function resetStoryFoundationApproval(
   };
 }
 
-function defaultRatio(kind: AgentStoryAssetKind, projectRatio: string) {
-  if (kind === "character") return "16:9";
-  if (kind === "prop") return "1:1";
-  return projectRatio || "9:16";
+function defaultRatio() {
+  return "16:9";
 }
 
 export function createStoryAssetBatch(
@@ -329,8 +362,7 @@ export function createStoryAssetBatch(
       .filter((node) => node.storyId === operation.storyId && node.assetRef)
       .map((node) => node.assetRef),
   ).size;
-  const imageModel = analysis.storyImageModel || DEFAULT_MODEL_BY_MODE.image;
-  const projectRatio = analysis.projectAspectRatio || "9:16";
+  const imageModel = "gpt-image-2";
   const visualStyle = analysis.storyVisualStyle || "当前项目统一视觉风格";
   const leadResult = foundationStrategy
     ? foundationResult(graph, operation.storyId, "lead")
@@ -381,9 +413,9 @@ export function createStoryAssetBatch(
           ? foundationPrompt(asset, visualStyle)
           : foundationStrategy
             ? dependentPrompt(operation.assetKind, asset, visualStyle)
-            : asset.imagePrompt,
-        aspectRatio: asset.aspectRatio || defaultRatio(operation.assetKind, projectRatio),
-        resolution: asset.resolution || "2K",
+            : standalonePrompt(operation.assetKind, asset),
+        aspectRatio: defaultRatio(),
+        resolution: "1K",
         duration: "",
         outputCount: 1,
         error: "",

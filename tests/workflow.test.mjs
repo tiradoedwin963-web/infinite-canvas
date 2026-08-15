@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyWorkflowTaskStatus,
+  buildWorkflowGenerationPrompt,
   buildWorkflowPrompt,
   connectWorkflowNodes,
   createConnectedScheduler,
@@ -187,6 +188,45 @@ test("reads direct upstream text, image and video in edge order without recursio
   assert.deepEqual(inputs.images.map((node) => node.id), ["image"]);
   assert.deepEqual(inputs.videos.map((node) => node.id), ["video"]);
   assert.equal(buildWorkflowPrompt(inputs, "节点提示词"), "第一段\n\n第二段\n\n节点提示词");
+  assert.equal(
+    buildWorkflowGenerationPrompt(inputs, scheduler()),
+    "第一段\n\n第二段\n\n节点提示词",
+  );
+  for (const storyRole of [
+    "asset-scheduler",
+    "storyboard-scheduler",
+    "video-scheduler",
+  ]) {
+    assert.equal(
+      buildWorkflowGenerationPrompt(inputs, { ...scheduler(), storyRole }),
+      "节点提示词",
+    );
+  }
+});
+
+test("keeps Agent-authored story prompts separate from IP names in source text", () => {
+  const created = createStoryWorkflow(emptyWorkflowGraph(), storyOperation({
+    globalContext: "使用迪士尼版白雪公主造型。",
+    shots: [{
+      ref: "shot-01",
+      title: "出场",
+      script: "迪士尼版白雪公主走进森林。",
+      imagePrompt: "年轻女性，短黑卷发，原创蓝灰旅行裙，走进森林。",
+      videoPrompt: "年轻女性缓慢前行，镜头平稳跟随。",
+      duration: "5",
+      referenceNodeIds: [],
+    }],
+  }), ids());
+  for (const storyRole of ["storyboard-scheduler", "video-scheduler"]) {
+    const node = created.graph.nodes.find((candidate) =>
+      candidate.type === "scheduler" && candidate.storyRole === storyRole
+    );
+    const prompt = buildWorkflowGenerationPrompt(
+      readWorkflowInputs(created.graph, node.id),
+      node,
+    );
+    assert.doesNotMatch(prompt, /迪士尼|白雪公主/);
+  }
 });
 
 test("creates one text result or one to four independent media results and appends reruns", () => {

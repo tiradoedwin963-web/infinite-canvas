@@ -1254,3 +1254,121 @@
 - `deploy/canvas/Caddyfile`：增加 `default_sni 82.157.204.208`。
 - `progress.md`：追加本轮修复、验证与回滚说明。
 - 回滚方式：提交后执行 `git revert <本轮提交哈希>`；回滚会恢复 IP 直连 TLS 失败，不影响应用容器和现有 Python 服务。
+
+## 2026-08-15 - Task: 简化角色 IP 风险提示词处理
+
+### What was done
+- 为画布 Agent 增加最小化角色 IP 风险规则：原创角色和未指向商业版本的公版角色保持原写法；存在风险时保留节点名称，但图片与视频提示词改用具体原创外观特征，不使用角色、品牌、工作室或商业版本名称。
+- Agent 创建的资产、分镜图片和视频调度器改为直接提交自身提示词，不再将可能含原角色名称的资产说明、项目设定或分镜原文额外拼接进模型请求；手工调度器继续沿用原有上游文本拼接行为。
+- 未增加审核接口、协议字段、授权流程、UI 或存储迁移。
+
+### Testing
+- `node --test tests/workflow.test.mjs tests/story-assets.test.mjs tests/rendered-html.test.mjs`：通过，29 项定向测试全部通过。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，118 项测试全部通过。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `agent.md`：增加 Agent 自动判断和改写风险角色提示词的通用规则。
+- `tools.md`：补充创作画布图片提示词的风险角色特征化写法。
+- `story-asset-tools.md`：约束风险人物的资产描述与图片提示词，并要求调度提示词自包含。
+- `workflow-tools.md`：约束分镜图片和视频提示词的风险角色写法及自包含要求。
+- `app/workflow/graph.ts`：新增 Agent 工作流调度器的最终提示词选择逻辑。
+- `components/workflow/workflow-canvas.tsx`：运行调度器时使用区分手工与 Agent 工作流节点的提示词组装结果。
+- `tests/workflow.test.mjs`：验证手工调度器保留上游文本、Agent 资产与分镜调度器不拼接原文。
+- `tests/story-assets.test.mjs`：验证风险 IP 名称保留在节点标题但不会进入资产生成提示词。
+- `tests/rendered-html.test.mjs`：验证三份 Tool 手册和 Agent 指令包含新规则。
+- `docs/canvas.md`：记录角色 IP 风险提示词行为及手工调度器兼容边界。
+- `progress.md`：追加本轮实施、验证、文件清单与回滚说明。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；提交前可使用 `git restore -- agent.md tools.md story-asset-tools.md workflow-tools.md app/workflow/graph.ts components/workflow/workflow-canvas.tsx tests/workflow.test.mjs tests/story-assets.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md` 撤销本轮改动。
+
+## 2026-08-15 - Task: 复测并收紧商业版本角色特征改写
+
+### What was done
+- 根据浏览器复测结果，明确风险可由特征描述解决时 Agent 必须直接改写，不再询问是否采用原创近似方案。
+- 明确公版角色一旦被指定为特定商业版本，实际生成字段和统一视觉风格必须同时移除商业版本名称与公版角色名称；节点标题仍可保留剧本称呼。
+
+### Testing
+- 使用 25,359 字《白雪公主，但旁白死不改词》完整剧本验证长消息、分析节点、基础角色门禁和流式过程摘要；全程停在两张基础角色费用确认前，未提交图片任务。
+- 使用独立 `localhost:3014` 测试实例和两场完整短剧明确指定商业动画版本；Agent 未再次询问，生成的两张图片调度提示词中商业版本名与公版角色名均为 0 次，节点标题仍保留剧本名称。
+- `node --test tests/rendered-html.test.mjs tests/story-assets.test.mjs tests/workflow.test.mjs`：通过，29 项定向测试全部通过。
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 五阶段生产构建成功，118 项测试全部通过。
+- `git diff --check`：通过，无空白符错误。
+
+### Notes
+- `agent.md`：禁止风险特征改写场景重复询问，并明确同时移除商业版本名和底层公版角色名。
+- `tools.md`：补充创作图片提示词直接改写规则。
+- `story-asset-tools.md`：约束资产描述、图片提示词和统一视觉风格中的风险名称。
+- `workflow-tools.md`：补充分镜工作流直接改写规则。
+- `tests/rendered-html.test.mjs`：验证新增的直接改写与统一视觉风格约束已进入运行手册。
+- `docs/canvas.md`：记录商业版本公版角色名称的实际生成边界。
+- `progress.md`：追加本轮复测、修正、验证与回滚说明。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>`；提交前可使用 `git restore -- agent.md tools.md story-asset-tools.md workflow-tools.md tests/rendered-html.test.mjs docs/canvas.md progress.md` 撤销本轮复测修正。
+## 2026-08-15 - Task: Add isolated workflow projects and white-background asset masters
+
+### What was done
+
+- Added a workflow project manager with create, switch, rename, and confirmed delete flows. Each project now isolates its graph, viewport, Agent conversations, batch queue, polling state, and upload references.
+- Migrated the legacy single workflow graph, queue, and conversation into a project named from the detected story title, while preserving workflow graph storage version `v1`.
+- Changed new story-asset defaults to GPT Image 2, 16:9, and 1K. Character boards, prop detail boards, and scene spatial masters now enforce a uniform white background.
+- Changed props to multi-view detail boards and scenes to reusable 45-degree bird's-eye location masters. Documented the future storyboard reference contract without creating storyboard nodes.
+- Created the local `白雪公主-白底资产版` project during browser acceptance and confirmed that the migrated legacy project remains separate. No Agent, image, or video generation request was submitted.
+
+### Testing
+
+- `npm run lint` passed.
+- `npm test` passed, including the production build and all 121 automated tests.
+- `git diff --check` passed.
+- Browser acceptance on `http://localhost:3011/` confirmed legacy-project migration, empty-project creation, project switching, node isolation, and active-project restoration after refresh.
+
+### Notes
+
+- `app/ai/agent-tools.ts`: changed story-asset defaults to GPT Image 2, 16:9, and 1K.
+- `app/globals.css`: added the project switcher and in-canvas project-name editor styles.
+- `app/workflow/performance.ts`: added viewport replacement for project switching without stale transforms.
+- `app/workflow/projects.ts`: added project registry, scoped storage keys, legacy migration, naming, removal, viewport parsing, and upload-reference helpers.
+- `app/workflow/story-assets.ts`: added white-background, prop multi-view, and 45-degree scene-master generation prompts.
+- `components/canvas-agent-sidebar.tsx`: reports Agent busy state and aborts an active planning stream when its project sidebar unmounts.
+- `components/workflow/workflow-canvas.tsx`: integrated project lifecycle, isolated persistence, paused inactive polling, safe switching, deletion cleanup, and project UI.
+- `agent.md`: instructed the Agent to consolidate repeated appearances of one physical location into one scene master.
+- `story-asset-tools.md`: documented the new defaults, white-background asset boards, location reuse, and future storyboard reference rule.
+- `docs/canvas.md`: documented project isolation, migration, asset-board formats, and scene spatial masters.
+- `tests/agent-tools.test.mjs`: updated story-asset default and manual assertions.
+- `tests/rendered-html.test.mjs`: verified project-manager and project-scoped conversation wiring.
+- `tests/story-assets.test.mjs`: verified white backgrounds, GPT Image 2 parameters, prop detail boards, and scene-master prompts.
+- `tests/workflow-performance.test.mjs`: verified immediate viewport replacement between projects.
+- `tests/workflow-projects.test.mjs`: covered legacy migration, naming, deletion replacement, viewport validation, and upload references.
+- `progress.md`: appended this implementation and verification record.
+- Rollback point: after these changes are committed, run `git revert <this-task-commit>`; before commit, reverse only the files listed in this entry and do not use a whole-worktree restore because earlier uncommitted workflow changes share several files.
+
+## 2026-08-15 - Task: Re-test Snow White asset planning and enforce final asset parameters
+
+### What was done
+
+- Re-submitted the complete 25,330-character Snow White script in an isolated workflow project and found that valid legacy Agent parameters could bypass the intended GPT Image 2 and 1K defaults.
+- Changed story-asset normalization and node creation so every newly planned asset starts as GPT Image 2, 16:9, and 1K even when the Agent returns another valid legacy model, ratio, or resolution. Users can still adjust the scheduler manually before generation.
+- Strengthened the final white-background instruction so it explicitly overrides any palace, forest, parchment, or other environment background left in an Agent-authored prompt.
+- Created `白雪公主-白底资产版-复测` for browser acceptance and stopped at the two-image foundation confirmation without submitting a paid image request.
+
+### Testing
+
+- Browser acceptance on `http://localhost:3011/` confirmed both foundation schedulers use GPT Image 2, 16:9, and 1K; both prompts contain the final-priority pure-white rule and no explicit palace, forest, or parchment display background.
+- The Agent streamed progress for the complete script, created the analysis plus two foundation character groups, and exposed the two-request confirmation without starting generation.
+- `node --test tests/agent-tools.test.mjs tests/story-assets.test.mjs tests/rendered-html.test.mjs`: passed, 21 focused tests.
+- `npm test`: passed, Vinext production build and all 121 tests.
+- `npm run lint`: passed with no ESLint errors or warnings.
+- `git diff --check`: passed.
+
+### Notes
+
+- `agent.md`: requires Agent-authored asset operations to use GPT Image 2, 16:9, 1K, and a pure-white display background.
+- `app/ai/agent-tools.ts`: normalizes valid legacy story-asset model, ratio, and resolution values to the required test settings.
+- `app/workflow/story-assets.ts`: enforces final scheduler parameters and makes the pure-white instruction override earlier background text.
+- `story-asset-tools.md`: documents deterministic normalization and white-background precedence.
+- `docs/canvas.md`: records the effective scheduler behavior visible to users.
+- `tests/agent-provider.test.mjs`: verifies provider responses using the legacy image model are normalized.
+- `tests/agent-tools.test.mjs`: verifies legacy valid values cannot bypass GPT Image 2 and 1K.
+- `tests/story-assets.test.mjs`: verifies foundation prompts contain the final-priority white-background rule.
+- `progress.md`: records the live regression, fix, browser acceptance, and verification evidence.
+- Rollback point: after commit, run `git revert <this-task-commit>`; before commit, revert only the files listed in this entry because they also contain earlier uncommitted workflow work.
