@@ -25,7 +25,7 @@ async function render() {
   );
 }
 
-test("server-renders the infinite canvas with the LingkeAI composer", async () => {
+test("server-renders the cloud session gate before exposing the canvas", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,15 +33,7 @@ test("server-renders the infinite canvas with the LingkeAI composer", async () =
   const html = await response.text();
   assert.match(html, /<title>LingkeAI 无限画布<\/title>/);
   assert.match(html, /lang="zh-CN"/);
-  assert.match(html, /aria-label="LingkeAI 无限画布"/);
-  assert.match(html, /class="infinite-canvas"/);
-  assert.match(html, /aria-label="AI 创作输入"/);
-  assert.match(html, /aria-label="添加参考图"/);
-  assert.match(html, />文本节点<\/option>/);
-  assert.match(html, />GPT-5\.6 Sol<\/option>/);
-  assert.match(html, />Claude Sonnet 5<\/option>/);
-  assert.match(html, /aria-label="生成"/);
-  assert.match(html, /aria-label="打开画布 Agent"/);
+  assert.match(html, /正在连接画布/);
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
 });
 

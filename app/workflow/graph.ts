@@ -109,6 +109,9 @@ export type WorkflowResultNode = WorkflowNodeBase & {
   progress: string;
   error: string;
   resultUrl?: string;
+  assetId?: string;
+  assetName?: string;
+  assetMimeType?: string;
   taskId?: string;
   startedAt?: number;
 };
@@ -265,7 +268,10 @@ function isWorkflowNode(value: unknown): value is WorkflowNode {
         String(node.status),
       ) &&
       typeof node.progress === "string" &&
-      typeof node.error === "string"
+      typeof node.error === "string" &&
+      (node.assetId === undefined || typeof node.assetId === "string") &&
+      (node.assetName === undefined || typeof node.assetName === "string") &&
+      (node.assetMimeType === undefined || typeof node.assetMimeType === "string")
     );
   }
   return false;
@@ -995,6 +1001,9 @@ export function applyWorkflowTaskStatus(
     progress: status.progress,
     error: status.error,
     resultUrl: first?.url ?? result.resultUrl,
+    assetId: first?.assetId ?? result.assetId,
+    assetName: first?.assetName ?? result.assetName,
+    assetMimeType: first?.assetMimeType ?? result.assetMimeType,
   });
   if (status.state !== "success" || status.results.length <= 1) return next;
   const scheduler = next.nodes.find(
@@ -1017,6 +1026,9 @@ export function applyWorkflowTaskStatus(
           progress: "",
           error: "",
           resultUrl: taskResult.url,
+          assetId: taskResult.assetId,
+          assetName: taskResult.assetName,
+          assetMimeType: taskResult.assetMimeType,
           taskId: undefined,
         },
       ],

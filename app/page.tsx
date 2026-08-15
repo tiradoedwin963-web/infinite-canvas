@@ -67,6 +67,7 @@ import {
 } from "@/app/canvas/graph";
 import { AIChatInput, type ComposerSubmission } from "@/components/ui/ai-chat-input";
 import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
+import { CloudSessionGate } from "@/components/cloud-session-gate";
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import {
   panViewport,
@@ -170,6 +171,10 @@ async function imageNodeToFile(
 }
 
 export default function Home() {
+  return <CloudSessionGate><CanvasHome /></CloudSessionGate>;
+}
+
+function CanvasHome() {
   const [experienceMode, setExperienceMode] = useState<CanvasExperienceMode>("creation");
 
   useEffect(() => {

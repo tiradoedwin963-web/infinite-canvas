@@ -2,6 +2,7 @@
 
 import {
   Bot,
+  Download,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -114,6 +115,24 @@ import {
   type WorkflowProjectRegistry,
 } from "@/app/workflow/projects";
 import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
+import { useCloudSession } from "@/components/cloud-session-gate";
+import {
+  activateCloudProject,
+  createCloudProject,
+  deleteCloudAsset,
+  deleteCloudProject,
+  loadCloudProject,
+  loadCloudProjects,
+  readCloudAsset,
+  saveCloudConversation,
+  saveCloudProject,
+  uploadCloudAsset,
+  type CloudProjectDocument,
+} from "@/app/workflow/cloud-client";
+import {
+  parseAgentConversationStore,
+  type AgentConversationStore,
+} from "@/app/ai/agent";
 
 const DOT_SPACING = 24;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -212,11 +231,16 @@ async function readApiError(response: Response) {
 
 async function workflowImageToFile(
   node: WorkflowSourceNode | WorkflowResultNode,
+  readStoredAsset: (assetId: string) => Promise<Blob | undefined>,
 ): Promise<File> {
   let blob: Blob | undefined;
   let name = `workflow-${node.id}.png`;
   if (node.type === "source" && node.assetId) {
-    blob = await readAsset(node.assetId);
+    blob = await readStoredAsset(node.assetId);
+    name = node.assetName || name;
+  }
+  if (node.type === "result" && node.assetId) {
+    blob = await readStoredAsset(node.assetId);
     name = node.assetName || name;
   }
   if (!blob && node.type === "result" && node.resultUrl) {
@@ -235,6 +259,7 @@ async function workflowImageToFile(
 }
 
 export function WorkflowCanvas() {
+  const { remote } = useCloudSession();
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const [graph, setGraph] = useState<WorkflowGraph>(emptyWorkflowGraph);
   const [hydrated, setHydrated] = useState(false);
@@ -255,6 +280,9 @@ export function WorkflowCanvas() {
   const [projects, setProjects] = useState<WorkflowProjectRegistry | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
+  const [cloudSyncState, setCloudSyncState] = useState<
+    "idle" | "saving" | "unsynced" | "conflict"
+  >("idle");
   const mainRef = useRef<HTMLElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -287,16 +315,29 @@ export function WorkflowCanvas() {
   >(null);
   const runningSchedulersRef = useRef(new Set<string>());
   const activeProjectIdRef = useRef("");
+  const cloudRevisionRef = useRef(0);
+  const cloudConversationRef = useRef<{
+    projectId: string;
+    revision: number;
+    store: AgentConversationStore;
+  } | null>(null);
+  const cloudConversationSaveRef = useRef(Promise.resolve());
+  const cloudConversationLastSavedRef = useRef("");
+  const cloudSaveRef = useRef(Promise.resolve());
+  const cloudSaveTimerRef = useRef<number | null>(null);
+  const cloudLastSavedRef = useRef("");
+  const cloudPendingSerializedRef = useRef("");
 
   graphRef.current = graph;
   selectedIdsRef.current = selectedIds;
   isAgentOpenRef.current = isAgentOpen;
   canvasSizeRef.current = canvasSize;
 
-  const loadProject = useCallback((projectId: string) => {
-    const restored = parseWorkflowGraph(window.localStorage.getItem(
-      workflowProjectGraphKey(projectId),
-    ));
+  const applyProjectState = useCallback((
+    restored: WorkflowGraph,
+    restoredViewport: Viewport,
+    restoredBatch: WorkflowBatchRun | null,
+  ) => {
     const safeRestored = {
       ...restored,
       nodes: restored.nodes.map((node) =>
@@ -310,9 +351,6 @@ export function WorkflowCanvas() {
           : node,
       ),
     };
-    const restoredViewport = parseWorkflowViewport(window.localStorage.getItem(
-      workflowProjectViewportKey(projectId),
-    ));
     Object.values(assetUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     assetUrlsRef.current = {};
     loadedAssets.current.clear();
@@ -329,28 +367,124 @@ export function WorkflowCanvas() {
     setHoveredEdgeId(null);
     setDetailId(null);
     setAgentContextNodeId(null);
-    setBatchRun(
-      parseWorkflowBatchRun(
-        window.localStorage.getItem(workflowProjectBatchKey(projectId)),
-      ),
-    );
+    setBatchRun(restoredBatch);
     viewportRef.current = restoredViewport;
     setViewport(restoredViewport);
     viewportControllerRef.current?.replace(restoredViewport);
   }, []);
 
+  const loadProject = useCallback((projectId: string) => {
+    const restored = parseWorkflowGraph(window.localStorage.getItem(
+      workflowProjectGraphKey(projectId),
+    ));
+    applyProjectState(
+      restored,
+      parseWorkflowViewport(window.localStorage.getItem(
+        workflowProjectViewportKey(projectId),
+      )),
+      parseWorkflowBatchRun(
+        window.localStorage.getItem(workflowProjectBatchKey(projectId)),
+      ),
+    );
+  }, [applyProjectState]);
+
+  const applyCloudProject = useCallback((project: CloudProjectDocument) => {
+    cloudRevisionRef.current = project.revision;
+    cloudConversationRef.current = {
+      projectId: project.id,
+      revision: project.conversationRevision,
+      store: project.conversation,
+    };
+    cloudConversationLastSavedRef.current = JSON.stringify(project.conversation);
+    setCloudSyncState("idle");
+    cloudLastSavedRef.current = JSON.stringify({
+      name: project.name,
+      graph: project.graph,
+      viewport: project.viewport,
+      batch: project.batch,
+    });
+    applyProjectState(
+      parseWorkflowGraph(JSON.stringify(project.graph)),
+      project.viewport,
+      project.batch,
+    );
+  }, [applyProjectState]);
+
+  const reloadCloudProject = useCallback(async (projectId: string) => {
+    const project = await loadCloudProject(projectId);
+    if (activeProjectIdRef.current !== projectId) return;
+    applyCloudProject(project);
+  }, [applyCloudProject]);
+
+  const loadRemoteConversation = useCallback(async () => {
+    const current = cloudConversationRef.current;
+    return current?.store ?? {
+      version: 2 as const,
+      activeConversationId: "",
+      conversations: [],
+    };
+  }, []);
+
+  const saveRemoteConversation = useCallback(async (store: AgentConversationStore) => {
+    const serialized = JSON.stringify(store);
+    if (serialized === cloudConversationLastSavedRef.current) return;
+    cloudConversationSaveRef.current = cloudConversationSaveRef.current.then(async () => {
+      const current = cloudConversationRef.current;
+      if (!current) return;
+      try {
+        const saved = await saveCloudConversation({
+          projectId: current.projectId,
+          conversation: store,
+          revision: current.revision,
+        });
+        if (cloudConversationRef.current?.projectId !== current.projectId) return;
+        cloudConversationRef.current = {
+          projectId: current.projectId,
+          revision: saved.revision,
+          store,
+        };
+        cloudConversationLastSavedRef.current = serialized;
+      } catch (error) {
+        const status = error && typeof error === "object" && "status" in error
+          ? Number(error.status)
+          : 0;
+        setCloudSyncState(status === 409 ? "conflict" : "unsynced");
+      }
+    });
+    await cloudConversationSaveRef.current;
+  }, []);
+
   useEffect(() => {
+    if (remote) {
+      let cancelled = false;
+      void loadCloudProjects()
+        .then(async (registry) => {
+          if (cancelled) return;
+          activeProjectIdRef.current = registry.activeProjectId;
+          setProjects(registry);
+          const project = await loadCloudProject(registry.activeProjectId);
+          if (cancelled) return;
+          applyCloudProject(project);
+          setHydrated(true);
+        })
+        .catch(() => {
+          if (!cancelled) setCloudSyncState("unsynced");
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     const registry = ensureWorkflowProjectRegistry(window.localStorage);
     migrateActiveWorkflowAssetLayout(window.localStorage, registry);
     activeProjectIdRef.current = registry.activeProjectId;
     setProjects(registry);
     loadProject(registry.activeProjectId);
     setHydrated(true);
-  }, [loadProject]);
+  }, [applyCloudProject, loadProject, remote]);
 
   useEffect(() => {
     const projectId = projects?.activeProjectId;
-    if (!projectId) return;
+    if (!projectId || remote) return;
     const persistence = createWorkflowGraphPersistence({
       write: (next) =>
         window.localStorage.setItem(
@@ -372,11 +506,13 @@ export function WorkflowCanvas() {
       persistence.dispose();
       if (persistenceRef.current === persistence) persistenceRef.current = null;
     };
-  }, [projects?.activeProjectId]);
+  }, [projects?.activeProjectId, remote]);
 
   useEffect(() => {
-    if (hydrated && projects?.activeProjectId) persistenceRef.current?.schedule(graph);
-  }, [graph, hydrated, projects?.activeProjectId]);
+    if (!remote && hydrated && projects?.activeProjectId) {
+      persistenceRef.current?.schedule(graph);
+    }
+  }, [graph, hydrated, projects?.activeProjectId, remote]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -388,7 +524,7 @@ export function WorkflowCanvas() {
 
   useEffect(() => {
     const projectId = projects?.activeProjectId;
-    if (!hydrated || !projectId) return;
+    if (!hydrated || !projectId || remote) return;
     if (batchRun) {
       window.localStorage.setItem(
         workflowProjectBatchKey(projectId),
@@ -397,16 +533,75 @@ export function WorkflowCanvas() {
     } else {
       window.localStorage.removeItem(workflowProjectBatchKey(projectId));
     }
-  }, [batchRun, hydrated, projects?.activeProjectId]);
+  }, [batchRun, hydrated, projects?.activeProjectId, remote]);
 
   useEffect(() => {
     const projectId = projects?.activeProjectId;
-    if (!hydrated || !projectId) return;
+    if (!hydrated || !projectId || remote) return;
     window.localStorage.setItem(
       workflowProjectViewportKey(projectId),
       JSON.stringify(viewport),
     );
-  }, [hydrated, projects?.activeProjectId, viewport]);
+  }, [hydrated, projects?.activeProjectId, remote, viewport]);
+
+  useEffect(() => {
+    if (
+      !remote ||
+      !hydrated ||
+      !projects ||
+      cloudSyncState === "conflict" ||
+      cloudSyncState === "unsynced"
+    ) return;
+    const projectId = projects.activeProjectId;
+    const name = projects.projects.find((project) => project.id === projectId)?.name;
+    if (!name) return;
+    const payload = {
+      name,
+      graph,
+      viewport,
+      batch: batchRun,
+    };
+    const serialized = JSON.stringify(payload);
+    if (
+      serialized === cloudLastSavedRef.current ||
+      serialized === cloudPendingSerializedRef.current
+    ) return;
+    if (cloudSaveTimerRef.current !== null) {
+      window.clearTimeout(cloudSaveTimerRef.current);
+    }
+    cloudPendingSerializedRef.current = serialized;
+    setCloudSyncState("saving");
+    cloudSaveTimerRef.current = window.setTimeout(() => {
+      cloudSaveTimerRef.current = null;
+      cloudSaveRef.current = cloudSaveRef.current.then(async () => {
+        if (activeProjectIdRef.current !== projectId) return;
+        try {
+          const saved = await saveCloudProject({
+            id: projectId,
+            ...payload,
+            revision: cloudRevisionRef.current,
+          });
+          if (activeProjectIdRef.current !== projectId) return;
+          cloudRevisionRef.current = saved.revision;
+          cloudLastSavedRef.current = serialized;
+          cloudPendingSerializedRef.current = "";
+          setCloudSyncState("idle");
+        } catch (error) {
+          const status = error && typeof error === "object" && "status" in error
+            ? Number(error.status)
+            : 0;
+          setCloudSyncState(status === 409 ? "conflict" : "unsynced");
+          cloudPendingSerializedRef.current = "";
+        }
+      });
+    }, 300);
+  }, [batchRun, cloudSyncState, graph, hydrated, projects, remote, viewport]);
+
+  useEffect(() => () => {
+    if (cloudSaveTimerRef.current !== null) {
+      window.clearTimeout(cloudSaveTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (hydrated && graph.nodes.length === 0 && batchRun) setBatchRun(null);
@@ -435,7 +630,7 @@ export function WorkflowCanvas() {
 
   const restoreAsset = useCallback(async (assetId: string) => {
     try {
-      const blob = await readAsset(assetId);
+      const blob = remote ? await readCloudAsset(assetId) : await readAsset(assetId);
       if (!blob) throw new Error();
       const url = URL.createObjectURL(blob);
       setAssetUrls((current) => {
@@ -450,12 +645,16 @@ export function WorkflowCanvas() {
     } catch {
       setAssetErrors((current) => ({ ...current, [assetId]: "素材已失效，请重新上传。" }));
     }
-  }, []);
+  }, [remote]);
 
   useEffect(() => {
     if (!hydrated) return;
     graph.nodes.forEach((node) => {
-      if (node.type !== "source" || !node.assetId || loadedAssets.current.has(node.assetId)) return;
+      if (
+        (node.type !== "source" && node.type !== "result") ||
+        !node.assetId ||
+        loadedAssets.current.has(node.assetId)
+      ) return;
       loadedAssets.current.add(node.assetId);
       void restoreAsset(node.assetId);
     });
@@ -652,9 +851,12 @@ export function WorkflowCanvas() {
     }
     pollingTasks.current.add(node.taskId);
     try {
-      const response = await fetch(
-        `/api/ai/status?taskId=${encodeURIComponent(node.taskId)}&mode=${node.kind}`,
-      );
+      const query = new URLSearchParams({ taskId: node.taskId, mode: node.kind });
+      if (remote) {
+        query.set("projectId", projectId);
+        query.set("resultId", node.id);
+      }
+      const response = await fetch(`/api/ai/status?${query.toString()}`);
       if (!response.ok) throw new Error(await readApiError(response));
       const status = (await response.json()) as TaskStatusResponse;
       if (activeProjectIdRef.current !== projectId) return;
@@ -667,7 +869,7 @@ export function WorkflowCanvas() {
     } finally {
       pollingTasks.current.delete(node.taskId);
     }
-  }, []);
+  }, [remote]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -995,12 +1197,18 @@ export function WorkflowCanvas() {
       }));
       return;
     }
-    const assetId = crypto.randomUUID();
-    await saveAsset(assetId, file);
+    const assetId = remote
+      ? await uploadCloudAsset({
+          projectId: activeProjectIdRef.current,
+          nodeId: node.id,
+          file,
+        })
+      : crypto.randomUUID();
+    if (!remote) await saveAsset(assetId, file);
     if (node.assetId) {
       const previousUrl = assetUrls[node.assetId];
       if (previousUrl) URL.revokeObjectURL(previousUrl);
-      void deleteAsset(node.assetId);
+      if (!remote) void deleteAsset(node.assetId);
     }
     const url = URL.createObjectURL(file);
     loadedAssets.current.add(assetId);
@@ -1099,7 +1307,14 @@ export function WorkflowCanvas() {
     setRunningSchedulers((current) => new Set(current).add(scheduler.id));
     let createdResultIds: string[] = [];
     try {
-      const files = await Promise.all(inputs.images.map(workflowImageToFile));
+      const files = await Promise.all(inputs.images.map((node) =>
+        workflowImageToFile(
+          node,
+          remote
+            ? async (assetId) => readCloudAsset(assetId)
+            : readAsset,
+        )
+      ));
       if (files.length > config.maxReferenceImages) {
         throw new Error(`参考图片超过当前模型的 ${config.maxReferenceImages} 张上限。`);
       }
@@ -1178,7 +1393,7 @@ export function WorkflowCanvas() {
         return next;
       });
     }
-  }, [commitGraph]);
+  }, [commitGraph, remote]);
 
   useEffect(() => {
     if (!hydrated || !batchRun || batchRun.status !== "running") return;
@@ -1238,7 +1453,10 @@ export function WorkflowCanvas() {
             candidate.kind === "image",
         );
         if (!node) throw new Error(`未找到可读取的工作流图片节点 ${nodeId}。`);
-        const file = await workflowImageToFile(node);
+        const file = await workflowImageToFile(
+          node,
+          remote ? readCloudAsset : readAsset,
+        );
         return {
           nodeId,
           name: file.name,
@@ -1282,6 +1500,7 @@ export function WorkflowCanvas() {
   }
 
   function persistActiveProject() {
+    if (remote) return;
     const projectId = activeProjectIdRef.current;
     if (!projectId) return;
     persistenceRef.current?.flush();
@@ -1315,10 +1534,28 @@ export function WorkflowCanvas() {
     }
   }
 
-  function activateProject(registry: WorkflowProjectRegistry, projectId: string) {
+  async function activateProject(registry: WorkflowProjectRegistry, projectId: string) {
     if (projectId === activeProjectIdRef.current) return;
     if (runningSchedulersRef.current.size) {
       window.alert("生成请求正在提交，请等待任务 ID 保存后再切换项目。");
+      return;
+    }
+    if (remote) {
+      if (cloudSyncState !== "idle") {
+        window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+        return;
+      }
+      try {
+        await activateCloudProject(projectId);
+        const next = { ...registry, activeProjectId: projectId };
+        activeProjectIdRef.current = projectId;
+        setProjects(next);
+        setHydrated(false);
+        await reloadCloudProject(projectId);
+        setHydrated(true);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "无法切换项目。");
+      }
       return;
     }
     persistActiveProject();
@@ -1336,6 +1573,10 @@ export function WorkflowCanvas() {
       window.alert("生成请求正在提交，请等待任务 ID 保存后再新建项目。");
       return;
     }
+    if (remote && cloudSyncState !== "idle") {
+      window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+      return;
+    }
     setProjectEditor({
       mode: "create",
       value: `新项目 ${projects.projects.length + 1}`,
@@ -1343,10 +1584,21 @@ export function WorkflowCanvas() {
     });
   }
 
-  function saveProjectName() {
+  async function saveProjectName() {
     if (!projects || !projectEditor) return;
     try {
       if (projectEditor.mode === "create") {
+        if (remote) {
+          const created = await createCloudProject(projectEditor.value);
+          const registry = await loadCloudProjects();
+          setProjectEditor(null);
+          activeProjectIdRef.current = created.id;
+          setProjects(registry);
+          setHydrated(false);
+          await reloadCloudProject(created.id);
+          setHydrated(true);
+          return;
+        }
         const created = createWorkflowProject(projects, projectEditor.value);
         window.localStorage.setItem(
           workflowProjectGraphKey(created.project.id),
@@ -1365,6 +1617,11 @@ export function WorkflowCanvas() {
         projects.activeProjectId,
         projectEditor.value,
       );
+      if (remote) {
+        setProjects(next);
+        setProjectEditor(null);
+        return;
+      }
       window.localStorage.setItem(WORKFLOW_PROJECTS_STORAGE_KEY, JSON.stringify(next));
       setProjects(next);
       setProjectEditor(null);
@@ -1381,6 +1638,10 @@ export function WorkflowCanvas() {
 
   function renameActiveProject() {
     if (!projects) return;
+    if (remote && cloudSyncState !== "idle") {
+      window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+      return;
+    }
     const active = projects.projects.find(
       (project) => project.id === projects.activeProjectId,
     );
@@ -1388,10 +1649,14 @@ export function WorkflowCanvas() {
     setProjectEditor({ mode: "rename", value: active.name, error: "" });
   }
 
-  function deleteActiveProject() {
+  async function deleteActiveProject() {
     if (!projects) return;
     if (runningSchedulersRef.current.size) {
       window.alert("生成请求正在提交，请等待任务 ID 保存后再删除项目。");
+      return;
+    }
+    if (remote && cloudSyncState !== "idle") {
+      window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
       return;
     }
     const active = projects.projects.find(
@@ -1411,6 +1676,22 @@ export function WorkflowCanvas() {
       "此操作无法撤销。",
     ].join("\n");
     if (!window.confirm(warning)) return;
+
+    if (remote) {
+      try {
+        await deleteCloudProject(active.id);
+        const registry = await loadCloudProjects();
+        activeProjectIdRef.current = registry.activeProjectId;
+        setProjects(registry);
+        setAgentBusy(false);
+        setHydrated(false);
+        await reloadCloudProject(registry.activeProjectId);
+        setHydrated(true);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "无法删除项目。");
+      }
+      return;
+    }
 
     persistActiveProject();
     const removedAssetIds = projectSourceAssetIds(graphRef.current);
@@ -1451,16 +1732,84 @@ export function WorkflowCanvas() {
     loadProject(next.activeProjectId);
   }
 
+  async function saveCloudCopy() {
+    if (!projects) return;
+    const active = projects.projects.find((project) => project.id === projects.activeProjectId);
+    if (!active) return;
+    try {
+      const created = await createCloudProject(`${active.name}-副本-${Date.now()}`);
+      const blank = await loadCloudProject(created.id);
+      await saveCloudProject({
+        id: created.id,
+        name: `${active.name}-副本`,
+        graph: graphRef.current,
+        viewport: viewportRef.current,
+        batch: batchRun,
+        revision: blank.revision,
+      });
+      const registry = await loadCloudProjects();
+      activeProjectIdRef.current = created.id;
+      setProjects(registry);
+      await reloadCloudProject(created.id);
+      setCloudSyncState("idle");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法另存项目副本。");
+    }
+  }
+
+  function exportLocalProject() {
+    if (remote || !projects) return;
+    const active = projects.projects.find((project) => project.id === projects.activeProjectId);
+    if (!active) return;
+    const conversation = parseAgentConversationStore(
+      window.localStorage.getItem(workflowProjectConversationKey(active.id)),
+      null,
+    );
+    const textConversation: AgentConversationStore = {
+      ...conversation,
+      conversations: conversation.conversations.map((item) => ({
+        ...item,
+        messages: item.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          createdAt: message.createdAt,
+          ...(message.details?.length ? { details: message.details } : {}),
+        })),
+      })),
+    };
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project: active,
+      graph: graphRef.current,
+      viewport: viewportRef.current,
+      batch: null,
+      conversation: textConversation,
+    };
+    const serialized = JSON.stringify(payload);
+    const url = URL.createObjectURL(new Blob([serialized], {
+      type: "application/json",
+    }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${active.name.replace(/[\\/:*?"<>|]/g, "-")}.canvas.json`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function deleteNode(node: WorkflowNode) {
     if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
     }
     setSelectedIds((current) => current.filter((id) => id !== node.id));
     setGraph((current) => removeWorkflowNode(current, node.id));
-    if (node.type === "source" && node.assetId) {
+    if ((node.type === "source" || node.type === "result") && node.assetId) {
       const url = assetUrlsRef.current[node.assetId];
       if (url) URL.revokeObjectURL(url);
-      void deleteAsset(node.assetId);
+      void (remote ? deleteCloudAsset(node.assetId) : deleteAsset(node.assetId));
       setAssetUrls((current) => {
         const next = { ...current };
         delete next[node.assetId!];
@@ -1587,9 +1936,9 @@ export function WorkflowCanvas() {
         <div className="workflow-project-switcher" data-workflow-isolated>
           <select
             aria-label="当前工作流项目"
-            disabled={runningSchedulers.size > 0}
+            disabled={runningSchedulers.size > 0 || (remote && cloudSyncState !== "idle")}
             value={projects.activeProjectId}
-            onChange={(event) => activateProject(projects, event.target.value)}
+            onChange={(event) => void activateProject(projects, event.target.value)}
           >
             {projects.projects.map((project) => (
               <option key={project.id} value={project.id}>{project.name}</option>
@@ -1604,7 +1953,29 @@ export function WorkflowCanvas() {
           <button aria-label="删除项目" title="删除项目" type="button" onClick={deleteActiveProject}>
             <Trash2 size={15} />
           </button>
+          {!remote ? (
+            <button aria-label="导出当前项目" title="导出当前项目" type="button" onClick={exportLocalProject}>
+              <Download size={15} />
+            </button>
+          ) : null}
           {agentBusy ? <span className="workflow-project-status">Agent 处理中</span> : null}
+          {remote && cloudSyncState === "saving" ? (
+            <span className="workflow-project-status">正在同步</span>
+          ) : null}
+          {remote && cloudSyncState === "unsynced" ? (
+            <><span className="workflow-project-status">尚未同步</span><button type="button" onClick={() => setCloudSyncState("idle")}>重试</button></>
+          ) : null}
+          {remote && cloudSyncState === "conflict" ? (
+            <>
+              <span className="workflow-project-status">版本冲突</span>
+              <button type="button" onClick={() => {
+                if (window.confirm("重新加载会放弃当前尚未同步的修改，是否继续？")) {
+                  void reloadCloudProject(projects.activeProjectId);
+                }
+              }}>重新加载</button>
+              <button type="button" onClick={() => void saveCloudCopy()}>另存副本</button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {projectEditor ? (
@@ -1613,7 +1984,7 @@ export function WorkflowCanvas() {
             className="workflow-project-editor"
             onSubmit={(event) => {
               event.preventDefault();
-              saveProjectName();
+              void saveProjectName();
             }}
           >
             <h2>{projectEditor.mode === "create" ? "新建项目" : "重命名项目"}</h2>
@@ -1761,8 +2132,12 @@ export function WorkflowCanvas() {
           <WorkflowNodeCard
             key={node.id}
             node={node}
-            assetUrl={node.type === "source" && node.assetId ? assetUrls[node.assetId] : undefined}
-            assetError={node.type === "source" && node.assetId ? assetErrors[node.assetId] : assetErrors[node.id]}
+            assetUrl={(node.type === "source" || node.type === "result") && node.assetId
+              ? assetUrls[node.assetId]
+              : undefined}
+            assetError={(node.type === "source" || node.type === "result") && node.assetId
+              ? assetErrors[node.assetId]
+              : assetErrors[node.id]}
             connectionTarget={connection?.targetId === node.id}
             inputPorts={inputPortsByTarget.get(node.id) ?? []}
             pendingInputKind={connection?.targetId === node.id ? connectionKind : undefined}
@@ -1830,7 +2205,9 @@ export function WorkflowCanvas() {
       {detailNode ? (
         <WorkflowDetail
           node={detailNode}
-          assetUrl={detailNode.type === "source" && detailNode.assetId ? assetUrls[detailNode.assetId] : undefined}
+          assetUrl={(detailNode.type === "source" || detailNode.type === "result") && detailNode.assetId
+            ? assetUrls[detailNode.assetId]
+            : undefined}
           onClose={() => setDetailId(null)}
         />
       ) : null}
@@ -1849,7 +2226,7 @@ export function WorkflowCanvas() {
         </button>
       ) : null}
 
-      <CanvasAgentSidebar
+      {hydrated ? <CanvasAgentSidebar
         key={projects?.activeProjectId ?? "workflow-agent"}
         open={isAgentOpen}
         snapshot={agentSnapshot}
@@ -1874,7 +2251,9 @@ export function WorkflowCanvas() {
         onReadImages={readAgentImages}
         describeOperation={describeAgentOperation}
         onBusyChange={setAgentBusy}
-      />
+        loadConversationStore={remote ? loadRemoteConversation : undefined}
+        saveConversationStore={remote ? saveRemoteConversation : undefined}
+      /> : null}
     </main>
   );
 }
@@ -2029,7 +2408,12 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           onRun={onRun}
         />
       ) : (
-        <ResultBody node={node} onResume={onResume} onMediaLoad={onMediaLoad} />
+        <ResultBody
+          node={node}
+          assetUrl={assetUrl}
+          onResume={onResume}
+          onMediaLoad={onMediaLoad}
+        />
       )}
     </div>
   );
@@ -2109,14 +2493,20 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
   );
 }
 
-function ResultBody({ node, onResume, onMediaLoad }: { node: WorkflowResultNode; onResume: () => void; onMediaLoad: (width: number, height: number) => void }) {
+function ResultBody({ node, assetUrl, onResume, onMediaLoad }: {
+  node: WorkflowResultNode;
+  assetUrl?: string;
+  onResume: () => void;
+  onMediaLoad: (width: number, height: number) => void;
+}) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
-  if (node.kind === "image" && node.resultUrl) return (
+  const mediaUrl = assetUrl || node.resultUrl;
+  if (node.kind === "image" && mediaUrl) return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
       className="workflow-result-media"
-      src={node.resultUrl}
+      src={mediaUrl}
       alt="工作流生成图片"
       decoding="async"
       onLoad={(event) =>
@@ -2127,10 +2517,10 @@ function ResultBody({ node, onResume, onMediaLoad }: { node: WorkflowResultNode;
       }
     />
   );
-  if (node.kind === "video" && node.resultUrl) return (
+  if (node.kind === "video" && mediaUrl) return (
     // Generated videos do not include a separate captions track.
     // eslint-disable-next-line jsx-a11y/media-has-caption
-    <video className="workflow-result-media" src={node.resultUrl} controls preload="metadata" />
+    <video className="workflow-result-media" src={mediaUrl} controls preload="metadata" />
   );
   if (node.status === "ready") return <div className="canvas-node-loading"><span>{node.progress || "待生成"}</span></div>;
   if (node.status === "paused") return <div className="canvas-node-loading"><span>{node.progress}</span><button className="workflow-resume" type="button" data-workflow-control onClick={onResume}><RotateCcw size={13} />继续查询</button></div>;
@@ -2226,7 +2616,7 @@ function WorkflowSchedulerMenu({
 }
 
 function WorkflowDetail({ node, assetUrl, onClose }: { node: WorkflowNode; assetUrl?: string; onClose: () => void }) {
-  const url = node.type === "result" ? node.resultUrl : assetUrl;
+  const url = assetUrl || (node.type === "result" ? node.resultUrl : undefined);
   const kind = node.type === "scheduler" ? node.outputKind : node.kind;
   return <div className="canvas-node-detail-backdrop" data-workflow-isolated>
     <button className="canvas-node-detail-dismiss" aria-label="关闭节点详情" type="button" onClick={onClose} />

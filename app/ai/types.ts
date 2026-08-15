@@ -34,6 +34,9 @@ export type TaskState = "pending" | "running" | "success" | "failed";
 export type TaskResult = {
   url: string;
   kind: "image" | "video";
+  assetId?: string;
+  assetName?: string;
+  assetMimeType?: string;
 };
 
 export type TaskStatusResponse = {

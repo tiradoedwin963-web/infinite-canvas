@@ -7,6 +7,23 @@ x-default-logging: &default-logging
     max-file: "3"
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: canvas
+      POSTGRES_USER: canvas
+      POSTGRES_PASSWORD: ${CANVAS_DATABASE_PASSWORD:?CANVAS_DATABASE_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canvas -d canvas"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
   app:
     build:
       context: ../..
@@ -17,8 +34,17 @@ services:
     environment:
       LINGKE_BASE_URL: ${LINGKE_BASE_URL:?LINGKE_BASE_URL is required}
       LINGKE_API_KEY: ${LINGKE_API_KEY:?LINGKE_API_KEY is required}
+      WORKFLOW_STORAGE_MODE: server
+      DATABASE_URL: postgresql://canvas:${CANVAS_DATABASE_PASSWORD}@postgres:5432/canvas
+      CANVAS_ADMIN_USERNAME: admin
+      CANVAS_ADMIN_PASSWORD_HASH: ${CANVAS_ADMIN_PASSWORD_HASH:?CANVAS_ADMIN_PASSWORD_HASH is required}
+      COS_REGION: ${COS_REGION:?COS_REGION is required}
+      COS_BUCKET: ${COS_BUCKET:?COS_BUCKET is required}
+      COS_SECRET_ID: ${COS_SECRET_ID:?COS_SECRET_ID is required}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:?COS_SECRET_KEY is required}
       NODE_ENV: production
       PORT: "3000"
+    command: ["sh", "-c", "npm run db:migrate && npm run start -- --hostname 0.0.0.0 --port 3000"]
     expose:
       - "3000"
     healthcheck:
@@ -33,6 +59,9 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   caddy:
     image: caddy:2.10-alpine
@@ -53,3 +82,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  postgres_data:

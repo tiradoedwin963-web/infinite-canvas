@@ -21,6 +21,157 @@ body {
   background: var(--canvas-background);
 }
 
+.cloud-session-loading,
+.cloud-login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #f5f3ef;
+  color: #37342f;
+}
+
+.cloud-session-loading { font-size: 13px; }
+
+.cloud-login-card {
+  display: grid;
+  width: min(380px, calc(100vw - 32px));
+  gap: 14px;
+  padding: 28px;
+  border: 1px solid rgba(42, 41, 38, 0.12);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(52, 48, 43, 0.14);
+}
+
+.cloud-login-card > span {
+  color: #5063b9;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cloud-login-card h1,
+.cloud-login-card p { margin: 0; }
+.cloud-login-card h1 { font-size: 24px; }
+.cloud-login-card p { color: #77736d; font-size: 12px; }
+
+.cloud-login-card label {
+  display: grid;
+  gap: 6px;
+  color: #66625c;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.cloud-login-card input,
+.cloud-admin-card input {
+  height: 42px;
+  border: 1px solid rgba(42, 41, 38, 0.14);
+  border-radius: 10px;
+  padding: 0 11px;
+  color: #292824;
+  font: inherit;
+  outline: none;
+}
+
+.cloud-login-card button,
+.cloud-admin-card button,
+.cloud-account button {
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.cloud-login-card > button {
+  height: 42px;
+  background: #292824;
+  color: #fff;
+}
+
+.cloud-login-card button:disabled { cursor: wait; opacity: 0.5; }
+.cloud-login-error { color: #b4413c !important; font-size: 11px !important; }
+
+.cloud-account {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 85;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid rgba(42, 41, 38, 0.12);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 28px rgba(53, 50, 45, 0.12);
+  color: #57534e;
+  font-size: 11px;
+}
+
+.cloud-account button,
+.cloud-admin-card button {
+  min-height: 30px;
+  padding: 0 10px;
+  background: #efede9;
+  color: #57534e;
+}
+
+.cloud-admin-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  background: rgba(31, 29, 27, 0.28);
+  backdrop-filter: blur(3px);
+}
+
+.cloud-admin-card {
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  padding: 20px;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(42, 39, 35, 0.22);
+}
+
+.cloud-admin-card header,
+.cloud-admin-card form,
+.cloud-user-list > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-admin-card header { justify-content: space-between; }
+.cloud-admin-card h2 { margin: 0; font-size: 17px; }
+.cloud-admin-card form { margin: 18px 0; }
+.cloud-admin-card form input { flex: 1; }
+
+.cloud-one-time-password {
+  padding: 10px;
+  border-radius: 10px;
+  background: #fff7dc;
+  color: #695b25;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.cloud-user-list { display: grid; gap: 6px; }
+
+.cloud-user-list > div {
+  padding: 8px;
+  border-radius: 10px;
+  background: #f7f5f2;
+}
+
+.cloud-user-list span { min-width: 0; flex: 1; font-size: 12px; }
+
 .infinite-canvas {
   position: relative;
   width: 100vw;

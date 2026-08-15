@@ -1,5 +1,6 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
+import { fileURLToPath } from "node:url";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
@@ -44,6 +45,13 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    resolve: {
+      // The VPS runtime is Node. Vinext's Cloudflare build condition would
+      // otherwise select postgres.js' cloudflare:sockets adapter.
+      alias: {
+        postgres: fileURLToPath(new URL("./node_modules/postgres/src/index.js", import.meta.url)),
+      },
+    },
     server: {
       port: 3001,
       strictPort: true,

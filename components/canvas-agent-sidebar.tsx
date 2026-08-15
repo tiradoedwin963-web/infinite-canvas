@@ -90,6 +90,8 @@ type CanvasAgentSidebarProps = {
   onReadImages: (nodeIds: string[]) => Promise<AgentInspectedImage[]>;
   describeOperation?: (operation: AgentDangerousOperation) => string;
   onBusyChange?: (busy: boolean) => void;
+  loadConversationStore?: () => Promise<AgentConversationStore>;
+  saveConversationStore?: (store: AgentConversationStore) => Promise<void>;
 };
 
 async function readApiError(response: Response) {
@@ -121,6 +123,8 @@ export function CanvasAgentSidebar({
   onReadImages,
   describeOperation = describeDangerousOperation,
   onBusyChange,
+  loadConversationStore,
+  saveConversationStore,
 }: CanvasAgentSidebarProps) {
   const [conversationStore, setConversationStore] = useState<AgentConversationStore>(
     EMPTY_CONVERSATION_STORE,
@@ -236,6 +240,22 @@ export function CanvasAgentSidebar({
     : undefined;
 
   useEffect(() => {
+    if (loadConversationStore) {
+      let cancelled = false;
+      void loadConversationStore()
+        .then((store) => {
+          if (!cancelled) setConversationStore(store);
+        })
+        .catch(() => {
+          if (!cancelled) setConversationStore(EMPTY_CONVERSATION_STORE);
+        })
+        .finally(() => {
+          if (!cancelled) setIsHydrated(true);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     setConversationStore(
       parseAgentConversationStore(
         window.localStorage.getItem(conversationStorageKey),
@@ -246,16 +266,28 @@ export function CanvasAgentSidebar({
       ),
     );
     setIsHydrated(true);
-  }, [conversationStorageKey, legacyStorageKey]);
+  }, [conversationStorageKey, legacyStorageKey, loadConversationStore]);
 
   useEffect(() => {
     if (!isHydrated) return;
+    if (saveConversationStore) {
+      const timer = window.setTimeout(() => {
+        void saveConversationStore(conversationStore);
+      }, 500);
+      return () => window.clearTimeout(timer);
+    }
     window.localStorage.setItem(
       conversationStorageKey,
       serializeAgentConversationStore(conversationStore),
     );
     if (legacyStorageKey) window.localStorage.removeItem(legacyStorageKey);
-  }, [conversationStore, conversationStorageKey, isHydrated, legacyStorageKey]);
+  }, [
+    conversationStore,
+    conversationStorageKey,
+    isHydrated,
+    legacyStorageKey,
+    saveConversationStore,
+  ]);
 
   useEffect(() => {
     if (open) window.setTimeout(() => inputRef.current?.focus(), 180);

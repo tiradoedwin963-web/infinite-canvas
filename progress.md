@@ -1491,3 +1491,71 @@
 - `docs/canvas.md`：记录内部输入行、来源名称、连接位置、图片数据流配色与删边行为。
 - `progress.md`：追加本轮实现、验证、文件清单和回滚说明。
 - 回滚方式：本轮仍按要求保持未提交；如需只回滚本轮，请反向应用本条记录所述的内部输入行和图片配色改动，不执行整库 `git restore`，避免覆盖同一批文件中此前未提交的连线删除功能；提交后使用 `git revert <包含本轮改动的提交哈希>`。
+
+## 2026-08-16 - Task: 增加账号隔离的云端项目与素材存储
+
+### What was done
+
+- 增加无公开注册的应用账号、管理员账号管理、哈希会话 Cookie 和所有者隔离；跨账号项目与素材统一返回 404。
+- 生产环境新增独立 PostgreSQL，分别保存项目图、视口、批量队列和 Agent 对话，并以独立修订号阻止跨设备旧版本静默覆盖。
+- 接入北京地域私有腾讯云 COS：浏览器使用 10 分钟预签名地址上传，服务端校验对象并鉴权读取，生成结果转存稳定对象；本地开发继续使用原有浏览器存储。
+- 增加本地项目导出与白雪公主案例原子迁移工具，迁移前校验节点、图片映射、大小和 SHA-256，清理旧任务与批量队列，任一失败会清理本次已上传对象。
+- 扩展生产 Compose、数据库迁移、部署与恢复文档，保留 Caddy Basic Auth、自签名 3011 入口及现有 Python 项目的完整隔离。
+
+### Testing
+
+- `npm run lint`：通过，无 ESLint 错误或警告。
+- `npm test`：通过，Vinext 生产构建成功，132 项自动化测试全部通过。
+- `git diff --check`：通过。
+- `docker compose ... config --quiet`：通过，PostgreSQL 未发布 5432 端口。
+- 临时 PostgreSQL + 生产 Vinext 集成验证：登录、项目保存、修订冲突 409、管理员创建账号及跨账号 404 均通过。
+- 腾讯云真实 COS 最小权限验证：Put、Head、Get、Delete、SSE-COS AES256 及预签名 PUT 全部通过；测试对象已删除，未执行图片、视频或 Agent 付费生成。
+- 本机 Docker 镜像构建未完成：Docker Hub 对 `node:22-alpine` 元数据请求连续返回 503；镜像构建与容器健康检查需在 VPS 更新阶段补验。
+
+### Notes
+
+- `Dockerfile`：生产镜像包含数据库迁移和运维脚本。
+- `app/ai/types.ts`：生成结果增加可选云端素材元数据。
+- `app/api/admin/users/route.ts`：增加管理员创建、停用和重置账号接口。
+- `app/api/ai/agent/route.ts`：生产模式要求登录并校验同源请求。
+- `app/api/ai/generate/route.ts`：生产生成接口要求登录并校验同源请求。
+- `app/api/ai/status/route.ts`：成功生成结果在生产模式转存 COS 后返回稳定素材引用。
+- `app/api/auth/login/route.ts`：增加限速登录和安全会话签发。
+- `app/api/auth/logout/route.ts`：增加同源退出和会话撤销。
+- `app/api/auth/session/route.ts`：返回本地或服务端存储模式及当前账号。
+- `app/api/workflow/assets/[id]/route.ts`：增加按所有者鉴权的素材读取、Range 响应和删除。
+- `app/api/workflow/assets/complete/route.ts`：通过 COS 元数据校验上传大小与类型。
+- `app/api/workflow/assets/upload-ticket/route.ts`：为当前账号项目签发短期上传地址。
+- `app/api/workflow/config/route.ts`：暴露不含密钥的工作流存储模式。
+- `app/api/workflow/projects/[id]/conversation/route.ts`：使用独立修订号保存项目对话。
+- `app/api/workflow/projects/[id]/route.ts`：增加所有者隔离的项目读取、修订保存和删除。
+- `app/api/workflow/projects/route.ts`：增加项目列表、新建和活动项目切换。
+- `app/globals.css`：增加登录、云同步状态、冲突操作和账号管理样式。
+- `app/page.tsx`：在画布外层接入应用会话门禁。
+- `app/server/auth.ts`：实现哈希会话、Secure Cookie、同源校验和账号读取。
+- `app/server/config.ts`：集中判断生产云端存储模式和必需环境变量。
+- `app/server/database.ts`：提供独立 PostgreSQL 连接和用户类型。
+- `app/server/object-storage.ts`：使用腾讯云官方 SDK 实现预签名、读写、删除和元数据检查。
+- `app/server/password.ts`：实现 scrypt 密码哈希、校验和随机临时密码。
+- `app/server/result-ingest.ts`：安全下载可信上游结果并复用稳定 COS 资产 ID。
+- `app/server/storage-rules.ts`：生成账号/项目隔离对象键并拒绝私网结果地址。
+- `app/server/workflow-store.ts`：校验云端项目图、视口、名称和默认项目。
+- `app/workflow/cloud-client.ts`：封装项目、对话和素材云端客户端请求。
+- `app/workflow/graph.ts`：保持 v1 并解析可选素材 ID、文件名和 MIME 类型。
+- `components/canvas-agent-sidebar.tsx`：支持服务端加载和独立修订保存工作流对话。
+- `components/cloud-session-gate.tsx`：增加登录页、当前账号和管理员账号管理界面。
+- `components/workflow/workflow-canvas.tsx`：接入云端项目同步、冲突恢复、素材上传读取和本地迁移导出。
+- `database/migrations/001_initial.sql`：创建用户、会话、项目、对话和素材表及索引。
+- `deploy/canvas/compose.production.yml`：新增隔离 PostgreSQL、迁移启动门禁、密码和 COS 环境变量。
+- `docs/canvas.md`：说明本地与生产存储模式、账号隔离和修订冲突行为。
+- `docs/deployment.md`：补充账号、数据库、COS、迁移、备份、健康检查和回滚步骤。
+- `package.json`：增加 PostgreSQL、腾讯云 COS SDK 和数据库迁移命令。
+- `package-lock.json`：锁定新增生产依赖。
+- `scripts/hash-password.mjs`：生成管理员 scrypt 哈希。
+- `scripts/import-workflow-project.mjs`：原子导入本地项目和完整 COS 素材。
+- `scripts/migrate-database.mjs`：以数据库锁和迁移记录执行 SQL 并初始化管理员。
+- `tests/cloud-persistence.test.mjs`：覆盖哈希、对象键、兼容元数据、私网 URL、所有者和 Compose 隔离。
+- `tests/rendered-html.test.mjs`：更新服务端会话门禁的渲染预期。
+- `vite.config.ts`：确保 VPS Node 构建使用 postgres.js 的 Node 适配器。
+- `progress.md`：追加本轮实现、验证、文件清单和回滚说明。
+- 回滚方式：提交后执行 `git revert $(git log --format=%H --grep='^feat: persist workflow projects and assets$' -1)`；回滚代码不会删除 PostgreSQL 卷或 COS 数据，禁止执行 `docker compose down -v`。

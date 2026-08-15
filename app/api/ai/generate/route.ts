@@ -3,6 +3,7 @@ import {
   LingkeRequestError,
   validateGenerateRequest,
 } from "@/app/ai/provider";
+import { assertSameOrigin, requireSessionWhenCloud } from "@/app/server/auth";
 
 function getClient() {
   const baseUrl = process.env.LINGKE_BASE_URL;
@@ -15,10 +16,13 @@ function getClient() {
 
 export async function POST(request: Request) {
   try {
+    assertSameOrigin(request);
+    await requireSessionWhenCloud(request);
     const input = validateGenerateRequest(await request.json());
     const response = await getClient().generate(input);
     return Response.json(response);
   } catch (error) {
+    if (error instanceof Response) return error;
     const known =
       error instanceof LingkeRequestError
         ? error
