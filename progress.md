@@ -1617,3 +1617,22 @@
 - `tests/asset-thumbnails.test.mjs`：增加缩略图生成、隔离和读取链路回归测试。
 - `progress.md`：追加本轮实现、验证、文件清单和回滚说明。
 - 回滚方式：执行 `git revert <本轮提交哈希>` 并重新部署；回滚不删除 PostgreSQL、COS 原图或已生成的派生缩略图，禁止执行 `docker compose down -v`。
+
+## 2026-08-16 - Task: 避免旧标签页阻塞缩略图缓存升级
+
+### What was done
+- 浏览器 IndexedDB v2 升级被同域旧标签页占用时立即降级读取云端缩略图，避免画布图片永久停留在“处理中”。
+- 新版缓存连接收到后续版本变更通知时主动关闭，减少未来多标签页升级阻塞。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，包含缓存升级阻塞降级与连接主动关闭的结构回归检查。
+- `git diff --check`：通过。
+- Chrome 多标签页验收：旧连接存在时图片可回退加载；全部标签页刷新到新版后 IndexedDB v2 缓存恢复。
+
+### Notes
+- `app/canvas/assets.ts`：增加 IndexedDB 升级阻塞降级和版本变更主动关闭。
+- `tests/asset-thumbnails.test.mjs`：覆盖多标签页缓存升级保护接线。
+- `docs/canvas.md`：说明旧标签页阻塞时的云端缩略图回退行为。
+- `progress.md`：追加本轮修复、验证和回滚记录。
+- 回滚方式：执行 `git revert <本轮修复提交哈希>` 并重新部署；不会删除浏览器现有缓存、COS 原图或派生缩略图。

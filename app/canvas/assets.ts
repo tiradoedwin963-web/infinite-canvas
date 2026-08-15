@@ -28,7 +28,11 @@ function openDatabase(): Promise<IDBDatabase> {
         request.result.createObjectStore(CLOUD_THUMBNAIL_STORE_NAME, { keyPath: "id" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
+    request.onblocked = () => reject(new Error("浏览器素材缓存升级被其他标签页阻塞。"));
     request.onerror = () => reject(request.error);
   });
 }
