@@ -45,11 +45,12 @@ test("small source images are not enlarged", async () => {
 });
 
 test("workflow cloud image cards use cached thumbnails while detail and generation keep originals", async () => {
-  const [canvas, client, assetRoute, browserAssets] = await Promise.all([
+  const [canvas, client, assetRoute, browserAssets, thumbnailRuntime] = await Promise.all([
     readFile(new URL("../components/workflow/workflow-canvas.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/workflow/cloud-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/workflow/assets/[id]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/canvas/assets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/server/thumbnails.ts", import.meta.url), "utf8"),
   ]);
   assert.match(canvas, /readCloudThumbnail/);
   assert.match(canvas, /readCloudAssetThumbnail/);
@@ -62,4 +63,5 @@ test("workflow cloud image cards use cached thumbnails while detail and generati
   assert.match(assetRoute, /workflowThumbnailObjectKey/);
   assert.match(browserAssets, /request\.onblocked/);
   assert.match(browserAssets, /onversionchange.*close/s);
+  assert.match(thumbnailRuntime, /createRequire\(`\$\{process\.cwd\(\)\}\/package\.json`\)/);
 });

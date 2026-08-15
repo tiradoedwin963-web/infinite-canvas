@@ -86,8 +86,10 @@ sudo docker compose --env-file .env.production \
 ```bash
 sudo docker compose --env-file .env.production \
   -f deploy/canvas/compose.production.yml exec -T app \
-  npm run assets:backfill-thumbnails
+npm run assets:backfill-thumbnails
 ```
+
+生产构建在 Node 运行时加载 Sharp，由镜像中的原生模块执行缩略图转换；不要把 Sharp 的原生加载器打包进 Vinext 服务端产物，否则 Alpine 无法选择对应的原生二进制。
 
 更新后重新检查容器、未认证 `401`、认证 `200` 和日志：
 

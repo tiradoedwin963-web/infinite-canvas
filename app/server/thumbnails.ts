@@ -1,4 +1,7 @@
-import sharp from "sharp";
+import { createRequire } from "node:module";
+
+const loadRuntimeDependency = createRequire(`${process.cwd()}/package.json`);
+const sharp = loadRuntimeDependency("sharp") as typeof import("sharp");
 
 export const THUMBNAIL_MAX_EDGE = 640;
 export const THUMBNAIL_WEBP_QUALITY = 82;

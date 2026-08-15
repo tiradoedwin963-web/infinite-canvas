@@ -1636,3 +1636,23 @@
 - `docs/canvas.md`：说明旧标签页阻塞时的云端缩略图回退行为。
 - `progress.md`：追加本轮修复、验证和回滚记录。
 - 回滚方式：执行 `git revert <本轮修复提交哈希>` 并重新部署；不会删除浏览器现有缓存、COS 原图或派生缩略图。
+
+## 2026-08-16 - Task: 修复生产环境缩略图接口原生模块加载
+
+### What was done
+- 将 Sharp 改为 Node 运行时加载，避免生产打包破坏 Alpine 对原生二进制的运行时选择。
+- 保持缩略图补建、懒补建和原图读取协议不变，只修复生产图片接口返回 500 的根因。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，包含 Sharp 服务端外部依赖接线检查。
+- `git diff --check`：通过。
+- Docker 生产验证：镜像内缩略图鉴权接口返回 `200`、`image/webp` 和 `X-Canvas-Asset-Variant: thumbnail`。
+- Chrome 验收：白雪公主案例图片恢复完成，刷新后卡片继续显示缩略图。
+
+### Notes
+- `app/server/thumbnails.ts`：在 Node 运行时加载 Sharp，避免原生加载器进入服务端 bundle。
+- `tests/asset-thumbnails.test.mjs`：覆盖生产构建外部依赖配置。
+- `docs/deployment.md`：记录 Alpine 生产镜像的 Sharp 运行边界。
+- `progress.md`：追加本轮生产修复、验证与回滚记录。
+- 回滚方式：执行 `git revert <本轮生产修复提交哈希>` 并重新部署；不会删除 PostgreSQL、COS 原图或派生缩略图。
