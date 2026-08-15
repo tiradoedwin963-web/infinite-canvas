@@ -107,6 +107,23 @@ body {
   pointer-events: stroke;
 }
 
+.workflow-canvas .canvas-edges .canvas-edge,
+.workflow-canvas .canvas-edges .canvas-edge-draft {
+  stroke-width: 4;
+}
+
+.workflow-canvas .canvas-edges .canvas-edge-image {
+  stroke: #5063b9;
+}
+
+.workflow-canvas .canvas-edges .canvas-edge-hovered {
+  stroke: #6e6a64;
+}
+
+.workflow-canvas .canvas-edges .canvas-edge-image.canvas-edge-hovered {
+  stroke: #3f50a0;
+}
+
 .canvas-edge-delete {
   position: absolute;
   top: 0;
@@ -1046,10 +1063,123 @@ body {
   flex: 1 1 auto;
   flex-direction: column;
   gap: 9px;
-  overflow: auto;
+  overflow: hidden;
   padding: 12px;
   cursor: default;
   user-select: text;
+}
+
+.workflow-input-section {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  background: #fff;
+}
+
+.workflow-input-title {
+  color: #79756e;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 14px;
+}
+
+.workflow-input-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workflow-input-row,
+.workflow-input-empty {
+  position: relative;
+  height: 28px;
+  border: 1px solid rgba(42, 41, 38, 0.1);
+  border-radius: 8px;
+  background: #f8f7f5;
+  color: #6e6a64;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.workflow-input-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 24px;
+}
+
+.workflow-input-row::before {
+  position: absolute;
+  top: 50%;
+  left: -12px;
+  width: 20px;
+  height: 4px;
+  transform: translateY(-50%);
+  background: currentColor;
+  content: "";
+}
+
+.workflow-input-row-port {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 1px 5px rgba(42, 41, 38, 0.24);
+}
+
+.workflow-input-row strong {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.workflow-input-row > span:last-child {
+  overflow: hidden;
+  color: #66625c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-input-row-image {
+  border-color: rgba(80, 99, 185, 0.24);
+  background: #f2f4ff;
+  color: #5063b9;
+}
+
+.workflow-input-row-pending {
+  border-style: dashed;
+}
+
+.workflow-input-row-pending::before {
+  height: 0;
+  border-top: 4px dashed currentColor;
+  background: transparent;
+}
+
+.workflow-input-empty {
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  color: #928e87;
+}
+
+.workflow-scheduler-fields {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 9px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .workflow-field-row {
@@ -1162,20 +1292,6 @@ body {
 .workflow-output-handle {
   opacity: 1;
   transform: translateY(-50%) scale(1);
-}
-
-.workflow-input-port {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 15;
-  width: 12px;
-  height: 12px;
-  border: 2px solid #fff;
-  border-radius: 999px;
-  background: #6e6a64;
-  box-shadow: 0 1px 5px rgba(42, 41, 38, 0.24);
-  pointer-events: none;
 }
 
 .workflow-create-menu {

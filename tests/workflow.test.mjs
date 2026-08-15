@@ -14,10 +14,15 @@ import {
   moveWorkflowNodes,
   parseWorkflowGraph,
   readWorkflowInputs,
+  removeWorkflowEdge,
   removeWorkflowNode,
   resizedWorkflowNodeBounds,
   schedulerDefaults,
+  workflowEdgeKinds,
+  workflowEdgeGeometry,
   workflowEdgePath,
+  workflowInputPorts,
+  workflowPendingInputPoint,
 } from "../app/workflow/graph.ts";
 
 function ids() {
@@ -204,6 +209,106 @@ test("reads direct upstream text, image and video in edge order without recursio
   }
 });
 
+test("places scheduler input rows inside the card by persisted connection order and media kind", () => {
+  const target = { ...scheduler(), width: 300 };
+  const graph = {
+    version: 1,
+    nodes: [
+      { ...source("text-one", "text", "A"), label: "剧本分析" },
+      { ...source("image-two", "image"), assetId: "image-two", assetName: "主角.png" },
+      { ...source("video", "video"), assetId: "video" },
+      { ...source("image-one", "image"), assetId: "image-one" },
+      source("text-two", "text", "B"),
+      target,
+    ],
+    edges: [
+      { id: "text-one-edge", sourceId: "text-one", targetId: target.id },
+      { id: "image-two-edge", sourceId: "image-two", targetId: target.id },
+      { id: "video-edge", sourceId: "video", targetId: target.id },
+      { id: "image-one-edge", sourceId: "image-one", targetId: target.id },
+      { id: "text-two-edge", sourceId: "text-two", targetId: target.id },
+    ],
+  };
+  const ports = workflowInputPorts(graph);
+  assert.deepEqual(ports.map((port) => port.label), [
+    "文本1",
+    "图1",
+    "视频1",
+    "图2",
+    "文本2",
+  ]);
+  assert.deepEqual(ports.map((port) => port.sourceName), [
+    "剧本分析",
+    "主角.png",
+    "视频素材",
+    "图片素材",
+    "文本素材",
+  ]);
+  assert.deepEqual(ports.map((port) => port.edgeId), graph.edges.map((edge) => edge.id));
+  assert.deepEqual(ports.map(({ x, y }) => ({ x, y })), [
+    { x: 420, y: 88 },
+    { x: 420, y: 118 },
+    { x: 420, y: 148 },
+    { x: 420, y: 178 },
+    { x: 420, y: 208 },
+  ]);
+  assert.ok(ports.every((port) => port.x > target.x && port.x < target.x + target.width));
+  assert.deepEqual(
+    readWorkflowInputs(graph, target.id).images.map((node) => node.id),
+    ["image-two", "image-one"],
+  );
+  assert.deepEqual(workflowPendingInputPoint(graph, target.id), { x: 420, y: 238 });
+});
+
+test("removes only the requested workflow edge and reindexes remaining image inputs", () => {
+  const target = scheduler();
+  const result = {
+    id: "result",
+    x: 800,
+    y: 0,
+    type: "result",
+    kind: "image",
+    schedulerId: target.id,
+    taskId: "task-1",
+    status: "success",
+    resultUrl: "https://example.com/result.png",
+    progress: "已完成",
+  };
+  const graph = {
+    version: 1,
+    nodes: [
+      { ...source("image-one", "image"), assetId: "one" },
+      { ...source("image-two", "image"), assetId: "two" },
+      target,
+      result,
+    ],
+    edges: [
+      { id: "first", sourceId: "image-one", targetId: target.id },
+      { id: "second", sourceId: "image-two", targetId: target.id },
+      { id: "output", sourceId: target.id, targetId: result.id },
+    ],
+  };
+  const removed = removeWorkflowEdge(graph, "first");
+  assert.deepEqual([...workflowEdgeKinds(graph)], [
+    ["first", "image"],
+    ["second", "image"],
+    ["output", "image"],
+  ]);
+  assert.deepEqual(removed.nodes, graph.nodes);
+  assert.deepEqual(removed.edges, [graph.edges[1], graph.edges[2]]);
+  assert.deepEqual(workflowInputPorts(removed).map((port) => port.label), ["图1"]);
+  const withoutOutput = removeWorkflowEdge(removed, "output");
+  assert.deepEqual(withoutOutput.nodes, graph.nodes);
+  assert.deepEqual(withoutOutput.edges, [graph.edges[1]]);
+  assert.equal(withoutOutput.nodes.at(-1).taskId, "task-1");
+  assert.equal(workflowInputPorts({
+    ...graph,
+    edges: [{ id: "text", sourceId: "text-one", targetId: target.id }],
+    nodes: [source("text-one", "text", "A"), target],
+  })[0]?.label, "文本");
+  assert.equal(removeWorkflowEdge(removed, "missing"), removed);
+});
+
 test("keeps Agent-authored story prompts separate from IP names in source text", () => {
   const created = createStoryWorkflow(emptyWorkflowGraph(), storyOperation({
     globalContext: "使用迪士尼版白雪公主造型。",
@@ -288,6 +393,11 @@ test("uses actual dimensions for fixed right-out and left-in edges and group mov
   const target = { ...scheduler(), x: 600, y: 200, width: 300, height: 400 };
   assert.match(workflowEdgePath(sourceNode, target), /^M 200 60 C/);
   assert.match(workflowEdgePath(sourceNode, target), /, 600 400$/);
+  const inputGeometry = workflowEdgeGeometry(sourceNode, target, { x: 620, y: 288 });
+  assert.match(inputGeometry.path, /^M 200 60 C/);
+  assert.match(inputGeometry.path, /, 600 288$/);
+  assert.ok(inputGeometry.midpoint.x > 200 && inputGeometry.midpoint.x < 600);
+  assert.ok(inputGeometry.midpoint.y < 288);
   const graph = moveWorkflowNodes(
     { version: 1, nodes: [sourceNode, target], edges: [] },
     ["source", "scheduler"],

@@ -13,6 +13,9 @@ export const WORKFLOW_NODE_WIDTH = 288;
 export const WORKFLOW_NODE_HEIGHT = 200;
 export const WORKFLOW_NODE_HEADER_HEIGHT = 42;
 export const WORKFLOW_IMAGE_PREVIEW_EDGE = 288;
+export const WORKFLOW_INPUT_PORT_X = 20;
+export const WORKFLOW_INPUT_FIRST_Y = 88;
+export const WORKFLOW_INPUT_ROW_STEP = 30;
 const WORKFLOW_MEDIA_MIN_EDGE = 96;
 const WORKFLOW_MEDIA_MAX_EDGE = 1200;
 
@@ -119,6 +122,17 @@ export type WorkflowEdge = {
   id: string;
   sourceId: string;
   targetId: string;
+};
+
+export type WorkflowInputPort = {
+  edgeId: string;
+  sourceId: string;
+  targetId: string;
+  kind: ComposerMode;
+  label: string;
+  sourceName: string;
+  x: number;
+  y: number;
 };
 
 export type WorkflowGraph = {
@@ -1028,16 +1042,147 @@ export function removeWorkflowNode(
   };
 }
 
+export function removeWorkflowEdge(
+  graph: WorkflowGraph,
+  edgeId: string,
+): WorkflowGraph {
+  if (!graph.edges.some((edge) => edge.id === edgeId)) return graph;
+  return {
+    ...graph,
+    edges: graph.edges.filter((edge) => edge.id !== edgeId),
+  };
+}
+
+function inputPortLabel(kind: ComposerMode, index: number, total: number) {
+  if (kind === "image") return `图${index}`;
+  if (kind === "video") return `视频${index}`;
+  return total === 1 ? "文本" : `文本${index}`;
+}
+
+function workflowNodeDisplayName(node: WorkflowNode) {
+  if (node.label?.trim()) return node.label.trim();
+  if (node.type === "source" && node.assetName?.trim()) {
+    return node.assetName.trim();
+  }
+  const kind = node.type === "scheduler" ? node.outputKind : node.kind;
+  const kindName = kind === "image" ? "图片" : kind === "video" ? "视频" : "文本";
+  if (node.type === "source") return `${kindName}素材`;
+  if (node.type === "result") return `结果 · ${kindName}`;
+  return "通用调度";
+}
+
+export function workflowEdgeKinds(graph: WorkflowGraph) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  return new Map(
+    graph.edges.flatMap((edge) => {
+      const source = nodes.get(edge.sourceId);
+      if (!source) return [];
+      return [[
+        edge.id,
+        source.type === "scheduler" ? source.outputKind : source.kind,
+      ] as const];
+    }),
+  );
+}
+
+export function workflowInputPorts(graph: WorkflowGraph): WorkflowInputPort[] {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const incomingByScheduler = new Map<
+    string,
+    Array<{ edge: WorkflowEdge; source: WorkflowSourceNode | WorkflowResultNode }>
+  >();
+  for (const edge of graph.edges) {
+    const source = nodes.get(edge.sourceId);
+    const target = nodes.get(edge.targetId);
+    if (!source || source.type === "scheduler" || target?.type !== "scheduler") continue;
+    const incoming = incomingByScheduler.get(target.id) ?? [];
+    incoming.push({ edge, source });
+    incomingByScheduler.set(target.id, incoming);
+  }
+
+  const ports: WorkflowInputPort[] = [];
+  for (const [targetId, incoming] of incomingByScheduler) {
+    const target = nodes.get(targetId);
+    if (!target || target.type !== "scheduler") continue;
+    const totals = incoming.reduce<Record<ComposerMode, number>>(
+      (counts, { source }) => {
+        counts[source.kind] += 1;
+        return counts;
+      },
+      { text: 0, image: 0, video: 0 },
+    );
+    const indexes: Record<ComposerMode, number> = { text: 0, image: 0, video: 0 };
+    incoming.forEach(({ edge, source }, position) => {
+      indexes[source.kind] += 1;
+      ports.push({
+        edgeId: edge.id,
+        sourceId: edge.sourceId,
+        targetId,
+        kind: source.kind,
+        label: inputPortLabel(source.kind, indexes[source.kind], totals[source.kind]),
+        sourceName: workflowNodeDisplayName(source),
+        x: target.x + WORKFLOW_INPUT_PORT_X,
+        y: target.y + WORKFLOW_INPUT_FIRST_Y + position * WORKFLOW_INPUT_ROW_STEP,
+      });
+    });
+  }
+  return ports;
+}
+
+export function workflowPendingInputPoint(
+  graph: WorkflowGraph,
+  schedulerId: string,
+) {
+  const scheduler = graph.nodes.find(
+    (node): node is WorkflowSchedulerNode =>
+      node.id === schedulerId && node.type === "scheduler",
+  );
+  if (!scheduler) return undefined;
+  const count = workflowInputPorts(graph).filter(
+    (port) => port.targetId === schedulerId,
+  ).length;
+  return {
+    x: scheduler.x + WORKFLOW_INPUT_PORT_X,
+    y: scheduler.y + WORKFLOW_INPUT_FIRST_Y + count * WORKFLOW_INPUT_ROW_STEP,
+  };
+}
+
+export function workflowEdgeGeometry(
+  source: WorkflowNode,
+  target: WorkflowNode,
+  targetPoint?: { x: number; y: number },
+) {
+  const sourceSize = getWorkflowNodeSize(source);
+  const targetSize = getWorkflowNodeSize(target);
+  const start = {
+    x: source.x + sourceSize.width,
+    y: source.y + sourceSize.height / 2,
+  };
+  const end = targetPoint ? {
+    x: target.x,
+    y: targetPoint.y,
+  } : {
+    x: target.x,
+    y: target.y + targetSize.height / 2,
+  };
+  const bend = Math.max(72, Math.abs(end.x - start.x) * 0.45);
+  const firstControl = { x: start.x + bend, y: start.y };
+  const secondControl = { x: end.x - bend, y: end.y };
+  return {
+    path: `M ${start.x} ${start.y} C ${firstControl.x} ${firstControl.y}, ${secondControl.x} ${secondControl.y}, ${end.x} ${end.y}`,
+    midpoint: {
+      x: (start.x + 3 * firstControl.x + 3 * secondControl.x + end.x) / 8,
+      y: (start.y + 3 * firstControl.y + 3 * secondControl.y + end.y) / 8,
+    },
+  };
+}
+
 export function workflowEdgePath(
   source: WorkflowNode,
   target: WorkflowNode,
+  targetPoint?: { x: number; y: number },
 ): string {
-  const sourceSize = getWorkflowNodeSize(source);
-  const targetSize = getWorkflowNodeSize(target);
-  const start = { x: source.x + sourceSize.width, y: source.y + sourceSize.height / 2 };
-  const end = { x: target.x, y: target.y + targetSize.height / 2 };
-  const bend = Math.max(72, Math.abs(end.x - start.x) * 0.45);
-  return `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${end.x - bend} ${end.y}, ${end.x} ${end.y}`;
+  return workflowEdgeGeometry(source, target, targetPoint).path;
 }
 
 export function workflowDraftPath(

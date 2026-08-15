@@ -50,6 +50,7 @@ import {
   moveWorkflowNodes,
   parseWorkflowGraph,
   readWorkflowInputs,
+  removeWorkflowEdge,
   removeWorkflowNode,
   resizedWorkflowNodeBounds,
   resizeWorkflowNode,
@@ -58,11 +59,16 @@ import {
   updateWorkflowResult,
   workflowAutoPollDeadline,
   workflowDraftPath,
+  workflowEdgeGeometry,
+  workflowEdgeKinds,
   workflowEdgePath,
+  workflowInputPorts,
   workflowNodesIntersecting,
+  workflowPendingInputPoint,
   workflowSelectionBounds,
   type WorkflowBounds,
   type WorkflowGraph,
+  type WorkflowInputPort,
   type WorkflowNode,
   type WorkflowResizeCorner,
   type WorkflowResultNode,
@@ -237,6 +243,7 @@ export function WorkflowCanvas() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
   const [connection, setConnection] = useState<ConnectionState | null>(null);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const [assetErrors, setAssetErrors] = useState<Record<string, string>>({});
   const [runningSchedulers, setRunningSchedulers] = useState<Set<string>>(new Set());
@@ -319,6 +326,7 @@ export function WorkflowCanvas() {
     setSchedulerMenu(null);
     setMarquee(null);
     setConnection(null);
+    setHoveredEdgeId(null);
     setDetailId(null);
     setAgentContextNodeId(null);
     setBatchRun(
@@ -1503,21 +1511,53 @@ export function WorkflowCanvas() {
     () => new Map(graph.nodes.map((node) => [node.id, node])),
     [graph.nodes],
   );
+  const inputPorts = useMemo(() => workflowInputPorts(graph), [graph]);
+  const edgeKinds = useMemo(() => workflowEdgeKinds(graph), [graph]);
+  const inputPortByEdge = useMemo(
+    () => new Map(inputPorts.map((port) => [port.edgeId, port])),
+    [inputPorts],
+  );
+  const inputPortsByTarget = useMemo(() => {
+    const byTarget = new Map<string, WorkflowInputPort[]>();
+    inputPorts.forEach((port) => {
+      const targetPorts = byTarget.get(port.targetId) ?? [];
+      targetPorts.push(port);
+      byTarget.set(port.targetId, targetPorts);
+    });
+    return byTarget;
+  }, [inputPorts]);
   const edgePaths = useMemo(
     () => graph.edges.flatMap((edge) => {
       const source = nodesById.get(edge.sourceId);
       const target = nodesById.get(edge.targetId);
-      return source && target
-        ? [{ id: edge.id, path: workflowEdgePath(source, target) }]
-        : [];
+      if (!source || !target) return [];
+      const inputPort = inputPortByEdge.get(edge.id);
+      return [{
+        id: edge.id,
+        kind: edgeKinds.get(edge.id) ?? "text",
+        ...workflowEdgeGeometry(
+          source,
+          target,
+          inputPort ? { x: inputPort.x, y: inputPort.y } : undefined,
+        ),
+      }];
     }),
-    [graph.edges, nodesById],
+    [edgeKinds, graph.edges, inputPortByEdge, nodesById],
   );
   const connectionSource = connection
     ? nodesById.get(connection.nodeId)
     : undefined;
   const connectionTarget = connection?.targetId
     ? nodesById.get(connection.targetId)
+    : undefined;
+  const connectionKind = connectionSource?.type === "scheduler"
+    ? connectionSource.outputKind
+    : connectionSource?.kind;
+  const pendingInputPoint = connectionTarget?.type === "scheduler"
+    ? workflowPendingInputPoint(graph, connectionTarget.id)
+    : undefined;
+  const hoveredEdge = hoveredEdgeId
+    ? edgePaths.find((edge) => edge.id === hoveredEdgeId)
     : undefined;
   const detailNode = detailId ? nodesById.get(detailId) : undefined;
   const agentSnapshot = useMemo(
@@ -1604,16 +1644,70 @@ export function WorkflowCanvas() {
       />
       <div ref={worldRef} className="canvas-world" style={WORKFLOW_WORLD_STYLE}>
         <svg className="canvas-edges" aria-hidden="true">
-          {edgePaths.map((edge) => <path key={edge.id} d={edge.path} />)}
+          {edgePaths.map((edge) => (
+            <g key={edge.id}>
+              <path
+                className={`canvas-edge canvas-edge-${edge.kind}${hoveredEdgeId === edge.id ? " canvas-edge-hovered" : ""}`}
+                d={edge.path}
+              />
+              <path
+                className="canvas-edge-hit"
+                d={edge.path}
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerEnter={() => setHoveredEdgeId(edge.id)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHoveredEdgeId(edge.id);
+                }}
+                onPointerLeave={(event) => {
+                  if (
+                    event.relatedTarget instanceof Element &&
+                    event.relatedTarget.closest("[data-workflow-edge-delete]")
+                  ) return;
+                  setHoveredEdgeId((current) => current === edge.id ? null : current);
+                }}
+              />
+            </g>
+          ))}
           {connection?.moved && connectionSource ? (
             <path
-              className="canvas-edge-draft"
+              className={`canvas-edge-draft canvas-edge-${connectionKind ?? "text"}`}
               d={connectionTarget
-                ? workflowEdgePath(connectionSource, connectionTarget)
+                ? workflowEdgePath(
+                    connectionSource,
+                    connectionTarget,
+                    pendingInputPoint,
+                  )
                 : workflowDraftPath(connectionSource, connection.point)}
             />
           ) : null}
         </svg>
+
+        {hoveredEdge ? (
+          <button
+            aria-label="删除连线"
+            className="canvas-edge-delete workflow-edge-delete"
+            data-workflow-control
+            data-workflow-edge-delete
+            style={{
+              width: 26 / viewport.scale,
+              height: 26 / viewport.scale,
+              borderWidth: 1 / viewport.scale,
+              transform: `translate(${hoveredEdge.midpoint.x}px, ${hoveredEdge.midpoint.y}px) translate(-50%, -50%)`,
+            }}
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerEnter={() => setHoveredEdgeId(hoveredEdge.id)}
+            onPointerLeave={() => setHoveredEdgeId(null)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setGraph((current) => removeWorkflowEdge(current, hoveredEdge.id));
+              setHoveredEdgeId(null);
+            }}
+          >
+            <Trash2 aria-hidden="true" size={13 / viewport.scale} />
+          </button>
+        ) : null}
 
         {selection ? (
           <div
@@ -1670,6 +1764,8 @@ export function WorkflowCanvas() {
             assetUrl={node.type === "source" && node.assetId ? assetUrls[node.assetId] : undefined}
             assetError={node.type === "source" && node.assetId ? assetErrors[node.assetId] : assetErrors[node.id]}
             connectionTarget={connection?.targetId === node.id}
+            inputPorts={inputPortsByTarget.get(node.id) ?? []}
+            pendingInputKind={connection?.targetId === node.id ? connectionKind : undefined}
             running={node.type === "scheduler" && runningSchedulers.has(node.id)}
             onDelete={() => deleteNode(node)}
             onOpen={() => setDetailId(node.id)}
@@ -1783,11 +1879,29 @@ export function WorkflowCanvas() {
   );
 }
 
+function sameWorkflowInputPorts(
+  left: WorkflowInputPort[],
+  right: WorkflowInputPort[],
+) {
+  return left.length === right.length && left.every((port, index) => {
+    const other = right[index];
+    if (!other) return false;
+    return port.edgeId === other.edgeId &&
+      port.kind === other.kind &&
+      port.label === other.label &&
+      port.sourceName === other.sourceName &&
+      port.x === other.x &&
+      port.y === other.y;
+  });
+}
+
 const WorkflowNodeCard = memo(function WorkflowNodeCard({
   node,
   assetUrl,
   assetError,
   connectionTarget,
+  inputPorts,
+  pendingInputKind,
   running,
   onDelete,
   onOpen,
@@ -1807,6 +1921,8 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   assetUrl?: string;
   assetError?: string;
   connectionTarget: boolean;
+  inputPorts: WorkflowInputPort[];
+  pendingInputKind?: ComposerMode;
   running: boolean;
   onDelete: () => void;
   onOpen: () => void;
@@ -1904,6 +2020,8 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
       ) : node.type === "scheduler" ? (
         <SchedulerControls
           node={node}
+          inputPorts={inputPorts}
+          pendingInputKind={pendingInputKind}
           running={running}
           onChange={onChange}
           onKindChange={onKindChange}
@@ -1920,11 +2038,15 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   previous.assetUrl === next.assetUrl &&
   previous.assetError === next.assetError &&
   previous.connectionTarget === next.connectionTarget &&
+  previous.pendingInputKind === next.pendingInputKind &&
+  sameWorkflowInputPorts(previous.inputPorts, next.inputPorts) &&
   previous.running === next.running,
 );
 
-function SchedulerControls({ node, running, onChange, onKindChange, onModelChange, onRun }: {
+function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChange, onKindChange, onModelChange, onRun }: {
   node: WorkflowSchedulerNode;
+  inputPorts: WorkflowInputPort[];
+  pendingInputKind?: ComposerMode;
   running: boolean;
   onChange: (update: Partial<WorkflowNode>) => void;
   onKindChange: (kind: ComposerMode) => void;
@@ -1935,26 +2057,54 @@ function SchedulerControls({ node, running, onChange, onKindChange, onModelChang
   const taskCount = node.outputKind === "text" ? 1 : node.outputCount;
   return (
     <div className="workflow-scheduler" data-workflow-control onPointerDown={(event) => event.stopPropagation()}>
-      <div className="workflow-field-row">
-        <label>输出类型<select disabled={node.assetRole === "scheduler"} value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
-          <option value="text">文本</option><option value="image">图片</option><option value="video">视频</option>
-        </select></label>
-        <label>模型<select value={node.model} onChange={(event) => onModelChange(event.target.value)}>
-          {MODEL_CONFIGS[node.outputKind].map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
-        </select></label>
+      <div className="workflow-input-section">
+        <span className="workflow-input-title">输入类型</span>
+        <div className="workflow-input-list">
+          {inputPorts.map((port) => (
+            <div
+              key={port.edgeId}
+              className={`workflow-input-row workflow-input-row-${port.kind}`}
+              title={`${port.label} · ${port.sourceName}`}
+            >
+              <span className="workflow-input-row-port" aria-hidden="true" />
+              <strong>{port.label}</strong>
+              <span>{port.sourceName}</span>
+            </div>
+          ))}
+          {pendingInputKind ? (
+            <div className={`workflow-input-row workflow-input-row-${pendingInputKind} workflow-input-row-pending`}>
+              <span className="workflow-input-row-port" aria-hidden="true" />
+              <strong>新输入</strong>
+              <span>松开后连接</span>
+            </div>
+          ) : null}
+          {!inputPorts.length && !pendingInputKind ? (
+            <div className="workflow-input-empty">暂无输入</div>
+          ) : null}
+        </div>
       </div>
-      <label className="workflow-prompt">提示词<textarea value={node.prompt} placeholder="描述本节点要生成的内容…" onChange={(event) => onChange({ prompt: event.target.value, error: "" })} /></label>
-      {node.outputKind !== "text" ? <div className="workflow-field-row workflow-parameters">
-        <label>比例<select value={node.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.target.value })}>{config?.aspectRatios.map((value) => <option key={value}>{value}</option>)}</select></label>
-        <label>清晰度<select value={node.resolution} onChange={(event) => onChange({ resolution: event.target.value })}>{config?.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
-        {node.outputKind === "video" ? <label>时长<select value={node.duration} onChange={(event) => onChange({ duration: event.target.value })}>{config?.durations.map((value) => <option key={value} value={value}>{value} 秒</option>)}</select></label> : null}
-          <label>数量<select disabled={node.assetRole === "scheduler"} value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
-      </div> : null}
-      {node.error ? <p className="workflow-scheduler-error">{node.error}</p> : null}
-      <button className="workflow-run" disabled={running} type="button" onClick={onRun}>
-        {running ? <LoaderCircle className="animate-spin" size={15} /> : <Play size={15} fill="currentColor" />}
-        {running ? "正在提交" : `运行 ${taskCount} 个任务`}
-      </button>
+      <div className="workflow-scheduler-fields">
+        <div className="workflow-field-row">
+          <label>输出类型<select disabled={node.assetRole === "scheduler"} value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
+            <option value="text">文本</option><option value="image">图片</option><option value="video">视频</option>
+          </select></label>
+          <label>模型<select value={node.model} onChange={(event) => onModelChange(event.target.value)}>
+            {MODEL_CONFIGS[node.outputKind].map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+          </select></label>
+        </div>
+        <label className="workflow-prompt">提示词<textarea value={node.prompt} placeholder="描述本节点要生成的内容…" onChange={(event) => onChange({ prompt: event.target.value, error: "" })} /></label>
+        {node.outputKind !== "text" ? <div className="workflow-field-row workflow-parameters">
+          <label>比例<select value={node.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.target.value })}>{config?.aspectRatios.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>清晰度<select value={node.resolution} onChange={(event) => onChange({ resolution: event.target.value })}>{config?.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
+          {node.outputKind === "video" ? <label>时长<select value={node.duration} onChange={(event) => onChange({ duration: event.target.value })}>{config?.durations.map((value) => <option key={value} value={value}>{value} 秒</option>)}</select></label> : null}
+            <label>数量<select disabled={node.assetRole === "scheduler"} value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
+        </div> : null}
+        {node.error ? <p className="workflow-scheduler-error">{node.error}</p> : null}
+        <button className="workflow-run" disabled={running} type="button" onClick={onRun}>
+          {running ? <LoaderCircle className="animate-spin" size={15} /> : <Play size={15} fill="currentColor" />}
+          {running ? "正在提交" : `运行 ${taskCount} 个任务`}
+        </button>
+      </div>
     </div>
   );
 }
@@ -2010,7 +2160,7 @@ const WorkflowNodeOverlay = memo(function WorkflowNodeOverlay({ node, onConnectD
         onPointerUp={onConnectUp}
         onPointerCancel={onConnectUp}
       ><Plus size={15} /></button>
-    </div> : <div className="workflow-input-port" aria-hidden="true" style={{ transform: `translate(${node.x - 6}px, ${node.y + size.height / 2 - 6}px)` }} />}
+    </div> : null}
     <div className="canvas-node-resize-layer" style={{ width: size.width, height: size.height, transform: `translate(${node.x}px, ${node.y}px)` }}>
       {corners.map((corner) => <button
         key={corner}
