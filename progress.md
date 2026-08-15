@@ -1573,6 +1573,8 @@
 - `npm run lint`：通过，无 ESLint 错误或警告。
 - `npm test`：通过，Vinext 生产构建成功，133 项自动化测试全部通过。
 - `git diff --check`：通过。
+- VPS 生产验证：应用重建后与独立 PostgreSQL 均为 healthy，未认证入口继续返回 `401`。
+- Chrome 验收：公网 HTTPS 登录成功，白雪公主项目的 121 个节点、156 条连线、40 张私有 COS 图片及 Agent 纯文字对话正常加载；未调用付费生成。
 
 ### Notes
 
