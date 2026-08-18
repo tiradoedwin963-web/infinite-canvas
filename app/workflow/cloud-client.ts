@@ -88,6 +88,13 @@ export function createCloudProject(name: string) {
   );
 }
 
+export function cloneCloudStoryboardProject(projectId: string, name: string) {
+  return requestJson<{ id: string; name: string; revision: number }>(
+    `/api/workflow/projects/${encodeURIComponent(projectId)}/clone-storyboard`,
+    jsonRequest("POST", { name }),
+  );
+}
+
 export function activateCloudProject(activeProjectId: string) {
   return requestJson<{ ok: true }>(
     "/api/workflow/projects",

@@ -7,6 +7,7 @@ import {
   AgentRequestTimeoutError,
   createAgentConversation,
   createAgentConversationTitle,
+  compactMangaPlanningSnapshot,
   describeDangerousOperation,
   expireIncompleteAgentConfirmations,
   getPendingAgentConfirmations,
@@ -71,7 +72,7 @@ test("parses the strict agent response and all operation names", () => {
         title: "夜班电梯",
         global_context: "固定角色和电梯场景",
         image_model: "gemini-3-pro-image-preview",
-        video_model: "doubao-seedance-1-5-pro-251215",
+        video_model: "seedance-2.0",
         aspect_ratio: "9:16",
         image_resolution: "1K",
         video_resolution: "720p",
@@ -149,6 +150,26 @@ test("parses the strict agent response and all operation names", () => {
   assert.match(describeDangerousOperation(response.operations.at(-1)), /资产/);
 });
 
+test("uses a controlled fallback message when a valid operation omits display text", () => {
+  const response = parseAgentModelResponse(JSON.stringify({
+    workflow_state: "active",
+    operations: [{
+      type: "create_node",
+      ref: "new-1",
+      kind: "text",
+      text: "标题",
+      x: 1,
+      y: 2,
+    }],
+  }));
+  assert.equal(response.message, "已完成当前阶段规划。");
+  assert.equal(response.operations.length, 1);
+  assert.throws(() => parseAgentModelResponse(JSON.stringify({
+    workflow_state: "active",
+    operations: [],
+  })), /未返回可显示的回复/);
+});
+
 test("rejects unknown or malformed model operations without partial application", () => {
   assert.throws(
     () => parseAgentModelResponse('{"message":"ok","workflow_state":"active","operations":[{"type":"eval"}]}'),
@@ -159,29 +180,87 @@ test("rejects unknown or malformed model operations without partial application"
     () => parseAgentModelResponse('{"message":"请确认？","workflow_state":"clarifying","operations":[{"type":"move_node","node_id":"a","x":1,"y":2}]}'),
     /澄清阶段/,
   );
-  assert.throws(
-    () => parseAgentModelResponse(JSON.stringify({
-      message: "重复分镜",
-      workflow_state: "active",
-      operations: [{
-        type: "create_story_workflow",
-        ref: "story-1",
-        title: "测试",
-        global_context: "设定",
-        chunk_index: 0,
-        is_final: true,
-        shots: Array.from({ length: 9 }, (_, index) => ({
-          ref: `shot-${index}`,
-          title: "镜头",
-          script: "文本",
-          image_prompt: "画面",
-          video_prompt: "动作",
-          duration: "5",
-        })),
-      }],
-    })),
-    /不受支持/,
+  const oversizedStory = parseAgentModelResponse(JSON.stringify({
+    message: "完整分镜",
+    workflow_state: "active",
+    operations: [{
+      type: "create_story_workflow",
+      ref: "story-1",
+      title: "测试",
+      global_context: "设定",
+      chunk_index: 0,
+      is_final: true,
+      shots: Array.from({ length: 34 }, (_, index) => ({
+        ref: `shot-${index}`,
+        title: "镜头",
+        script: "文本",
+        image_prompt: "画面",
+        video_prompt: "动作",
+        duration: "5",
+      })),
+    }],
+  }));
+  assert.deepEqual(
+    oversizedStory.operations.map((operation) => operation.shots.length),
+    [8, 8, 8, 8, 2],
   );
+  assert.deepEqual(
+    oversizedStory.operations.map((operation) => operation.chunkIndex),
+    [0, 1, 2, 3, 4],
+  );
+  assert.deepEqual(
+    oversizedStory.operations.map((operation) => operation.isFinal),
+    [false, false, false, false, true],
+  );
+  const multipleOversizedStory = parseAgentModelResponse(JSON.stringify({
+    message: "多操作完整分镜",
+    workflow_state: "active",
+    operations: [0, 1].map((operationIndex) => ({
+      type: "create_story_workflow",
+      ref: "story-1",
+      title: operationIndex ? "测试（后续批次措辞变化）" : "测试",
+      global_context: operationIndex ? "设定，后续批次标点变化。" : "设定",
+      chunk_index: operationIndex,
+      is_final: operationIndex === 1,
+      shots: Array.from({ length: 16 }, (_, shotIndex) => ({
+        ref: `shot-${operationIndex * 16 + shotIndex}`,
+        title: "镜头",
+        script: "文本",
+        image_prompt: "画面",
+        video_prompt: "动作",
+        duration: "5",
+      })),
+    })),
+  }));
+  assert.deepEqual(
+    multipleOversizedStory.operations.map((operation) => operation.chunkIndex),
+    [0, 1, 2, 3],
+  );
+  assert.deepEqual(
+    multipleOversizedStory.operations.map((operation) => operation.isFinal),
+    [false, false, false, true],
+  );
+  const continuationStory = parseAgentModelResponse(JSON.stringify({
+    message: "续批",
+    workflow_state: "active",
+    operations: [{
+      type: "create_story_workflow",
+      ref: "story-1",
+      title: "测试",
+      global_context: "设定",
+      chunk_index: 4,
+      is_final: true,
+      shots: [{
+        ref: "shot-32",
+        title: "镜头",
+        script: "文本",
+        image_prompt: "画面",
+        video_prompt: "动作",
+        duration: "5",
+      }],
+    }],
+  }));
+  assert.equal(continuationStory.operations[0].chunkIndex, 4);
   const assetBatch = (assets, isFinal = true) => JSON.stringify({
     message: "资产",
     workflow_state: "active",
@@ -218,6 +297,94 @@ test("rejects unknown or malformed model operations without partial application"
   );
 });
 
+test("accepts complete agent JSON with surplus trailing closing braces", () => {
+  const response = parseAgentModelResponse(
+    '{"message":"已完成","workflow_state":"active","operations":[]}}',
+  );
+  assert.equal(response.message, "已完成");
+  assert.deepEqual(response.operations, []);
+});
+
+test("parses agent JSON wrapped in invisible boundary characters", () => {
+  const response = parseAgentModelResponse(
+    `\u200B${JSON.stringify({
+      message: "已完成分析。",
+      workflow_state: "active",
+      operations: [],
+    })}\uFEFF`,
+  );
+  assert.equal(response.message, "已完成分析。");
+});
+
+test("parses agent JSON wrapped in zero-width joiners and word joiners", () => {
+  const response = parseAgentModelResponse(
+    '\u200C\u2060{"message":"已完成","workflow_state":"active","operations":[]}\u2060\u200D',
+  );
+  assert.equal(response.message, "已完成");
+});
+
+test("compacts old manga shots while keeping recent planning context", () => {
+  const shotNodes = Array.from({ length: 6 }, (_, index) => ({
+    id: `node-${index + 1}`,
+    type: "source",
+    kind: "text",
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    storyId: "story-1",
+    storyRole: "shot",
+    shotRef: `shot-${index + 1}`,
+    text: "完整镜头正文",
+    prompt: "",
+    model: "",
+    status: "ready",
+    hasVisual: false,
+    shotPlan: {
+      shotId: `shot-${index + 1}`,
+      sequence: index + 1,
+      sceneId: "scene-1",
+      beatId: "beat-1",
+      duration: 10,
+      characterIds: [],
+      propIds: [],
+      startFrame: "开始",
+      endFrame: "结束",
+      previousShotId: "",
+      nextShotId: "",
+      continuityNotes: "连续",
+      continuityWarnings: [],
+    },
+  }));
+  const snapshot = {
+    mode: "workflow",
+    viewport: { x: 0, y: 0, scale: 1, width: 1, height: 1 },
+    nodes: [{
+      id: "analysis",
+      type: "source",
+      kind: "text",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      storyId: "story-1",
+      storyRole: "analysis",
+      storyboardMode: "comic",
+      mangaPlanningStage: "shot-plans",
+      text: "分析",
+      prompt: "",
+      model: "",
+      status: "ready",
+      hasVisual: false,
+    }, ...shotNodes],
+    edges: [],
+  };
+  const compact = compactMangaPlanningSnapshot(snapshot);
+  assert.equal(compact.nodes[1].shotPlan, undefined);
+  assert.match(compact.nodes[1].text, /"shotId":"shot-1"/);
+  assert.ok(compact.nodes.at(-1).shotPlan);
+});
+
 test("rejects operations on the wrong canvas and create-plus-run responses", () => {
   const createStory = {
     type: "create_story_workflow",
@@ -225,7 +392,7 @@ test("rejects operations on the wrong canvas and create-plus-run responses", () 
     title: "测试",
     globalContext: "设定",
     imageModel: "gemini-3-pro-image-preview",
-    videoModel: "doubao-seedance-1-5-pro-251215",
+    videoModel: "seedance-2.0",
     aspectRatio: "9:16",
     imageResolution: "1K",
     videoResolution: "720p",

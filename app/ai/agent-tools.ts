@@ -149,7 +149,7 @@ export function normalizeAgentStoryAnalysisOperation(
   }
   const imageModel = STORY_ASSET_DEFAULT_IMAGE_MODEL;
   const model = getModelConfig("image", imageModel)!;
-  const requestedRatio = operation.projectAspectRatio || "9:16";
+  const requestedRatio = operation.projectAspectRatio || "16:9";
   const projectAspectRatio = closestRatio(requestedRatio, model.aspectRatios);
   const adjustments = [
     ...(requestedImageModel === imageModel
@@ -201,7 +201,7 @@ export function normalizeAgentStoryWorkflowOperation(
   if (!image) throw new Error(`Agent 选择了未知的图片模型 ${imageModel}。`);
   if (!video) throw new Error(`Agent 选择了未知的视频模型 ${videoModel}。`);
 
-  const requestedRatio = operation.aspectRatio || "9:16";
+  const requestedRatio = operation.aspectRatio || "16:9";
   const supportedRatios = image.aspectRatios.filter((ratio) =>
     video.aspectRatios.includes(ratio as (typeof video.aspectRatios)[number]),
   );

@@ -8,6 +8,13 @@ import agentInstructions from "@/agent.md?raw";
 import toolManual from "@/tools.md?raw";
 import workflowToolManual from "@/workflow-tools.md?raw";
 import storyAssetToolManual from "@/story-asset-tools.md?raw";
+import commonShotManual from "@/shot-common-tools.md?raw";
+import comicStoryboardManual from "@/comic-storyboard-tools.md?raw";
+import mangaDirectorCoreManual from "@/manga-director-core.md?raw";
+import mangaStoryBeatsManual from "@/manga-story-beats-tools.md?raw";
+import mangaScenePlansManual from "@/manga-scene-plan-tools.md?raw";
+import mangaShotPlansManual from "@/manga-shot-plan-tools.md?raw";
+import mangaContinuityManual from "@/manga-continuity-tools.md?raw";
 import { assertSameOrigin, requireSessionWhenCloud, responseFromError } from "@/app/server/auth";
 
 const AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000;
@@ -25,6 +32,15 @@ function getClient() {
     toolManual,
     workflowToolManual,
     storyAssetToolManual,
+    commonShotManual,
+    comicStoryboardManual,
+    mangaDirectorCoreManual,
+    mangaStageManuals: {
+      "story-beats": mangaStoryBeatsManual,
+      "scene-plans": mangaScenePlansManual,
+      "shot-plans": mangaShotPlansManual,
+      continuity: mangaContinuityManual,
+    },
   });
 }
 

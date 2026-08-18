@@ -22,6 +22,7 @@ import {
   workflowEdgeGeometry,
   workflowEdgePath,
   workflowInputPorts,
+  workflowImageMimeType,
   workflowPendingInputPoint,
 } from "../app/workflow/graph.ts";
 
@@ -29,6 +30,15 @@ function ids() {
   let value = 0;
   return () => `workflow-${++value}`;
 }
+
+test("infers generated image MIME types from stable result URLs", () => {
+  assert.equal(workflowImageMimeType("image/png", undefined, undefined), "image/png");
+  assert.equal(
+    workflowImageMimeType("application/octet-stream", undefined, "https://cdn.example/result.png?token=1"),
+    "image/png",
+  );
+  assert.equal(workflowImageMimeType("application/octet-stream", undefined, "https://cdn.example/result.bin"), "");
+});
 
 function source(id, kind, text = "") {
   return { id, x: 0, y: 0, type: "source", kind, text };
@@ -53,7 +63,7 @@ function storyOperation(overrides = {}) {
     title: "夜班电梯",
     globalContext: "角色造型、场景光线和画面风格必须统一。",
     imageModel: "gemini-3-pro-image-preview",
-    videoModel: "doubao-seedance-1-5-pro-251215",
+    videoModel: "seedance-2.0",
     aspectRatio: "9:16",
     imageResolution: "1K",
     videoResolution: "720p",
@@ -93,16 +103,49 @@ test("creates four workflow node types at the requested world coordinate", () =>
   assert.deepEqual(graph.nodes.slice(0, 3).map((node) => node.kind), ["text", "image", "video"]);
   assert.equal(graph.nodes[3].outputKind, "image");
   assert.equal(graph.nodes[3].model, "gemini-3-pro-image-preview");
+  assert.equal(graph.nodes[3].aspectRatio, "16:9");
 });
 
 test("keeps workflow persistence separate and rejects invalid versions", () => {
+  const persistedScheduler = { ...scheduler(), aspectRatio: "9:16" };
   const graph = {
     version: 1,
-    nodes: [source("text", "text", "hello"), scheduler()],
+    nodes: [source("text", "text", "hello"), persistedScheduler],
     edges: [{ id: "edge", sourceId: "text", targetId: "scheduler" }],
   };
   assert.deepEqual(parseWorkflowGraph(JSON.stringify(graph)), graph);
+  assert.equal(parseWorkflowGraph(JSON.stringify(graph)).nodes[1].aspectRatio, "9:16");
   assert.deepEqual(parseWorkflowGraph(JSON.stringify({ ...graph, version: 2 })), emptyWorkflowGraph());
+});
+
+test("moves unfinished legacy video nodes to the current video provider", () => {
+  const legacyScheduler = {
+    ...scheduler("legacy-video"),
+    ...schedulerDefaults("video"),
+    model: "doubao-seedance-1-5-pro-251215",
+  };
+  const legacyResult = {
+    id: "legacy-result",
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: legacyScheduler.id,
+    text: "",
+    model: "doubao-seedance-1-5-pro-251215",
+    status: "ready",
+    progress: "",
+    error: "",
+  };
+  const parsed = parseWorkflowGraph(JSON.stringify({
+    version: 1,
+    nodes: [legacyScheduler, legacyResult],
+    edges: [],
+  }));
+  assert.deepEqual(parsed.nodes.map((node) => node.model), [
+    "seedance-2.0",
+    "seedance-2.0",
+  ]);
 });
 
 test("allows only source or result inputs into schedulers and rejects duplicates", () => {
@@ -508,26 +551,42 @@ test("keeps extreme image ratios natural while applying preview edge limits", ()
 });
 
 test("creates an atomic short-drama graph to the right with reusable placeholders", () => {
-  const reference = {
-    ...source("reference", "image"),
+  const character = {
+    ...source("character", "image"),
     x: 500,
-    assetId: "asset-reference",
+    label: "白雪公主",
+    assetId: "asset-character",
+    assetKind: "character",
+  };
+  const scene = {
+    ...source("scene", "image"),
+    x: 500,
+    label: "王宫寝室",
+    assetId: "asset-scene",
+    assetKind: "scene",
+  };
+  const prop = {
+    ...source("prop", "image"),
+    x: 500,
+    label: "毒苹果",
+    assetId: "asset-prop",
+    assetKind: "prop",
   };
   const operation = storyOperation({
     shots: storyOperation().shots.map((shot, index) => ({
       ...shot,
-      referenceNodeIds: index === 0 ? [reference.id] : [],
+      referenceNodeIds: index === 0 ? [character.id, scene.id, prop.id] : [],
     })),
   });
   const created = createStoryWorkflow(
-    { version: 1, nodes: [reference], edges: [] },
+    { version: 1, nodes: [character, scene, prop], edges: [] },
     operation,
     ids(),
   );
   const storyNodes = created.graph.nodes.filter((node) => node.storyId === created.storyId);
   assert.equal(storyNodes.length, 11);
-  assert.equal(created.graph.edges.length, 15);
-  assert.ok(storyNodes.every((node) => node.x > reference.x));
+  assert.equal(created.graph.edges.length, 19);
+  assert.ok(storyNodes.every((node) => node.x > character.x));
   assert.deepEqual(
     storyNodes.filter((node) => node.shotRef === "shot-01").map((node) => node.storyRole),
     ["shot", "storyboard-scheduler", "storyboard", "video-scheduler", "clip"],
@@ -536,8 +595,21 @@ test("creates an atomic short-drama graph to the right with reusable placeholder
   const imageScheduler = storyNodes.find((node) => node.storyRole === "storyboard-scheduler");
   const videoScheduler = storyNodes.find((node) => node.storyRole === "video-scheduler");
   assert.equal(imagePlaceholder.status, "ready");
-  assert.ok(created.graph.edges.some((edge) => edge.sourceId === reference.id && edge.targetId === imageScheduler.id));
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === character.id && edge.targetId === imageScheduler.id));
   assert.ok(created.graph.edges.some((edge) => edge.sourceId === imagePlaceholder.id && edge.targetId === videoScheduler.id));
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === character.id && edge.targetId === videoScheduler.id));
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === scene.id && edge.targetId === videoScheduler.id));
+  assert.ok(!created.graph.edges.some((edge) => edge.sourceId === prop.id && edge.targetId === videoScheduler.id));
+  const videoInputs = readWorkflowInputs(created.graph, videoScheduler.id);
+  assert.deepEqual(videoInputs.images.map((node) => node.id), [
+    imagePlaceholder.id,
+    character.id,
+    scene.id,
+  ]);
+  assert.match(
+    buildWorkflowGenerationPrompt(videoInputs, videoScheduler),
+    /图1：分镜首帧[\s\S]*图2：人物资产 · 白雪公主[\s\S]*图3：场景资产 · 王宫寝室/,
+  );
   const sizedGraph = {
     ...created.graph,
     nodes: created.graph.nodes.map((node) =>

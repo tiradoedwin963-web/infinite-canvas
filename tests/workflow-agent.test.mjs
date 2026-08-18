@@ -26,7 +26,7 @@ function chunk(chunkIndex, isFinal, shotRefs) {
     title: "夜班电梯",
     globalContext: "固定角色、电梯场景和冷色光线。",
     imageModel: "gemini-3-pro-image-preview",
-    videoModel: "doubao-seedance-1-5-pro-251215",
+    videoModel: "seedance-2.0",
     aspectRatio: "9:16",
     imageResolution: "1K",
     videoResolution: "720p",
@@ -60,16 +60,29 @@ test("merges continuous planning chunks and rejects every atomic-failure case", 
   assert.equal(merged.chunkIndex, 0);
   assert.equal(merged.isFinal, true);
   assert.deepEqual(merged.shots.map((shot) => shot.ref), ["shot-01", "shot-02"]);
+  const partial = mergeStoryWorkflowChunks([
+    chunk(0, false, ["shot-01"]),
+    chunk(1, false, ["shot-02"]),
+  ], false);
+  assert.equal(partial.isFinal, false);
+  assert.deepEqual(partial.shots.map((shot) => shot.ref), ["shot-01", "shot-02"]);
   assert.throws(
     () => mergeStoryWorkflowChunks([chunk(0, false, ["shot-01"])]),
-    /不连续|尚未完成/,
+    /尚未完成/,
   );
   assert.throws(
     () => mergeStoryWorkflowChunks([
       chunk(0, false, ["shot-01"]),
       chunk(2, true, ["shot-02"]),
     ]),
-    /不连续/,
+    /批次编号不连续.*期望 1.*收到 2/,
+  );
+  assert.throws(
+    () => mergeStoryWorkflowChunks([
+      chunk(0, false, ["shot-01"]),
+      { ...chunk(1, true, ["shot-02"]), ref: "another-story" },
+    ]),
+    /短剧不一致/,
   );
   assert.throws(
     () => mergeStoryWorkflowChunks([
@@ -78,6 +91,40 @@ test("merges continuous planning chunks and rejects every atomic-failure case", 
     ]),
     /重复/,
   );
+  assert.throws(
+    () => mergeStoryWorkflowChunks([
+      chunk(0, true, Array.from({ length: 9 }, (_, index) => `shot-${index}`)),
+    ]),
+    /1 至 8/,
+  );
+  assert.throws(
+    () => mergeStoryWorkflowChunks([
+      chunk(0, true, ["shot-01"]),
+      chunk(1, true, ["shot-02"]),
+    ]),
+    /结束标记出现在非末批/,
+  );
+});
+
+test("uses the first batch configuration while merging 32 ordered shots", () => {
+  const chunks = Array.from({ length: 4 }, (_, chunkIndex) => ({
+    ...chunk(
+      chunkIndex,
+      chunkIndex === 3,
+      Array.from(
+        { length: 8 },
+        (_, shotIndex) => `shot-${chunkIndex * 8 + shotIndex}`,
+      ),
+    ),
+    title: chunkIndex ? `后续标题 ${chunkIndex}` : "权威标题",
+    globalContext: chunkIndex ? `后续设定 ${chunkIndex}` : "权威设定",
+    imageModel: chunkIndex ? `later-image-model-${chunkIndex}` : "first-image-model",
+  }));
+  const merged = mergeStoryWorkflowChunks(chunks);
+  assert.equal(merged.shots.length, 32);
+  assert.equal(merged.title, "权威标题");
+  assert.equal(merged.globalContext, "权威设定");
+  assert.equal(merged.imageModel, "first-image-model");
 });
 
 test("exposes workflow metadata and keeps workflow conversation context separate", () => {

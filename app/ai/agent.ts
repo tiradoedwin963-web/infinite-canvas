@@ -117,6 +117,7 @@ export type AgentWorkflowNodeSnapshot = {
   foundationRole?: AgentStoryFoundationRole;
   assetStrategy?: "foundation-pair-v1";
   foundationApprovedAt?: number;
+  storyboardMode?: AgentStoryboardMode;
   storyVisualStyle?: string;
   assetAvailable?: boolean;
   planningStage?: AgentStoryAssetPlanningStage;
@@ -124,6 +125,14 @@ export type AgentWorkflowNodeSnapshot = {
   planningChunkIndex?: number;
   projectAspectRatio?: string;
   storyImageModel?: string;
+  mangaPlanningStage?: AgentMangaPlanningStage;
+  mangaPlanningStatus?: AgentMangaPlanningStatus;
+  mangaPlanningChunkIndex?: number;
+  continuityApprovedAt?: number;
+  storyBeats?: StoryBeat[];
+  scenePlan?: ScenePlan;
+  shotPlan?: ShotPlan;
+  continuityReport?: ContinuityReport;
   assetName?: string;
   text: string;
   prompt: string;
@@ -140,6 +149,71 @@ export type AgentWorkflowSnapshot = {
 };
 
 export type AgentSurfaceSnapshot = AgentCanvasSnapshot | AgentWorkflowSnapshot;
+
+function compactShotPlanText(plan: ShotPlan) {
+  return JSON.stringify({
+    shotId: plan.shotId,
+    sequence: plan.sequence,
+    sceneId: plan.sceneId,
+    beatId: plan.beatId,
+    duration: plan.duration,
+    characterIds: plan.characterIds,
+    propIds: plan.propIds,
+    startFrame: plan.startFrame,
+    endFrame: plan.endFrame,
+    previousShotId: plan.previousShotId,
+    nextShotId: plan.nextShotId,
+    continuityNotes: plan.continuityNotes,
+    continuityWarnings: plan.continuityWarnings,
+  });
+}
+
+export function compactMangaPlanningSnapshot(
+  snapshot: AgentSurfaceSnapshot,
+): AgentSurfaceSnapshot {
+  if (snapshot.mode !== "workflow") return snapshot;
+  const analysis = snapshot.nodes.find((node) =>
+    node.storyRole === "analysis" &&
+    node.storyboardMode === "comic" &&
+    (node.mangaPlanningStage === "shot-plans" ||
+      node.mangaPlanningStage === "continuity")
+  );
+  if (!analysis?.storyId) return snapshot;
+
+  const shots = snapshot.nodes
+    .filter((node) =>
+      node.storyId === analysis.storyId &&
+      node.storyRole === "shot" &&
+      node.shotPlan
+    )
+    .sort((left, right) =>
+      (left.shotPlan?.sequence ?? 0) - (right.shotPlan?.sequence ?? 0)
+    );
+  const fullShotIds = new Set(
+    analysis.mangaPlanningStage === "shot-plans"
+      ? shots.slice(-4).map((node) => node.id)
+      : [],
+  );
+
+  return {
+    ...snapshot,
+    nodes: snapshot.nodes.map((node) => {
+      if (
+        node.storyId !== analysis.storyId ||
+        node.storyRole !== "shot" ||
+        !node.shotPlan ||
+        fullShotIds.has(node.id)
+      ) {
+        return node;
+      }
+      return {
+        ...node,
+        shotPlan: undefined,
+        text: compactShotPlanText(node.shotPlan),
+      };
+    }),
+  };
+}
 
 export type AgentInspectedImage = {
   nodeId: string;
@@ -215,6 +289,137 @@ export type AgentStoryAnalysis = {
 };
 
 export type AgentStoryFoundationRole = "lead" | "support";
+export type AgentStoryboardMode = "comic" | "tvc";
+export type AgentMangaPlanningStage =
+  | "story-beats"
+  | "scene-plans"
+  | "shot-plans"
+  | "continuity"
+  | "complete";
+export type AgentMangaPlanningStatus =
+  | "planning"
+  | "stopped"
+  | "failed"
+  | "awaiting-continuity-approval"
+  | "complete";
+
+export type StoryBeat = {
+  beatId: string;
+  sequence: number;
+  sceneId: string;
+  narrativePurpose: string;
+  emotionalGoal: string;
+  summary: string;
+};
+
+export type ScenePlan = {
+  sceneId: string;
+  beatIds: string[];
+  spatialLayout: string;
+  blocking: string;
+  eyeline: string;
+  axis: string;
+  entrancesExits: string;
+  lighting: string;
+  colorTone: string;
+};
+
+export type ShotTimelineSegment = {
+  startSecond: number;
+  endSecond: number;
+  visualAction: string;
+  performance: string;
+  camera: string;
+  audio: string;
+};
+
+export type ShotPlan = {
+  shotId: string;
+  sequence: number;
+  sceneId: string;
+  beatId: string;
+  duration: number;
+  durationReason: string;
+  narrativePurpose: string;
+  emotionalGoal: string;
+  shotSize: string;
+  lens: string;
+  perspective: string;
+  cameraAngle: string;
+  cameraMovement: string;
+  composition: string;
+  blocking: string;
+  characterIds: string[];
+  characterPosition: string;
+  characterMovement: string;
+  eyeline: string;
+  propIds: string[];
+  action: string;
+  dialogue: string;
+  voiceover: string;
+  soundEffect: string;
+  musicCue: string;
+  lighting: string;
+  colorTone: string;
+  texture: string;
+  startFrame: string;
+  endFrame: string;
+  transitionIn: string;
+  transitionOut: string;
+  imagePrompt: string;
+  videoPrompt: string;
+  negativePrompt: string;
+  previousShotId: string;
+  nextShotId: string;
+  continuityNotes: string;
+  generationStatus: "planned";
+  timeline: ShotTimelineSegment[];
+  referenceNodeIds: string[];
+  continuityWarnings: string[];
+};
+
+export type ContinuityIssue = {
+  code: string;
+  severity: "error" | "warning";
+  shotId: string;
+  relatedShotId?: string;
+  reason: string;
+  suggestion: string;
+  autoFixable: boolean;
+};
+
+export type ContinuityReport = {
+  issues: ContinuityIssue[];
+};
+
+export type AgentCreateMangaStoryBeatsOperation = {
+  type: "create_manga_story_beats";
+  storyId: string;
+  stageIndex: 0;
+  beats: StoryBeat[];
+};
+
+export type AgentCreateMangaScenePlansOperation = {
+  type: "create_manga_scene_plans";
+  storyId: string;
+  stageIndex: 1;
+  plans: ScenePlan[];
+};
+
+export type AgentCreateMangaShotBatchOperation = {
+  type: "create_manga_shot_batch";
+  storyId: string;
+  chunkIndex: number;
+  isFinal: boolean;
+  shots: ShotPlan[];
+};
+
+export type AgentCreateMangaContinuityReportOperation = {
+  type: "create_manga_continuity_report";
+  storyId: string;
+  stageIndex: 3;
+  report: ContinuityReport;
+};
 
 export type AgentCreateStoryAnalysisOperation = {
   type: "create_story_analysis";
@@ -265,6 +470,10 @@ export type AgentOperation =
   | AgentCreateStoryAnalysisOperation
   | AgentCreateStoryAssetBatchOperation
   | AgentRunStoryAssetsOperation
+  | AgentCreateMangaStoryBeatsOperation
+  | AgentCreateMangaScenePlansOperation
+  | AgentCreateMangaShotBatchOperation
+  | AgentCreateMangaContinuityReportOperation
   | AgentCreateStoryWorkflowOperation
   | AgentRunStoryWorkflowOperation
   | {
@@ -408,8 +617,299 @@ function parseStoryAssets(value: unknown, isFinal: boolean): AgentStoryAsset[] |
     : null;
 }
 
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => readString(item).trim()).filter(Boolean)
+    : [];
+}
+
+function parseStoryBeats(value: unknown): StoryBeat[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const beats = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const beat: StoryBeat = {
+      beatId: readString(item.beat_id ?? item.beatId).trim(),
+      sequence: Number(item.sequence),
+      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
+      narrativePurpose: readString(
+        item.narrative_purpose ?? item.narrativePurpose,
+      ).trim(),
+      emotionalGoal: readString(item.emotional_goal ?? item.emotionalGoal).trim(),
+      summary: readString(item.summary).trim(),
+    };
+    return beat.beatId && Number.isInteger(beat.sequence) && beat.sequence >= 1 &&
+        beat.sceneId && beat.narrativePurpose && beat.emotionalGoal && beat.summary
+      ? beat
+      : null;
+  });
+  if (beats.some((beat) => beat === null)) return null;
+  const parsed = beats as StoryBeat[];
+  return new Set(parsed.map((beat) => beat.beatId)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function parseScenePlans(value: unknown): ScenePlan[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const plans = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const plan: ScenePlan = {
+      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
+      beatIds: readStringList(item.beat_ids ?? item.beatIds),
+      spatialLayout: readString(item.spatial_layout ?? item.spatialLayout).trim(),
+      blocking: readString(item.blocking).trim(),
+      eyeline: readString(item.eyeline).trim(),
+      axis: readString(item.axis).trim(),
+      entrancesExits: readString(
+        item.entrances_exits ?? item.entrancesExits,
+      ).trim(),
+      lighting: readString(item.lighting).trim(),
+      colorTone: readString(item.color_tone ?? item.colorTone).trim(),
+    };
+    return plan.sceneId && plan.beatIds.length && plan.spatialLayout &&
+        plan.blocking && plan.eyeline && plan.axis && plan.entrancesExits &&
+        plan.lighting && plan.colorTone
+      ? plan
+      : null;
+  });
+  if (plans.some((plan) => plan === null)) return null;
+  const parsed = plans as ScenePlan[];
+  return new Set(parsed.map((plan) => plan.sceneId)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function parseShotTimeline(value: unknown, duration: number) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const timeline = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const segment: ShotTimelineSegment = {
+      startSecond: Number(item.start_second ?? item.startSecond),
+      endSecond: Number(item.end_second ?? item.endSecond),
+      visualAction: readString(item.visual_action ?? item.visualAction).trim(),
+      performance: readString(item.performance).trim() || "无",
+      camera: readString(item.camera).trim(),
+      audio: readString(item.audio).trim() || "无",
+    };
+    return Number.isInteger(segment.startSecond) &&
+        Number.isInteger(segment.endSecond) &&
+        segment.visualAction && segment.performance && segment.camera && segment.audio
+      ? segment
+      : null;
+  });
+  if (timeline.some((segment) => segment === null)) return null;
+  let previousEnd = 0;
+  const parsed = (timeline as ShotTimelineSegment[]).map((segment, index, all) => {
+    const normalized = {
+      ...segment,
+      startSecond: previousEnd,
+      endSecond: index === all.length - 1 ? duration : segment.endSecond,
+    };
+    previousEnd = normalized.endSecond;
+    return normalized;
+  });
+  return parsed.every((segment) =>
+    segment.startSecond >= 0 && segment.endSecond > segment.startSecond &&
+    segment.endSecond <= duration
+  ) ? parsed : null;
+}
+
+function parseMangaShots(value: unknown): ShotPlan[] | null {
+  if (!Array.isArray(value) || !value.length || value.length > 8) return null;
+  const shots = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const duration = Number(item.duration);
+    const durationReason = readString(
+      item.duration_reason ?? item.durationReason,
+    ).trim();
+    const timeline = parseShotTimeline(item.timeline, duration);
+    const referenceNodeIds = readNodeIds(
+      item.reference_node_ids ?? item.referenceNodeIds,
+    );
+    const shot: ShotPlan = {
+      shotId: readString(item.shot_id ?? item.shotId).trim(),
+      sequence: Number(item.sequence),
+      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
+      beatId: readString(item.beat_id ?? item.beatId).trim(),
+      duration,
+      durationReason,
+      narrativePurpose: readString(
+        item.narrative_purpose ?? item.narrativePurpose,
+      ).trim(),
+      emotionalGoal: readString(item.emotional_goal ?? item.emotionalGoal).trim(),
+      shotSize: readString(item.shot_size ?? item.shotSize).trim(),
+      lens: readString(item.lens).trim(),
+      perspective: readString(item.perspective).trim(),
+      cameraAngle: readString(item.camera_angle ?? item.cameraAngle).trim(),
+      cameraMovement: readString(
+        item.camera_movement ?? item.cameraMovement,
+      ).trim(),
+      composition: readString(item.composition).trim(),
+      blocking: readString(item.blocking).trim(),
+      characterIds: readStringList(item.character_ids ?? item.characterIds),
+      characterPosition: readString(
+        item.character_position ?? item.characterPosition,
+      ).trim() || "无",
+      characterMovement: readString(
+        item.character_movement ?? item.characterMovement,
+      ).trim() || "无",
+      eyeline: readString(item.eyeline).trim() || "无",
+      propIds: readStringList(item.prop_ids ?? item.propIds),
+      action: readString(item.action).trim(),
+      dialogue: readString(item.dialogue).trim() || "无",
+      voiceover: readString(item.voiceover).trim() || "无",
+      soundEffect: readString(item.sound_effect ?? item.soundEffect).trim() || "无",
+      musicCue: readString(item.music_cue ?? item.musicCue).trim() || "无",
+      lighting: readString(item.lighting).trim(),
+      colorTone: readString(item.color_tone ?? item.colorTone).trim(),
+      texture: readString(item.texture).trim(),
+      startFrame: readString(item.start_frame ?? item.startFrame).trim(),
+      endFrame: readString(item.end_frame ?? item.endFrame).trim(),
+      transitionIn: readString(item.transition_in ?? item.transitionIn).trim(),
+      transitionOut: readString(item.transition_out ?? item.transitionOut).trim(),
+      imagePrompt: readString(item.image_prompt ?? item.imagePrompt).trim(),
+      videoPrompt: "",
+      negativePrompt: readString(
+        item.negative_prompt ?? item.negativePrompt,
+      ).trim(),
+      previousShotId: readString(
+        item.previous_shot_id ?? item.previousShotId,
+      ).trim(),
+      nextShotId: readString(item.next_shot_id ?? item.nextShotId).trim(),
+      continuityNotes: readString(
+        item.continuity_notes ?? item.continuityNotes,
+      ).trim() || "无",
+      generationStatus: "planned",
+      timeline: timeline ?? [],
+      referenceNodeIds,
+      continuityWarnings: readStringList(
+        item.continuity_warnings ?? item.continuityWarnings,
+      ),
+    };
+    const required = [
+      shot.shotId, shot.sceneId, shot.beatId, shot.narrativePurpose,
+      shot.emotionalGoal, shot.shotSize, shot.lens, shot.perspective,
+      shot.cameraAngle, shot.cameraMovement, shot.composition, shot.blocking,
+      shot.characterPosition, shot.characterMovement, shot.eyeline, shot.action,
+      shot.dialogue, shot.voiceover, shot.soundEffect, shot.musicCue,
+      shot.lighting, shot.colorTone, shot.texture, shot.startFrame,
+      shot.endFrame, shot.transitionIn, shot.transitionOut, shot.imagePrompt,
+      shot.negativePrompt, shot.continuityNotes,
+    ];
+    return Number.isInteger(shot.sequence) && shot.sequence >= 1 &&
+        Number.isInteger(duration) && duration >= 5 && duration <= 15 &&
+        (duration >= 10 || Boolean(durationReason)) && timeline &&
+        referenceNodeIds.length >= 1 && referenceNodeIds.length <= 5 &&
+        new Set(referenceNodeIds).size === referenceNodeIds.length &&
+        required.every(Boolean)
+      ? shot
+      : null;
+  });
+  if (shots.some((shot) => shot === null)) return null;
+  const parsed = shots as ShotPlan[];
+  return new Set(parsed.map((shot) => shot.shotId)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function describeInvalidMangaShots(value: unknown) {
+  if (!Array.isArray(value) || !value.length || value.length > 8) {
+    return "镜头批次必须包含 1 至 8 镜";
+  }
+  const requiredStrings = [
+    "shot_id", "scene_id", "beat_id", "narrative_purpose", "emotional_goal",
+    "shot_size", "lens", "perspective", "camera_angle", "camera_movement",
+    "composition", "blocking", "character_position", "character_movement",
+    "eyeline", "action", "dialogue", "voiceover", "sound_effect", "music_cue",
+    "lighting", "color_tone", "texture", "start_frame", "end_frame",
+    "transition_in", "transition_out", "image_prompt", "negative_prompt",
+    "continuity_notes",
+  ];
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) return `第 ${index + 1} 镜不是对象`;
+    const shotId = readString(item.shot_id ?? item.shotId).trim() || `第 ${index + 1} 镜`;
+    const missing = requiredStrings.find((field) => {
+      const camel = field.replace(/_([a-z])/g, (_, character: string) =>
+        character.toUpperCase()
+      );
+      return !readString(item[field] ?? item[camel]).trim();
+    });
+    if (missing) return `${shotId} 的 ${missing} 不能为空；无内容时填写“无”`;
+    const sequence = Number(item.sequence);
+    if (!Number.isInteger(sequence) || sequence < 1) return `${shotId} 的 sequence 必须为正整数`;
+    const duration = Number(item.duration);
+    if (!Number.isInteger(duration) || duration < 5 || duration > 15) {
+      return `${shotId} 的 duration 必须为 5 至 15 的整数`;
+    }
+    if (
+      duration < 10 &&
+      !readString(item.duration_reason ?? item.durationReason).trim()
+    ) {
+      return `${shotId} 短于 10 秒，必须填写 duration_reason`;
+    }
+    if (!parseShotTimeline(item.timeline, duration)) {
+      return `${shotId} 的 timeline 必须从 0 秒连续覆盖到 ${duration} 秒`;
+    }
+    const references = readNodeIds(
+      item.reference_node_ids ?? item.referenceNodeIds,
+    );
+    if (
+      references.length < 1 || references.length > 5 ||
+      new Set(references).size !== references.length
+    ) {
+      return `${shotId} 必须引用 1 至 5 个不重复的成功资产节点`;
+    }
+  }
+  return "镜头 ID 重复或存在未识别的字段约束";
+}
+
+function parseContinuityReport(value: unknown): ContinuityReport | null {
+  if (!isRecord(value) || !Array.isArray(value.issues)) return null;
+  const issues = value.issues.map((item) => {
+    if (!isRecord(item)) return null;
+    const severity = item.severity === "error" || item.severity === "warning"
+      ? item.severity
+      : null;
+    const issue: ContinuityIssue = {
+      code: readString(item.code).trim(),
+      severity: severity ?? "error",
+      shotId: readString(item.shot_id ?? item.shotId).trim(),
+      ...(readString(item.related_shot_id ?? item.relatedShotId).trim()
+        ? { relatedShotId: readString(item.related_shot_id ?? item.relatedShotId).trim() }
+        : {}),
+      reason: readString(item.reason).trim(),
+      suggestion: readString(item.suggestion).trim(),
+      autoFixable: item.auto_fixable === true || item.autoFixable === true,
+    };
+    return severity && issue.code && issue.shotId && issue.reason && issue.suggestion
+      ? issue
+      : null;
+  });
+  return issues.some((issue) => issue === null)
+    ? null
+    : { issues: issues as ContinuityIssue[] };
+}
+
+export function isPersistedStoryBeats(value: unknown): value is StoryBeat[] {
+  return parseStoryBeats(value) !== null;
+}
+
+export function isPersistedScenePlan(value: unknown): value is ScenePlan {
+  return parseScenePlans([value]) !== null;
+}
+
+export function isPersistedShotPlan(value: unknown): value is ShotPlan {
+  return parseMangaShots([value]) !== null;
+}
+
+export function isPersistedContinuityReport(
+  value: unknown,
+): value is ContinuityReport {
+  return parseContinuityReport(value) !== null;
+}
+
 function parseStoryShots(value: unknown): AgentStoryShot[] | null {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 8) return null;
+  if (!Array.isArray(value) || value.length < 1) return null;
   const shots = value.map((item) => {
     if (!isRecord(item)) return null;
     const ref = readString(item.ref).trim();
@@ -436,6 +936,31 @@ function parseStoryShots(value: unknown): AgentStoryShot[] | null {
   return new Set(parsed.map((shot) => shot.ref)).size === parsed.length
     ? parsed
     : null;
+}
+
+const STORY_WORKFLOW_CHUNK_SIZE = 8;
+
+function normalizeStoryWorkflowBatches(
+  operations: AgentOperation[],
+): AgentOperation[] {
+  let nextChunkIndex: number | undefined;
+  return operations.flatMap((operation): AgentOperation[] => {
+    if (operation.type !== "create_story_workflow") return [operation];
+    const chunkIndex = nextChunkIndex ?? operation.chunkIndex;
+    const chunkCount = Math.ceil(
+      operation.shots.length / STORY_WORKFLOW_CHUNK_SIZE,
+    );
+    nextChunkIndex = chunkIndex + chunkCount;
+    return Array.from({ length: chunkCount }, (_, index) => ({
+      ...operation,
+      chunkIndex: chunkIndex + index,
+      isFinal: operation.isFinal && index === chunkCount - 1,
+      shots: operation.shots.slice(
+        index * STORY_WORKFLOW_CHUNK_SIZE,
+        (index + 1) * STORY_WORKFLOW_CHUNK_SIZE,
+      ),
+    }));
+  });
 }
 
 function parseOperation(value: unknown): AgentOperation | null {
@@ -539,6 +1064,47 @@ function parseOperation(value: unknown): AgentOperation | null {
       : null;
   }
 
+  if (type === "create_manga_story_beats") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
+    const beats = parseStoryBeats(value.beats);
+    return storyId && stageIndex === 0 && beats
+      ? { type, storyId, stageIndex, beats }
+      : null;
+  }
+
+  if (type === "create_manga_scene_plans") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
+    const plans = parseScenePlans(value.plans);
+    return storyId && stageIndex === 1 && plans
+      ? { type, storyId, stageIndex, plans }
+      : null;
+  }
+
+  if (type === "create_manga_shot_batch") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    const chunkIndex = readFinite(value.chunk_index ?? value.chunkIndex);
+    const isFinal = readBoolean(value.is_final ?? value.isFinal);
+    const shots = parseMangaShots(value.shots);
+    if (!shots) {
+      throw new Error(`Agent 镜头结构校验失败：${describeInvalidMangaShots(value.shots)}`);
+    }
+    return storyId && chunkIndex !== null && Number.isInteger(chunkIndex) &&
+        chunkIndex >= 0 && isFinal !== null
+      ? { type, storyId, chunkIndex, isFinal, shots }
+      : null;
+  }
+
+  if (type === "create_manga_continuity_report") {
+    const storyId = readString(value.story_id ?? value.storyId).trim();
+    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
+    const report = parseContinuityReport(value.report);
+    return storyId && stageIndex === 3 && report
+      ? { type, storyId, stageIndex, report }
+      : null;
+  }
+
   if (type === "create_story_workflow") {
     const ref = readString(value.ref).trim();
     const title = readString(value.title).trim();
@@ -623,6 +1189,7 @@ function parseOperation(value: unknown): AgentOperation | null {
 
 export function parseAgentModelResponse(raw: string): AgentResponse {
   const cleaned = raw
+    .replace(/^[\u200B-\u200D\u2060\uFEFF]+|[\u200B-\u200D\u2060\uFEFF]+$/g, "")
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/, "");
@@ -630,11 +1197,22 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
   try {
     value = JSON.parse(cleaned);
   } catch {
-    throw new Error("Agent 返回了无法识别的操作格式。");
+    let repaired = cleaned;
+    for (let removed = 0; removed < 3 && repaired.endsWith("}"); removed += 1) {
+      repaired = repaired.slice(0, -1).trimEnd();
+      try {
+        value = JSON.parse(repaired);
+        break;
+      } catch {
+        // Only tolerate surplus closing braces at the very end.
+      }
+    }
+    if (value === undefined) {
+      throw new Error("Agent 返回了无法识别的操作格式。");
+    }
   }
   if (!isRecord(value)) throw new Error("Agent 返回了无法识别的操作格式。");
-  const message = readString(value.message).trim();
-  if (!message) throw new Error("Agent 未返回可显示的回复。");
+  const rawMessage = readString(value.message).trim();
   const workflowState = readString(
     value.workflow_state ?? value.workflowState,
   );
@@ -642,10 +1220,15 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
     throw new Error("Agent 未返回有效的工作流状态。");
   }
   const rawOperations = Array.isArray(value.operations) ? value.operations : [];
-  const operations = rawOperations.map(parseOperation);
-  if (operations.some((operation) => operation === null)) {
+  const parsedOperations = rawOperations.map(parseOperation);
+  if (parsedOperations.some((operation) => operation === null)) {
     throw new Error("Agent 返回了不受支持的画布操作。");
   }
+  const operations = normalizeStoryWorkflowBatches(
+    parsedOperations as AgentOperation[],
+  );
+  const message = rawMessage || (operations.length ? "已完成当前阶段规划。" : "");
+  if (!message) throw new Error("Agent 未返回可显示的回复。");
   const inspectImageNodeIds = readNodeIds(
     value.inspect_image_node_ids ?? value.inspectImageNodeIds,
   ).slice(0, 5);
@@ -666,7 +1249,7 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
     message,
     workflowState,
     inspectImageNodeIds,
-    operations: operations as AgentOperation[],
+    operations,
   };
 }
 
@@ -690,6 +1273,10 @@ export function validateAgentOperationsForSurface(
       operation.type === "create_story_analysis" ||
       operation.type === "create_story_asset_batch" ||
       operation.type === "run_story_assets" ||
+      operation.type === "create_manga_story_beats" ||
+      operation.type === "create_manga_scene_plans" ||
+      operation.type === "create_manga_shot_batch" ||
+      operation.type === "create_manga_continuity_report" ||
       operation.type === "create_story_workflow" ||
       operation.type === "run_story_workflow",
   );
@@ -703,6 +1290,10 @@ export function validateAgentOperationsForSurface(
     operations.some((operation) =>
       operation.type === "create_story_analysis" ||
       operation.type === "create_story_asset_batch" ||
+      operation.type === "create_manga_story_beats" ||
+      operation.type === "create_manga_scene_plans" ||
+      operation.type === "create_manga_shot_batch" ||
+      operation.type === "create_manga_continuity_report" ||
       operation.type === "create_story_workflow",
     ) &&
     operations.some((operation) =>

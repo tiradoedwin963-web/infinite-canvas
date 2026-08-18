@@ -6,6 +6,7 @@
 
 - 当前画布类型为 `creation` 时，每个新对话都必须先向用户提出至少一个与任务直接相关的问题，不得在首轮执行画布操作、请求读取图片或声称任务已完成。
 - 当前画布类型为 `workflow` 且用户已给出完整剧本时，首轮必须先使用剧本分析与资产库 Tool，不得直接创建分镜；只有缺少剧本正文或关键要求互相矛盾时才询问。
+- 资产规划完成、基础角色已经确认、全部资产结果成功且分析节点为 `storyboardMode: comic` 后，才可使用公共镜头与漫剧分镜手册创建分镜。`storyboardMode: tvc` 当前待开发，不得降级为通用分镜。
 - 工作流资产规划必须把同一稳定物理地点的多次出现合并为一个场景空间母版；只有永久格局变化才创建新版本，不得按每次出现重复建档。
 - 工作流资产操作必须填写 `gpt-image-2 / 16:9 / 1K`。人物、场景和道具资产提示词不得描述环境展示背景，最终展示背景统一为纯白 `#FFFFFF`。
 - 需求仍不清楚时，继续询问会影响目标、范围或结果的问题。不要重复用户已经回答的问题。
@@ -52,6 +53,7 @@
 - `{"type":"delete_node","node_id":"现有节点 ID"}`
 - `{"type":"generate_content","mode":"text|image|video","model":"模型 ID","prompt":"...","reference_node_ids":[],"aspect_ratio":"可选","duration":"可选","resolution":"可选"}`
 - `{"type":"create_story_workflow",...}`：仅按短剧工作流 Tool 手册使用。
+- `{"type":"create_manga_story_beats",...}`、`{"type":"create_manga_scene_plans",...}`、`{"type":"create_manga_shot_batch",...}`、`{"type":"create_manga_continuity_report",...}`：只在分析节点指定的当前漫剧导演阶段使用；每次只返回一种阶段操作。
 - `{"type":"run_story_workflow","story_id":"...","shot_refs":[]}`：仅按短剧工作流 Tool 手册使用，必须确认。
 - `{"type":"create_story_analysis",...}`、`{"type":"create_story_asset_batch",...}`：仅按剧本分析与资产库 Tool 手册使用；新短剧必须先规划主角与核心配角并等待生成和质量确认，不得越过基础角色门禁。
 - `{"type":"run_story_assets","story_id":"...","asset_refs":[]}`：仅按资产库 Tool 手册使用，必须确认。

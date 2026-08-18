@@ -1676,3 +1676,300 @@
 - `docs/deployment.md`：记录已有缩略图读取不加载原生转换器。
 - `progress.md`：追加冷启动优化的验证与回滚记录。
 - 回滚方式：执行 `git revert <本轮冷启动提交哈希>` 并重新部署；不会删除 PostgreSQL、COS 原图或派生缩略图。
+
+## 2026-08-16 - Task: 拆分公共镜头能力并接入漫剧分镜
+
+### What was done
+- 将通用镜头语法与 AI 动画短剧的漫剧拆镜规则拆成两份独立手册，仅在资产项目选择漫剧后注入 Agent；TVC 只保留明确边界和待开发入口。
+- 在工作流分析节点中增加兼容 `v1` 的可选分镜模式，资产规划、基础角色确认和全部资产结果成功后才允许选择漫剧并开始规划；分镜创建后锁定类型。
+- 漫剧每镜必须引用同一资产项目中 1 至 5 个不重复的成功结果，全部分镜复用资产项目 ID，并继续按最多 8 镜分批、最终一次性落图；创建完成不自动提交图片或视频生成。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，143 项自动化测试全部通过。
+- `git diff --check`：通过。
+- 针对性验证覆盖能力手册按模式加载、资产门禁、TVC 禁用、模式锁定、工作流 `v1` 恢复、跨项目/重复/超量引用拒绝及纯节点创建。
+
+### Notes
+- `agent.md`：允许资产就绪且已选择漫剧后进入分镜，并明确 TVC 当前不可降级执行。
+- `shot-common-tools.md`：新增公共镜头、连续性、资产引用和提示词职责规则。
+- `comic-storyboard-tools.md`：新增 AI 动画短剧的剧情节拍、表演、动作承接和 5/10 秒拆镜规则。
+- `workflow-tools.md`：保留现有工具协议并接入资产门禁、能力手册和原子落图要求。
+- `app/ai/agent.ts`：增加可选分镜模式类型和快照字段。
+- `app/ai/agent-provider.ts`：按画布模式注入漫剧能力并在服务端校验资产引用与项目门禁。
+- `app/api/ai/agent/route.ts`：加载公共镜头与漫剧专项手册。
+- `app/workflow/graph.ts`：兼容保存分镜模式，并允许分镜复用资产项目 ID。
+- `app/workflow/agent.ts`：在落图前执行漫剧门禁并暴露模式快照。
+- `app/workflow/storyboard.ts`：集中实现资产就绪判断、模式选择、锁定和分镜引用校验。
+- `components/canvas-agent-sidebar.tsx`：增加漫剧选择、开始规划按钮和不可用的 TVC 待开发入口。
+- `components/workflow/workflow-canvas.tsx`：把模式选择写回当前分析节点。
+- `tests/storyboard.test.mjs`：覆盖模式持久化、资产门禁、项目复用、锁定和非法引用。
+- `tests/agent-provider.test.mjs`：覆盖手册条件注入及 Agent 分镜输出门禁。
+- `tests/rendered-html.test.mjs`：覆盖能力手册与侧栏入口接线。
+- `docs/canvas.md`：记录公共、漫剧和未来 TVC 的边界及当前操作流程。
+- `progress.md`：追加本轮实现、验证和回滚说明。
+- 回滚方式：在提交前执行 `git restore -- agent.md app/ai/agent-provider.ts app/ai/agent.ts app/api/ai/agent/route.ts app/workflow/agent.ts app/workflow/graph.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md tests/agent-provider.test.mjs tests/rendered-html.test.mjs workflow-tools.md progress.md`，并执行 `git clean -f -- app/workflow/storyboard.ts comic-storyboard-tools.md shot-common-tools.md tests/storyboard.test.mjs`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-17 - Task: 修复漫剧分镜多批返回解析失败
+
+### What was done
+- Agent 可在一次响应中返回多个连续的短剧工作流批次，不再把合法的多批结果误判为“单批只能返回一个方案”。
+- 当模型把超过 8 镜的完整方案放进一个操作时，协议层自动规范化为每批最多 8 镜的连续批次；所有批次仍需完整校验后一次性创建节点。
+- 继续规划阶段同样支持一次返回多个批次，并保持混合操作、批次断号、重复分镜和非末批提前结束等校验。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，143 项自动化测试全部通过。
+- `git diff --check`：通过。
+- 针对性验证覆盖 34 镜单操作自动拆为 `8/8/8/8/2`、多批连续合并、未完成批次校验和旧错误提示移除。
+
+### Notes
+- `app/ai/agent.ts`：将超长短剧工作流操作规范化为最多 8 镜的逻辑批次。
+- `app/workflow/agent.ts`：支持校验未结束和已结束的连续多批方案。
+- `components/canvas-agent-sidebar.tsx`：接收一次响应中的多个纯工作流批次，并在最终完整校验后原子落图。
+- `workflow-tools.md`：明确推荐每次返回一个不超过 8 镜的批次，同时保留客户端兼容处理。
+- `docs/canvas.md`：记录多批返回和超长单操作的兼容行为。
+- `tests/agent.test.mjs`：覆盖 34 镜超长操作的自动分批。
+- `tests/workflow-agent.test.mjs`：覆盖部分多批校验和逻辑批次上限。
+- `tests/rendered-html.test.mjs`：覆盖侧栏多批追加及旧拒绝逻辑移除。
+- `progress.md`：追加本轮修复、验证和回滚记录。
+- 回滚方式：在提交前执行 `git restore -- app/ai/agent.ts app/workflow/agent.ts components/canvas-agent-sidebar.tsx workflow-tools.md docs/canvas.md tests/agent.test.mjs tests/workflow-agent.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮修复提交哈希>`。
+
+## 2026-08-17 - Task: 修复漫剧分镜批次连续性误判
+
+### What was done
+- 将同一次 Agent 响应中的短剧工作流操作按数组顺序整体规范化，多个超长操作拆分后使用统一连续编号，避免各操作独立拆分造成编号重叠。
+- 合并批次时以第一批的标题、全局设定、模型和规格为权威配置；后续批次继续严格校验短剧引用、跨请求编号、分镜唯一性、批次大小和结束位置。
+- 将笼统的“不连续”提示拆成编号错位、短剧不一致、批次大小和结束标记错误，失败时仍不创建任何分镜节点。
+
+### Testing
+- 针对性测试：`node --test --import tsx tests/agent.test.mjs tests/workflow-agent.test.mjs` 通过，22 项全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，144 项自动化测试全部通过。
+- `git diff --check`：通过。
+- 回归覆盖两个各 16 镜操作规范化为 `0/1/2/3`、32 镜合并采用首批配置、单独续批保留原始起始编号，以及短剧变更、重复分镜、编号跳跃和错误结束标记的原子拒绝。
+
+### Notes
+- `app/ai/agent.ts`：对一次响应中的全部短剧工作流操作统一拆分和连续编号。
+- `app/workflow/agent.ts`：采用首批公共配置，并输出可定位的批次校验错误。
+- `tests/agent.test.mjs`：覆盖多操作超长分镜和跨请求续批起始编号。
+- `tests/workflow-agent.test.mjs`：覆盖 32 镜首批配置、短剧身份及各类原子失败。
+- `workflow-tools.md`：明确同一响应的操作顺序和首批配置权威性。
+- `docs/canvas.md`：同步记录批次规范化、跨请求校验和原子落图行为。
+- `progress.md`：追加本轮修复、验证和回滚记录。
+- 回滚点：本轮开始前的未提交状态；由于上述文件同时包含前序未提交的漫剧功能，提交前回滚应仅反向应用本轮批次规范化补丁，禁止直接 `git restore` 覆盖前序改动；提交后使用 `git revert <本轮修复提交哈希>`。
+## 2026-08-17 - Task: 切换视频模型并按镜头注入人物与场景资产
+
+### What was done
+- 将视频生成切换为独立企业视频平台，按当前 Key 开放能力提供 Seedance 2.0、2.0 Fast 和 2.5，默认使用 Seedance 2.0。
+- 分镜视频调度器现按“首帧、当镜人物、当镜场景”顺序建立输入；多图任务自动使用 reference 模式，道具仍只影响分镜首帧。
+- 云端私有资产由服务端校验账号归属后生成 15 分钟 COS 签名读取地址，不公开素材，也不把视频 Key 发到浏览器。
+- 旧 Seedance/Vidu 的未完成视频调度节点在读取时归一为 Seedance 2.0，旧任务 ID 仍保留原查询路径。
+
+### Testing
+- `GET /v1/models` 和 `/v1/video/balance` 只读验证通过，密钥有效且返回文档声明的三个 Seedance 模型；未发起任何付费生成。
+- `npm test` 通过，包含生产构建、模型能力、TRX 多图顺序、任务查询、分镜连线与旧节点兼容。
+- `npm run lint` 通过。
+- `git diff --check` 通过。
+
+### Notes
+- `.env.local`：本地增加被 Git 忽略的视频平台地址和密钥。
+- `app/ai/models.ts`：替换视频模型及其时长、比例、分辨率和参考图上限。
+- `app/ai/types.ts`：允许视频参考图使用云端 `assetId`。
+- `app/ai/provider.ts`：保留 Lingke 文字/图片路径并兼容云端视频资产校验。
+- `app/ai/trx-video-provider.ts`：新增企业视频任务提交、多素材模式和状态查询适配。
+- `app/api/ai/generate/route.ts`：视频请求分流到新平台并解析私有资产地址。
+- `app/api/ai/status/route.ts`：依任务前缀兼容查询新旧视频任务。
+- `app/server/object-storage.ts`：新增 COS 短时签名读取地址。
+- `app/server/video-references.ts`：按当前账号校验并依序解析视频参考资产。
+- `app/workflow/graph.ts`：建立首帧、人物和场景的视频输入边及提示词映射，并迁移未完成旧模型节点。
+- `components/workflow/workflow-canvas.tsx`：视频调度改为传递云端资产引用，避免批量 Base64 图片上传。
+- `workflow-tools.md`、`shot-common-tools.md`、`comic-storyboard-tools.md`：统一分镜资产选择、视频注入顺序和道具边界。
+- `README.md`、`docs/canvas.md`、`docs/deployment.md`、`deploy/canvas/compose.production.yml`：记录新模型、运行环境和部署变量。
+- `tests/models.test.mjs`、`tests/provider.test.mjs`、`tests/workflow.test.mjs`、`tests/agent-tools.test.mjs`、`tests/agent.test.mjs`、`tests/agent-provider.test.mjs`、`tests/workflow-agent.test.mjs`、`tests/storyboard.test.mjs`：更新模型期望并覆盖多图提交、连线顺序、道具排除和旧节点迁移。
+- `progress.md`：追加本轮实施与验证记录。
+- 回滚：本轮提交后使用 `git revert <本轮提交哈希>`，并从运行环境移除 `TRX_VIDEO_BASE_URL`/`TRX_VIDEO_API_KEY`；不要对当前含有其他未提交工作的文件执行 `git restore`。
+
+## 2026-08-17 - Task: 修复 COS CommonJS 依赖中断生成接口
+
+### What was done
+- 将 COS 签名模块改为仅在已通过云端账号和视频参考素材校验后延迟加载，避免生成接口入口在 Vinext/Rolldown 开发环境中执行 `require("punycode/")`。
+- 保留云端私有 COS 资产校验、签名地址、TRX 视频请求和参考图顺序，未修改生成协议或工作流数据。
+- 增加回归检查，防止 COS SDK 重新静态进入生成接口的模块加载链。
+
+### Testing
+- 修复前用空请求调用 `POST http://localhost:3011/api/ai/generate` 稳定复现 HTML `500` 和 `require("punycode/")` 构建错误；修复后同一请求返回业务 JSON `400 {"error":"生成模式无效。"}`。
+- `node --test tests/rendered-html.test.mjs`：通过，6 项全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，146 项自动化测试全部通过。
+- `git diff --check`：通过。
+- 验证过程未发起任何图片或视频付费生成。
+
+### Notes
+- `app/server/video-references.ts`：在云端参考资产校验后才加载 COS 签名实现。
+- `tests/rendered-html.test.mjs`：覆盖 COS 延迟加载顺序及静态导入回归。
+- `docs/canvas.md`：记录生成接口与 COS Node 依赖的加载边界。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚点：当前文件含有前序未提交改动，提交前应只反向应用本轮 COS 延迟导入补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-17 - Task: 修复图片任务状态查询的 COS 构建错误
+
+### What was done
+- 状态接口不再在模块入口静态加载云端结果入库模块；只有已登录云端任务成功且存在结果时才延迟加载 PostgreSQL/COS 转存链路。
+- 本地图片和视频任务轮询直接返回上游结果，不再因 COS SDK 间接依赖的 `require("punycode/")` 中断。
+- 已提交成功的原图片任务通过原任务 ID 恢复，未重新发起生成。
+
+### Testing
+- 当前页面对原图片任务的轮询从 HTML `500` 自动恢复为 `200`。
+- 本地状态接口返回 `state=success`、`isFinal=true`、1 个 `image` 结果且无错误；未发起新的图片或视频付费请求。
+- `node --test tests/rendered-html.test.mjs`：通过，7 项全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，147 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/api/ai/status/route.ts`：只在已登录的成功任务需要转存时加载云端结果入库模块。
+- `tests/rendered-html.test.mjs`：覆盖状态接口的动态导入门禁和静态导入回归。
+- `docs/canvas.md`：扩展 COS Node 依赖的生成提交与任务轮询加载边界。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚点：当前文件含有前序未提交改动，提交前只反向应用本轮状态接口动态导入补丁，禁止直接 `git restore`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-17 - Task: 统一图片生成默认比例为 16:9
+
+### What was done
+- 将全部图片模型的首选比例统一为 `16:9`，覆盖创作输入、图片模型切换和新建工作流图片调度器。
+- 将服务端缺省图片请求、Agent 普通图片、剧本分析项目和漫剧工作流的缺省比例统一为 `16:9`。
+- 保留全部原有合法比例；用户明确选择和已有项目中保存的 `1:1`、`9:16` 等比例不会被覆盖或迁移。
+- 同步更新工作流、资产能力手册和画布使用说明。
+
+### Testing
+- `node --test tests/models.test.mjs tests/agent-tools.test.mjs tests/provider.test.mjs tests/workflow.test.mjs tests/agent-provider.test.mjs`：通过，56 项针对性测试全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，148 项自动化测试全部通过。
+- `git diff --check`：通过。
+- 验证服务端缺少比例时 GPT Image 2 映射到 `1920x1088`；验证已有 `9:16` 工作流节点读取后保持不变。
+
+### Notes
+- `app/ai/models.ts`：将所有图片模型的首选比例调整为 `16:9`。
+- `app/ai/provider.ts`：将图片请求的服务端缺省比例改为 `16:9`。
+- `app/ai/agent-tools.ts`：统一 Agent 剧本分析和短剧工作流的缺省比例。
+- `workflow-tools.md`：更新新建短剧工作流的默认比例和示例。
+- `story-asset-tools.md`：更新剧本分析项目默认比例和示例。
+- `docs/canvas.md`：说明各图片入口默认 `16:9` 及已有、显式比例的兼容规则。
+- `tests/models.test.mjs`：覆盖所有图片模型的首选比例。
+- `tests/agent-tools.test.mjs`：覆盖 Agent 图片、剧本分析和短剧工作流缺省比例。
+- `tests/provider.test.mjs`：覆盖服务端未传比例时的 16:9 平台参数映射。
+- `tests/workflow.test.mjs`：覆盖新调度器默认比例和旧节点显式比例保持。
+- `tests/agent-provider.test.mjs`：同步验证 Agent 动态模型清单中的比例顺序。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚点：当前文件含有前序未提交改动，提交前只反向应用本轮默认比例补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-17 - Task: 增量构建漫剧导演 Skill 与秒级直出视频工作流
+
+### What was done
+- 将新漫剧规划拆为情绪节拍、场面调度、每批最多 8 镜的镜头规划和连续性检查四阶段；阶段与批次使用短剧 ID、固定阶段编号或连续批次编号校验，并在每阶段成功后创建可见节点。
+- 新 ShotPlan 使用 5 至 15 秒整数时长和无空洞的连续整数秒时间轴；普通镜头限定为 10 至 15 秒，5 至 9 秒必须说明短镜头原因，超过 15 秒及无效时间轴会在落图前拒绝。
+- 新镜头改为“分镜文本 → 视频调度器 → 视频结果”三节点直出视频，不创建分镜图片节点或图片请求；人物、场景和关键道具按稳定顺序直接作为最多 5 张视频参考资产。
+- 增加连续性报告和人工警告门禁：结构错误阻止视频节点创建，语义警告保留在画布并阻止付费生成，人工确认后才开放仅统计视频请求的确认流程。
+- Agent 每次请求只加载导演核心、公共/漫剧规则和当前阶段手册，继续复用现有 SSE 摘要、停止、超时和刷新恢复机制；旧五节点工作流保持可读取、运行和恢复。
+
+### Testing
+- `node --test tests/manga-director.test.mjs tests/agent-provider.test.mjs tests/storyboard.test.mjs`：通过，22 项针对性测试全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，153 项自动化测试全部通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit --pretty false --incremental false`：未通过；仓库现有 TypeScript 基线未启用 `.ts` 扩展导入，并仍包含 Cloudflare 全局类型、旧页面联合类型和 Response/Sharp 类型错误。本轮新增导演模块在沿用现有导入约定的筛选检查中没有新增类型错误，生产构建正常。
+- 全部验证使用模拟 Agent、图片和视频数据，未发起真实付费生成。
+
+### Notes
+- `app/ai/agent.ts`：增加导演领域类型、四种安全操作、固定阶段编号和 ShotPlan/时间轴严格解析。
+- `app/ai/agent-provider.ts`、`app/api/ai/agent/route.ts`：按当前漫剧阶段装载对应手册并拒绝跨阶段、跨项目输出。
+- `app/workflow/manga-director.ts`：实现四阶段持久化、资产引用校验、秒级提示词组装、三节点视频工作流和连续性门禁。
+- `app/workflow/storyboard.ts`、`app/workflow/agent.ts`、`app/workflow/graph.ts`、`app/canvas/agent.ts`：接入新阶段元数据、安全操作、批量视频确认及旧工作流兼容。
+- `components/canvas-agent-sidebar.tsx`、`components/workflow/workflow-canvas.tsx`：增加阶段续跑、进度显示、停止恢复和连续性警告确认入口。
+- `manga-director-core.md`、`manga-story-beats-tools.md`、`manga-scene-plan-tools.md`、`manga-shot-plan-tools.md`、`manga-continuity-tools.md`：新增分阶段漫剧导演能力手册。
+- `agent.md`、`workflow-tools.md`、`shot-common-tools.md`、`comic-storyboard-tools.md`、`docs/canvas.md`：同步秒级直出视频规则、旧协议边界和操作说明。
+- `tests/manga-director.test.mjs`、`tests/storyboard.test.mjs`、`tests/agent-provider.test.mjs`、`tests/rendered-html.test.mjs`：覆盖阶段编号、时间轴、资产顺序、三节点结构、警告门禁、手册按阶段加载和兼容性。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚点：当前文件包含多轮尚未提交的前序改动，提交前只能反向应用本轮导演 Skill 与三节点直出视频补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-17 - Task: 修复 Agent 合法 JSON 被零宽字符阻断
+
+### What was done
+- 复现《白雪公主》完整剧本请求，确认上游在合法 JSON 前附加了不可见的 `U+200B`，导致标准 JSON 解析失败。
+- 在 Agent 响应边界忽略零宽空格和 BOM，保持 JSON 内部内容及操作校验不变；修复后已在 Chrome 成功创建剧本分析节点和两组基础角色资产节点。
+
+### Testing
+- `node --test tests/agent.test.mjs`：通过，17 项测试全部成功，新增不可见边界字符回归覆盖。
+- Chrome 实测：25,330 字剧本能够完成分析并显示 2 个基础角色图片请求确认卡；尚未点击付费确认，未提交图片或视频生成。
+
+### Notes
+- `app/ai/agent.ts`：解析 JSON 前清理响应边界的零宽空格和 BOM。
+- `tests/agent.test.mjs`：增加 `U+200B` 与 `U+FEFF` 包裹合法响应的回归测试。
+- `docs/canvas.md`：记录 Agent 对上游不可见边界字符的兼容行为。
+- `progress.md`：追加本轮定位、修复和验证记录。
+- 回滚点：当前文件包含前序未提交改动，提交前只反向应用本轮零宽字符兼容补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-18 - Task: 完成白雪公主秒级视频工作流并修复长篇续批稳定性
+
+### What was done
+- 修复云端结果图片被浏览器错误标注 MIME 后无法作为参考图的问题；只对稳定图片后缀做安全类型推断，并复用用户已确认的批量任务完成 27 个非基础资产，当前资产结果 29/29 成功。
+- 漫剧镜头引用改为按主要人物、次要人物、场景、关键道具从真实资产结果重新规范顺序，避免模型返回顺序差异阻断合法批次。
+- Agent 响应解析仅在边界兼容常见零宽字符，并容忍完整 JSON 末尾最多三个多余右花括号；截断、夹杂文本和非法操作仍拒绝。
+- 将长篇镜头规划运行时批次收敛为每批最多 2 镜，明确区分 `chunk_index` 与镜头编号，并只向续批发送最近 4 镜的完整结构；旧镜头保留编号、场景、节拍、首尾状态和连续性摘要，解决 90 镜后请求上下文过大导致的上游立即拒绝。
+- 在 Chrome 完成白雪公主导演流程：40 个剧情节拍、8 个场面调度、98 个秒级镜头和连续性报告全部落图；确认 9 个连续性警告后解锁工作流，但未提交任何真实视频生成。
+
+### Testing
+- Chrome 实测：98 个分镜文本、98 个视频调度器、98 个视频结果占位全部存在；加上 29 组资产后调度器和结果节点总数均为 127。
+- Chrome 实测：98 个视频时长均为合法整数秒，分布为 10 秒 7 镜、12 秒 43 镜、15 秒 48 镜；98 个视频结果均保持“待生成”。
+- 浏览器与服务端日志确认导演规划期间只有 `/api/ai/agent` 请求，没有 `/api/ai/generate` 视频请求；本轮未产生视频费用。
+- `node --test tests/agent.test.mjs tests/rendered-html.test.mjs`：通过，27 项针对性测试全部成功。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，159 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/workflow/graph.ts`：增加稳定结果 URL 的安全图片 MIME 推断。
+- `components/workflow/workflow-canvas.tsx`：在读取参考图片时使用推断后的图片 MIME。
+- `app/workflow/manga-director.ts`：按导演资产优先级规范镜头参考节点顺序。
+- `app/ai/agent.ts`：扩展边界不可见字符兼容、末尾多余花括号兼容和漫剧续批快照压缩。
+- `components/canvas-agent-sidebar.tsx`：将运行时镜头批次限制为 2 镜，并明确批次号、下一镜头编号和必填字段要求。
+- `manga-shot-plan-tools.md`：同步每批 1 至 2 镜的运行时约束。
+- `tests/workflow.test.mjs`、`tests/manga-director.test.mjs`、`tests/agent.test.mjs`、`tests/rendered-html.test.mjs`：覆盖 MIME 推断、资产顺序规范、JSON 边界修复、续批压缩和运行时手册约束。
+- `docs/canvas.md`：记录参考顺序规范、图片 MIME 边界、两镜批次和长篇快照压缩行为。
+- `progress.md`：追加本轮实施、浏览器验收和回滚记录。
+- 回滚点：当前文件包含多轮尚未提交改动，提交前只能逐项反向应用本轮 MIME、参考顺序、Agent 解析与快照压缩补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-18 - Task: 接入公共电影摄影语言并完成白雪公主对照版
+
+### What was done
+- 将构图、景别、机位、角度、运镜、转场和镜头组合整理为公共电影摄影语言，只在镜头规划阶段加载；明确未加入 J-cut、L-cut 或跨片段声音重叠规则。
+- 增加“创建电影语言对照版”：保留原项目及其 98 镜，复制分析、29 项资产、40 个剧情节拍和 8 个场面调度，并清除旧镜头、视频节点、连续性报告和批量队列后重新规划。
+- 镜头阶段使用严格结构化输出、充足输出预算、可选空字段归一化和程序控制的连续时间轴边界，避免合法内容因 JSON 字段或秒级边界偏差被随机拒绝。
+- 续批明确传递尚未覆盖的剧情节拍；程序按实际覆盖结果决定是否进入连续性检查，忽略模型过早的结束标记，并在补齐后按剧情节拍顺序确定性重排、重编号和修复前后镜头链接。未设置固定镜头总数。
+- 在 Chrome 完成“白雪公主-电影语言版”：最终创建 41 个分镜文本、41 个视频调度器、41 个视频占位和 1 份连续性报告；确认 10 个连续性警告后开放生成，但未提交任何真实视频请求。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，165 项自动化测试全部通过。
+- `git diff --check`：通过。
+- Chrome 实测：对照版保留 29 项既有资产，40 个剧情节拍全部覆盖；41 个视频结果均为“待生成”，没有新建分镜图片调度器或分镜图片占位。
+- Chrome 实测：连续性报告 1 份，10 个警告已完成非付费人工确认；全程未点击视频生成确认，未产生视频费用。
+- 全仓检索确认不存在固定 100 镜、一百镜或 `mangaShotTarget` 规则。
+
+### Notes
+- `app/workflow/manga-director.ts`：增加对照图清理/资产重映射、实际节拍覆盖判定及完成后的镜头排序重编号。
+- `app/workflow/projects.ts`：保护对照项目复用的素材引用。
+- `app/server/object-storage.ts`：支持云端对照项目复制私有素材对象。
+- `app/api/workflow/projects/[id]/clone-storyboard/route.ts`：增加账号隔离的云端对照项目复制接口。
+- `app/workflow/cloud-client.ts`：接入对照项目云端复制请求。
+- `components/workflow/workflow-canvas.tsx`：增加“创建电影语言对照版”入口和本地/云端复制流程。
+- `components/canvas-agent-sidebar.tsx`：续批显式传递未覆盖节拍，并保持阶段自动推进与停止恢复。
+- `app/ai/agent-provider.ts`：为镜头阶段加载公共摄影手册、启用严格 JSON Schema 并提高结构化输出预算。
+- `app/ai/agent.ts`：兼容合法操作缺少展示文案、归一化可选导演字段和时间轴边界，并提供具体镜头校验错误。
+- `shot-common-tools.md`：增加公共构图、景别、角度、运镜、转场和组合规则，排除 J-cut 与 L-cut。
+- `comic-storyboard-tools.md`、`manga-shot-plan-tools.md`、`manga-continuity-tools.md`：同步漫剧专项摄影选择、镜头完整字段和精简连续性检查边界。
+- `tests/agent-provider.test.mjs`、`tests/agent.test.mjs`、`tests/manga-director.test.mjs`、`tests/rendered-html.test.mjs`、`tests/workflow-projects.test.mjs`、`tests/cloud-persistence.test.mjs`：覆盖分阶段手册、严格响应、确定性时间轴、节拍补齐重排、对照复制和云端隔离。
+- `docs/canvas.md`：说明公共摄影语言、对照项目和不设固定镜头数的确定性续批规则。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚点：当前工作区包含多轮未提交改动；提交前只能按上述文件反向应用本轮公共摄影、对照复制和确定性续批补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。

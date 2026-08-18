@@ -10,9 +10,9 @@ import {
 test("configures only models with selectable resolutions for media modes", () => {
   assert.equal(MODEL_CONFIGS.text.length, 5);
   assert.equal(MODEL_CONFIGS.image.length, 4);
-  assert.equal(MODEL_CONFIGS.video.length, 2);
-  assert.equal(ALL_MODELS.length, 11);
-  assert.equal(new Set(ALL_MODELS.map((model) => model.value)).size, 11);
+  assert.equal(MODEL_CONFIGS.video.length, 3);
+  assert.equal(ALL_MODELS.length, 12);
+  assert.equal(new Set(ALL_MODELS.map((model) => model.value)).size, 12);
   assert.ok(
     [...MODEL_CONFIGS.image, ...MODEL_CONFIGS.video].every(
       (model) => model.resolutions.length >= 2,
@@ -24,8 +24,14 @@ test("uses the requested default model for every mode", () => {
   assert.deepEqual(DEFAULT_MODEL_BY_MODE, {
     text: "gpt-5.6-sol",
     image: "gemini-3-pro-image-preview",
-    video: "doubao-seedance-1-5-pro-251215",
+    video: "seedance-2.0",
   });
+});
+
+test("uses 16:9 as the preferred ratio for every image model", () => {
+  assert.ok(
+    MODEL_CONFIGS.image.every((model) => model.aspectRatios[0] === "16:9"),
+  );
 });
 
 test("keeps media capabilities scoped to the selected model", () => {
@@ -43,13 +49,14 @@ test("keeps media capabilities scoped to the selected model", () => {
     ["0.5K", "1K", "2K", "4K"],
   );
   assert.deepEqual(
-    getModelConfig("video", "doubao-seedance-1-5-pro-251215")?.resolutions,
-    ["480p", "720p", "1080p"],
+    getModelConfig("video", "seedance-2.0")?.resolutions,
+    ["480p", "720p", "1080p", "4k"],
   );
   assert.equal(
-    getModelConfig("video", "viduq3")?.defaultResolution,
-    "720p",
+    getModelConfig("video", "seedance-2.0-fast")?.maxReferenceImages,
+    9,
   );
+  assert.equal(getModelConfig("video", "seedance-2.5")?.maxReferenceImages, 30);
   assert.equal(getModelConfig("image", "qwen-image"), undefined);
   assert.equal(getModelConfig("video", "sora-2"), undefined);
   assert.equal(getModelConfig("video", "grok-video-3"), undefined);

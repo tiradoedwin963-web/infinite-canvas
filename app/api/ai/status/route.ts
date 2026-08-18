@@ -1,6 +1,9 @@
 import { createLingkeClient, LingkeRequestError } from "@/app/ai/provider";
+import {
+  createTrxVideoClient,
+  TRX_TASK_PREFIX,
+} from "@/app/ai/trx-video-provider";
 import { requireSessionWhenCloud } from "@/app/server/auth";
-import { persistTaskResults } from "@/app/server/result-ingest";
 
 function getClient() {
   const baseUrl = process.env.LINGKE_BASE_URL;
@@ -9,6 +12,15 @@ function getClient() {
     throw new LingkeRequestError("服务端尚未配置 LingkeAI。", 503);
   }
   return createLingkeClient({ baseUrl, apiKey });
+}
+
+function getVideoClient() {
+  const baseUrl = process.env.TRX_VIDEO_BASE_URL;
+  const apiKey = process.env.TRX_VIDEO_API_KEY;
+  if (!baseUrl || !apiKey) {
+    throw new LingkeRequestError("服务端尚未配置视频平台。", 503);
+  }
+  return createTrxVideoClient({ baseUrl, apiKey });
 }
 
 export async function GET(request: Request) {
@@ -20,13 +32,16 @@ export async function GET(request: Request) {
     if (!taskId || (mode !== "image" && mode !== "video")) {
       throw new LingkeRequestError("任务查询参数无效。", 400);
     }
-    const status = await getClient().status(taskId, mode);
+    const status = mode === "video" && taskId.startsWith(TRX_TASK_PREFIX)
+      ? await getVideoClient().status(taskId)
+      : await getClient().status(taskId, mode);
     const projectId = url.searchParams.get("projectId")?.trim() ?? "";
     const resultId = url.searchParams.get("resultId")?.trim() ?? "";
     if (user && status.state === "success" && status.results.length) {
       if (!projectId || !resultId) {
         throw new LingkeRequestError("云端任务缺少项目参数。", 400);
       }
+      const { persistTaskResults } = await import("@/app/server/result-ingest");
       status.results = await persistTaskResults({
         user,
         projectId,

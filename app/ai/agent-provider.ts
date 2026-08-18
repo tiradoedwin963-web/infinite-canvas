@@ -7,6 +7,8 @@ import {
   type AgentRequest,
   type AgentResponse,
   type AgentSurfaceSnapshot,
+  type AgentStoryboardMode,
+  type AgentMangaPlanningStage,
 } from "./agent.ts";
 import {
   extractProgressSummary,
@@ -127,8 +129,14 @@ function systemPrompt(
   toolManual: string,
   workflowToolManual: string,
   storyAssetToolManual: string,
+  commonShotManual: string,
+  comicStoryboardManual: string,
+  mangaDirectorCoreManual: string,
+  mangaStageManuals: Partial<Record<AgentMangaPlanningStage, string>>,
   phase: AgentRequest["phase"],
   canvasMode: AgentRequest["canvas"]["mode"],
+  storyboardMode?: AgentStoryboardMode,
+  mangaPlanningStage?: AgentMangaPlanningStage,
 ) {
   const models = JSON.stringify(
     ALL_MODELS.map((model) => ({ mode: model.mode, model: model.value })),
@@ -154,6 +162,29 @@ function systemPrompt(
       maxReferenceImages: model.maxReferenceImages,
     })),
   );
+  const stageManual = mangaPlanningStage
+    ? `
+
+当前导演阶段规则（只执行这一阶段）：
+${mangaStageManuals[mangaPlanningStage]?.trim() ?? ""}`
+    : "";
+  const cinematographyManual = mangaPlanningStage === "shot-plans"
+    ? `
+
+公共电影摄影语言手册（只用于当前镜头规划）：
+${commonShotManual.trim()}`
+    : "";
+  const storyboardManual = canvasMode === "workflow" && storyboardMode === "comic"
+    ? `
+
+漫剧导演核心工作流：
+${mangaDirectorCoreManual.trim()}
+
+漫剧分镜专项手册：
+${comicStoryboardManual.trim()}
+${cinematographyManual}
+${stageManual}`
+    : "";
   return `${instructions.trim()}
 
 当前会话阶段：${phase}。
@@ -170,8 +201,125 @@ ${workflowToolManual.trim()}
 
 剧本分析与资产库 Tool 手册：
 ${storyAssetToolManual.trim()}
+${storyboardManual}
 
 视频模型运行时能力表（与手册冲突时以此表为准）：${videoCapabilities}。`;
+}
+
+function selectedStoryboardMode(canvas: AgentSurfaceSnapshot) {
+  if (canvas.mode !== "workflow") return undefined;
+  const analyses = canvas.nodes.filter((node) => node.storyRole === "analysis");
+  if (analyses.some((node) => node.storyboardMode === "comic")) return "comic";
+  return analyses.some((node) => node.storyboardMode === "tvc")
+    ? "tvc"
+    : undefined;
+}
+
+function selectedMangaPlanningStage(canvas: AgentSurfaceSnapshot) {
+  if (canvas.mode !== "workflow") return undefined;
+  return canvas.nodes.find((node) =>
+    node.storyRole === "analysis" &&
+    node.storyboardMode === "comic" &&
+    node.mangaPlanningStage &&
+    node.mangaPlanningStage !== "complete"
+  )?.mangaPlanningStage;
+}
+
+function validateMangaDirectorOperations(
+  request: AgentRequest,
+  response: AgentResponse,
+) {
+  const operations = response.operations.filter((operation) =>
+    operation.type === "create_manga_story_beats" ||
+    operation.type === "create_manga_scene_plans" ||
+    operation.type === "create_manga_shot_batch" ||
+    operation.type === "create_manga_continuity_report"
+  );
+  if (!operations.length) return;
+  if (
+    request.canvas.mode !== "workflow" ||
+    operations.length !== 1 ||
+    response.operations.length !== 1
+  ) {
+    throw new Error("漫剧导演每个阶段只能返回一个工作流操作。");
+  }
+  const operation = operations[0];
+  const analysis = request.canvas.nodes.find((node) =>
+    node.storyRole === "analysis" && node.storyId === operation.storyId
+  );
+  const expected: Record<typeof operation.type, AgentMangaPlanningStage> = {
+    create_manga_story_beats: "story-beats",
+    create_manga_scene_plans: "scene-plans",
+    create_manga_shot_batch: "shot-plans",
+    create_manga_continuity_report: "continuity",
+  };
+  if (
+    analysis?.storyboardMode !== "comic" ||
+    analysis.mangaPlanningStage !== expected[operation.type]
+  ) {
+    throw new Error("漫剧导演操作与当前项目阶段不一致。");
+  }
+}
+
+function validateComicStoryboardOperations(
+  request: AgentRequest,
+  response: AgentResponse,
+) {
+  const operations = response.operations.filter(
+    (operation) => operation.type === "create_story_workflow",
+  );
+  if (!operations.length) return;
+  if (request.canvas.mode !== "workflow") {
+    throw new Error("漫剧分镜只能在工作流画布创建。");
+  }
+  const canvas = request.canvas;
+  const nodes = new Map(canvas.nodes.map((node) => [node.id, node]));
+  operations.forEach((operation) => {
+    const references = operation.shots.flatMap((shot) => shot.referenceNodeIds);
+    const referencedNodes = references.map((nodeId) => nodes.get(nodeId));
+    const storyIds = new Set(referencedNodes.flatMap((node) =>
+      node?.storyId ? [node.storyId] : [],
+    ));
+    if (!operation.shots.every((shot) =>
+      shot.referenceNodeIds.length >= 1 &&
+      shot.referenceNodeIds.length <= 5 &&
+      new Set(shot.referenceNodeIds).size === shot.referenceNodeIds.length
+    )) {
+      throw new Error("漫剧每个分镜必须引用 1 至 5 个不重复的成功资产。");
+    }
+    if (referencedNodes.some((node) =>
+      !node ||
+      node.assetRole !== "result" ||
+      !node.assetRef ||
+      !node.assetAvailable
+    ) || storyIds.size !== 1) {
+      throw new Error("漫剧分镜只能引用同一项目中已经成功的资产结果。");
+    }
+    const storyId = [...storyIds][0]!;
+    const analysis = canvas.nodes.find((node) =>
+      node.storyId === storyId && node.storyRole === "analysis"
+    );
+    if (analysis?.mangaPlanningStage) {
+      throw new Error("新漫剧必须使用分阶段导演操作，不能回退到旧五节点工作流。");
+    }
+    const assets = canvas.nodes.filter((node) =>
+      node.storyId === storyId && node.assetRole === "result" && node.assetRef
+    );
+    const locked = canvas.nodes.some((node) =>
+      node.storyId === storyId && node.storyRole === "shot"
+    );
+    if (
+      analysis?.storyboardMode !== "comic" ||
+      analysis.planningStage !== "complete" ||
+      analysis.planningStatus !== "complete" ||
+      !analysis.foundationApprovedAt ||
+      !assets.length ||
+      assets.some((node) => !node.assetAvailable)
+    ) {
+      throw new Error("资产库尚未全部生成并选择漫剧能力，不能创建分镜。");
+    }
+    if (locked) throw new Error("当前项目已经创建过分镜。");
+  });
 }
 
 function extractText(payload: unknown) {
@@ -286,6 +434,91 @@ function upstreamFailure(response: Response, payload: unknown) {
 
 const FALLBACK_PROGRESS_SUMMARY = "已完成当前阶段处理，正在校验可应用结果。";
 
+const MANGA_SHOT_STRING_FIELDS = [
+  "shot_id", "scene_id", "beat_id", "duration_reason", "narrative_purpose",
+  "emotional_goal", "shot_size", "lens", "perspective", "camera_angle",
+  "camera_movement", "composition", "blocking", "character_position",
+  "character_movement", "eyeline", "action", "dialogue", "voiceover",
+  "sound_effect", "music_cue", "lighting", "color_tone", "texture",
+  "start_frame", "end_frame", "transition_in", "transition_out",
+  "image_prompt", "negative_prompt", "previous_shot_id", "next_shot_id",
+  "continuity_notes",
+] as const;
+
+const MANGA_SHOT_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "manga_shot_batch",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["progress_summary", "message", "workflow_state", "operations"],
+      properties: {
+        progress_summary: { type: "string" },
+        message: { type: "string" },
+        workflow_state: { type: "string", enum: ["active"] },
+        operations: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["type", "story_id", "chunk_index", "is_final", "shots"],
+            properties: {
+              type: { type: "string", enum: ["create_manga_shot_batch"] },
+              story_id: { type: "string" },
+              chunk_index: { type: "integer" },
+              is_final: { type: "boolean" },
+              shots: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    ...MANGA_SHOT_STRING_FIELDS,
+                    "sequence", "duration", "character_ids", "prop_ids", "timeline",
+                    "reference_node_ids", "continuity_warnings",
+                  ],
+                  properties: {
+                    ...Object.fromEntries(
+                      MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
+                    ),
+                    sequence: { type: "integer" },
+                    duration: { type: "integer" },
+                    character_ids: { type: "array", items: { type: "string" } },
+                    prop_ids: { type: "array", items: { type: "string" } },
+                    reference_node_ids: { type: "array", items: { type: "string" } },
+                    continuity_warnings: { type: "array", items: { type: "string" } },
+                    timeline: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: [
+                          "start_second", "end_second", "visual_action",
+                          "performance", "camera", "audio",
+                        ],
+                        properties: {
+                          start_second: { type: "integer" },
+                          end_second: { type: "integer" },
+                          visual_action: { type: "string" },
+                          performance: { type: "string" },
+                          camera: { type: "string" },
+                          audio: { type: "string" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export function createCanvasAgentClient(
   config: {
     baseUrl: string;
@@ -294,6 +527,10 @@ export function createCanvasAgentClient(
     toolManual: string;
     workflowToolManual?: string;
     storyAssetToolManual?: string;
+    commonShotManual?: string;
+    comicStoryboardManual?: string;
+    mangaDirectorCoreManual?: string;
+    mangaStageManuals?: Partial<Record<AgentMangaPlanningStage, string>>;
   },
   fetcher: Fetcher = fetch,
 ) {
@@ -323,8 +560,14 @@ export function createCanvasAgentClient(
             config.toolManual,
             config.workflowToolManual ?? "",
             config.storyAssetToolManual ?? "",
+            config.commonShotManual ?? "",
+            config.comicStoryboardManual ?? "",
+            config.mangaDirectorCoreManual ?? "",
+            config.mangaStageManuals ?? {},
             request.phase,
             request.canvas.mode,
+            selectedStoryboardMode(request.canvas),
+            selectedMangaPlanningStage(request.canvas),
           ),
         },
         ...request.messages,
@@ -358,6 +601,12 @@ export function createCanvasAgentClient(
             model: AGENT_MODEL,
             messages,
             temperature: 0.2,
+            ...(selectedMangaPlanningStage(request.canvas) === "shot-plans"
+              ? {
+                  max_tokens: 16_384,
+                  response_format: MANGA_SHOT_RESPONSE_FORMAT,
+                }
+              : {}),
             stream: true,
           }),
           signal: options.signal,
@@ -417,6 +666,8 @@ export function createCanvasAgentClient(
         ) {
           throw new Error("完整剧本必须先进行剧本分析和资产规划。");
         }
+        validateMangaDirectorOperations(request, parsed);
+        validateComicStoryboardOperations(request, parsed);
         return normalizeAgentImageResponse({ ...parsed, progressSummary });
       } catch (error) {
         throw new CanvasAgentError(

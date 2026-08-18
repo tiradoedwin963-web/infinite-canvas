@@ -37,20 +37,49 @@ test("server-renders the cloud session gate before exposing the canvas", async (
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
 });
 
-test("loads the creation, workflow, and asset tool manuals through the agent route", async () => {
-  const [route, agentInstructions, manual, workflowManual, assetManual] = await Promise.all([
+test("loads the creation, workflow, asset, and staged manga manuals through the agent route", async () => {
+  const [
+    route,
+    agentInstructions,
+    manual,
+    workflowManual,
+    assetManual,
+    commonManual,
+    comicManual,
+    directorManual,
+    beatsManual,
+    sceneManual,
+    shotManual,
+    continuityManual,
+  ] = await Promise.all([
     readFile(new URL("../app/api/ai/agent/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../agent.md", import.meta.url), "utf8"),
     readFile(new URL("../tools.md", import.meta.url), "utf8"),
     readFile(new URL("../workflow-tools.md", import.meta.url), "utf8"),
     readFile(new URL("../story-asset-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../shot-common-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../comic-storyboard-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../manga-director-core.md", import.meta.url), "utf8"),
+    readFile(new URL("../manga-story-beats-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../manga-scene-plan-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../manga-shot-plan-tools.md", import.meta.url), "utf8"),
+    readFile(new URL("../manga-continuity-tools.md", import.meta.url), "utf8"),
   ]);
   assert.match(route, /tools\.md\?raw/);
   assert.match(route, /workflow-tools\.md\?raw/);
   assert.match(route, /story-asset-tools\.md\?raw/);
+  assert.match(route, /shot-common-tools\.md\?raw/);
+  assert.match(route, /comic-storyboard-tools\.md\?raw/);
+  assert.match(route, /manga-director-core\.md\?raw/);
+  assert.match(route, /manga-story-beats-tools\.md\?raw/);
+  assert.match(route, /manga-scene-plan-tools\.md\?raw/);
+  assert.match(route, /manga-shot-plan-tools\.md\?raw/);
+  assert.match(route, /manga-continuity-tools\.md\?raw/);
   assert.match(route, /toolManual/);
   assert.match(route, /workflowToolManual/);
   assert.match(route, /storyAssetToolManual/);
+  assert.match(route, /commonShotManual/);
+  assert.match(route, /comicStoryboardManual/);
   assert.match(agentInstructions, /progress_summary/);
   assert.match(agentInstructions, /不得输出逐步推理、隐含思维链/);
   assert.match(manual, /gemini-3-pro-image-preview/);
@@ -64,6 +93,23 @@ test("loads the creation, workflow, and asset tool manuals through the agent rou
   assert.match(assetManual, /visual_style/);
   assert.match(assetManual, /foundation_role/);
   assert.match(assetManual, /图1为主角结果，图2为核心配角结果/);
+  assert.match(commonManual, /点构图/);
+  assert.match(commonManual, /大远景、定场镜头/);
+  assert.match(commonManual, /俯拍用于弱小/);
+  assert.match(commonManual, /跟拍、环绕/);
+  assert.match(commonManual, /相似形状\/色彩、动作方向、眼神目标、反差、遮挡、黑场/);
+  assert.match(commonManual, /1 种主要构图、1 个核心景别/);
+  assert.equal(commonManual.includes(["J", "cut"].join("-")), false);
+  assert.equal(commonManual.includes(["L", "cut"].join("-")), false);
+  assert.match(commonManual, /属于 TVC 专项，不得写入公共规则/);
+  assert.match(comicManual, /AI 动画短剧/);
+  assert.match(comicManual, /10 至 15 秒/);
+  assert.match(directorManual, /create_manga_story_beats/);
+  assert.match(beatsManual, /create_manga_story_beats/);
+  assert.match(sceneManual, /create_manga_scene_plans/);
+  assert.match(shotManual, /create_manga_shot_batch/);
+  assert.match(shotManual, /每批 1 至 2 镜/);
+  assert.match(continuityManual, /create_manga_continuity_report/);
   assert.match(agentInstructions, /角色 IP 风险/);
   assert.match(agentInstructions, /不得为“是否改成原创近似方案”再次询问用户/);
   assert.match(agentInstructions, /必须同时去掉商业版本名称和该公版角色名称/);
@@ -89,10 +135,18 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(provider, /stream: true/);
   assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
   assert.match(stream, /extractProgressSummary/);
+  assert.match(sidebar, /这是批次编号，不是镜头编号/);
+  assert.match(sidebar, /当前尚未覆盖的剧情节拍为/);
+  assert.match(sidebar, /不得用已覆盖节拍替代/);
   assert.match(stream, /item\.event === "result"/);
   assert.match(sidebar, /readAgentSseResponse/);
   assert.match(sidebar, /处理摘要：/);
   assert.match(sidebar, /确认基础角色并继续/);
+  assert.match(sidebar, /开始规划漫剧分镜/);
+  assert.match(sidebar, /TVC · 待开发/);
+  assert.match(sidebar, /onSelectStoryboardMode/);
+  assert.match(sidebar, /chunks\.push\(\.\.\.nextChunks\)/);
+  assert.doesNotMatch(sidebar, /单批只能返回一个短剧工作流方案/);
   assert.match(sidebar, /awaiting-foundation-approval/);
   assert.match(sidebar, /已等待/);
   assert.match(sidebar, /runAgentRequestWithTimeout/);
@@ -369,6 +423,9 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflow, /createWorkflowProject/);
   assert.match(workflow, /renameWorkflowProject/);
   assert.match(workflow, /removeWorkflowProject/);
+  assert.match(workflow, /aria-label="创建电影语言对照版"/);
+  assert.match(workflow, /createMangaCinematographyComparisonGraph/);
+  assert.match(workflow, /cloneCloudStoryboardProject/);
   assert.match(workflow, /describeWorkflowRun/);
   assert.match(workflow, /advanceWorkflowBatch/);
   assert.match(workflow, /提交状态未知/);
@@ -441,4 +498,36 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(styles, /\.workflow-node \{[\s\S]*?content-visibility: auto;/);
   assert.match(viteConfig, /port: 3001/);
   assert.match(viteConfig, /strictPort: true/);
+});
+
+test("loads the COS signer only after cloud video reference validation", async () => {
+  const references = await readFile(
+    new URL("../app/server/video-references.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(references, /import \{ createReadUrl \} from/);
+  assert.match(
+    references,
+    /const \{ createReadUrl \} = await import\("\.\/object-storage\.ts"\)/,
+  );
+  assert.ok(
+    references.indexOf("if (!user ||") <
+      references.indexOf("await import(\"./object-storage.ts\")"),
+  );
+});
+
+test("loads cloud result ingestion only for successful authenticated tasks", async () => {
+  const statusRoute = await readFile(
+    new URL("../app/api/ai/status/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(statusRoute, /import \{ persistTaskResults \} from/);
+  assert.match(
+    statusRoute,
+    /if \(user && status\.state === "success" && status\.results\.length\)/,
+  );
+  assert.ok(
+    statusRoute.indexOf("if (user && status.state") <
+      statusRoute.indexOf('await import("@/app/server/result-ingest")'),
+  );
 });

@@ -29,7 +29,7 @@ test("keeps legal image parameters and fills missing defaults", () => {
   assert.equal(legal.adjustments, undefined);
 
   const defaults = normalizeAgentImageOperation(imageOperation());
-  assert.equal(defaults.aspectRatio, "1:1");
+  assert.equal(defaults.aspectRatio, "16:9");
   assert.equal(defaults.resolution, "1K");
   assert.equal(defaults.adjustments, undefined);
 });
@@ -57,7 +57,7 @@ test("uses the nearest lower resolution on a tie and defaults invalid values", (
   const invalid = normalizeAgentImageOperation(
     imageOperation({ aspectRatio: "portrait", resolution: "large" }),
   );
-  assert.equal(invalid.aspectRatio, "1:1");
+  assert.equal(invalid.aspectRatio, "16:9");
   assert.equal(invalid.resolution, "1K");
   assert.equal(invalid.adjustments.length, 2);
 });
@@ -93,13 +93,42 @@ test("normalizes short-drama defaults and unsupported generation parameters", ()
     }],
   });
   assert.equal(normalized.imageModel, "gemini-3-pro-image-preview");
-  assert.equal(normalized.videoModel, "doubao-seedance-1-5-pro-251215");
-  assert.equal(normalized.aspectRatio, "9:16");
+  assert.equal(normalized.videoModel, "seedance-2.0");
+  assert.equal(normalized.aspectRatio, "3:4");
   assert.equal(normalized.imageResolution, "2K");
   assert.equal(normalized.videoResolution, "720p");
-  assert.equal(normalized.shots[0].duration, "5");
+  assert.equal(normalized.shots[0].duration, "7");
   assert.equal(normalized.adjustments.length, 3);
+
+  const defaults = normalizeAgentStoryWorkflowOperation({
+    ...storyOperationWithoutRatio(),
+  });
+  assert.equal(defaults.aspectRatio, "16:9");
 });
+
+function storyOperationWithoutRatio() {
+  return {
+    type: "create_story_workflow",
+    ref: "story-default",
+    title: "默认比例",
+    globalContext: "统一角色和场景",
+    imageModel: "gemini-3-pro-image-preview",
+    videoModel: "seedance-2.0",
+    imageResolution: "1K",
+    videoResolution: "720p",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [{
+      ref: "shot-01",
+      title: "开场",
+      script: "角色入场。",
+      imagePrompt: "角色入场静态关键帧",
+      videoPrompt: "角色走入画面",
+      duration: "5",
+      referenceNodeIds: [],
+    }],
+  };
+}
 
 test("normalizes story analysis and asset image defaults", () => {
   const analysis = normalizeAgentStoryAnalysisOperation({
@@ -118,6 +147,12 @@ test("normalizes story analysis and asset image defaults", () => {
   });
   assert.equal(analysis.imageModel, "gpt-image-2");
   assert.equal(analysis.projectAspectRatio, "3:4");
+
+  const analysisDefaults = normalizeAgentStoryAnalysisOperation({
+    ...analysis,
+    projectAspectRatio: "",
+  });
+  assert.equal(analysisDefaults.projectAspectRatio, "16:9");
 
   const batch = normalizeAgentStoryAssetBatchOperation({
     type: "create_story_asset_batch",
@@ -174,7 +209,7 @@ test("keeps the workflow manual aligned with the default image and video models"
   assert.match(manual, /create_story_workflow/);
   assert.match(manual, /run_story_workflow/);
   assert.match(manual, /gemini-3-pro-image-preview/);
-  assert.match(manual, /doubao-seedance-1-5-pro-251215/);
+  assert.match(manual, /seedance-2\.0/);
   assert.match(manual, /每批最多 8 个分镜/);
   assert.match(manual, /同一响应/);
 });

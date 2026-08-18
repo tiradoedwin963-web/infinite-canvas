@@ -71,14 +71,21 @@ test("same-origin checks honor the public origin forwarded by the trusted proxy"
 });
 
 test("cloud routes enforce ownership, revisions, private cookies and isolated Postgres", async () => {
-  const [projectRoute, assetRoute, auth, compose] = await Promise.all([
+  const [projectRoute, cloneRoute, assetRoute, auth, compose] = await Promise.all([
     readFile(new URL("../app/api/workflow/projects/[id]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/workflow/projects/[id]/clone-storyboard/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/workflow/assets/[id]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../deploy/canvas/compose.production.yml", import.meta.url), "utf8"),
   ]);
   assert.match(projectRoute, /owner_id = \$\{user\.id\}/);
   assert.match(projectRoute, /revision = \$\{Number\(input\.revision\)\}/);
+  assert.match(cloneRoute, /owner_id = \$\{user\.id\}/);
+  assert.match(cloneRoute, /copyObject\(asset\.object_key, objectKey\)/);
+  assert.match(cloneRoute, /workflowThumbnailObjectKey/);
+  assert.match(cloneRoute, /transaction\.json\(graph\)/);
+  assert.match(cloneRoute, /batch\)\s+VALUES[\s\S]*null/);
+  assert.match(cloneRoute, /Promise\.allSettled\(copiedKeys\.map/);
   assert.match(assetRoute, /owner_id = \$\{user\.id\}/);
   assert.match(auth, /HttpOnly; Secure; SameSite=Lax/);
   assert.match(compose, /postgres:17-alpine/);

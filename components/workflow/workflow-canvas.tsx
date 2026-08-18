@@ -2,6 +2,7 @@
 
 import {
   Bot,
+  Clapperboard,
   Download,
   FileText,
   Image as ImageIcon,
@@ -22,6 +23,7 @@ import {
   type AgentDangerousOperation,
   type AgentInspectedImage,
   type AgentOperation,
+  type AgentStoryboardMode,
 } from "@/app/ai/agent";
 import {
   MODEL_CONFIGS,
@@ -72,6 +74,7 @@ import {
   workflowEdgeKinds,
   workflowEdgePath,
   workflowInputPorts,
+  workflowImageMimeType,
   workflowNodesIntersecting,
   workflowPendingInputPoint,
   workflowSelectionBounds,
@@ -101,6 +104,12 @@ import {
   markStoryAssetPlanning,
   syncStoryFoundationStatuses,
 } from "@/app/workflow/story-assets";
+import { setStoryStoryboardMode } from "@/app/workflow/storyboard";
+import {
+  acknowledgeMangaContinuity,
+  createMangaCinematographyComparisonGraph,
+  markMangaPlanning,
+} from "@/app/workflow/manga-director";
 import {
   createWorkflowGraphPersistence,
   createWorkflowRafBatcher,
@@ -113,7 +122,7 @@ import {
   ensureWorkflowProjectRegistry,
   migrateActiveWorkflowAssetLayout,
   parseWorkflowViewport,
-  projectSourceAssetIds,
+  projectAssetIds,
   removeWorkflowProject,
   renameWorkflowProject,
   workflowProjectBatchKey,
@@ -126,6 +135,7 @@ import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 import { useCloudSession } from "@/components/cloud-session-gate";
 import {
   activateCloudProject,
+  cloneCloudStoryboardProject,
   cloudAssetUrl,
   createCloudProject,
   deleteCloudAsset,
@@ -196,7 +206,7 @@ type ConnectionState = {
   targetId?: string;
 };
 type ProjectEditorState = {
-  mode: "create" | "rename";
+  mode: "create" | "rename" | "clone-storyboard";
   value: string;
   error: string;
 };
@@ -264,7 +274,13 @@ async function workflowImageToFile(
     blob = await response.blob();
   }
   if (!blob) throw new Error("上游图片素材已失效，请重新上传。");
-  if (!blob.type.startsWith("image/")) throw new Error("上游节点不是可用图片。");
+  const mimeType = workflowImageMimeType(
+    blob.type,
+    node.assetMimeType,
+    node.type === "result" ? node.resultUrl : undefined,
+  );
+  if (!mimeType) throw new Error("上游节点不是可用图片。");
+  if (blob.type !== mimeType) blob = new Blob([blob], { type: mimeType });
   return new File([blob], name, { type: blob.type });
 }
 
@@ -290,6 +306,7 @@ export function WorkflowCanvas() {
   const [batchRun, setBatchRun] = useState<WorkflowBatchRun | null>(null);
   const [projects, setProjects] = useState<WorkflowProjectRegistry | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [projectCloneBusy, setProjectCloneBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
@@ -1372,7 +1389,9 @@ export function WorkflowCanvas() {
       model,
       aspectRatio: config.aspectRatios[0] ?? "",
       resolution: config.defaultResolution ?? config.resolutions[0] ?? "",
-      duration: config.durations[0] ?? "",
+      duration: config.durations.includes(node.duration)
+        ? node.duration
+        : config.durations[0] ?? "",
       error: "",
     }));
   }
@@ -1408,7 +1427,7 @@ export function WorkflowCanvas() {
       )
     ) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
-        error: "上游分镜图尚未生成完成。",
+        error: "上游参考图片尚未生成完成。",
       }));
       return;
     }
@@ -1426,27 +1445,44 @@ export function WorkflowCanvas() {
     setRunningSchedulers((current) => new Set(current).add(scheduler.id));
     let createdResultIds: string[] = [];
     try {
-      const files = await Promise.all(inputs.images.map((node) =>
-        workflowImageToFile(
-          node,
-          remote
-            ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
-            : readAsset,
-        )
-      ));
-      if (files.length > config.maxReferenceImages) {
+      if (inputs.images.length > config.maxReferenceImages) {
         throw new Error(`参考图片超过当前模型的 ${config.maxReferenceImages} 张上限。`);
       }
-      if (files.some((file) => file.size > MAX_IMAGE_BYTES)) throw new Error("单张参考图片不能超过 10MB。");
-      if (files.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGE_TOTAL_BYTES) {
+      const images: GenerateReferenceImage[] = scheduler.outputKind === "video"
+        ? inputs.images.map((node) => {
+            if (!node.assetId) {
+              throw new Error("视频参考图尚未同步到云端资产库。");
+            }
+            return {
+              name: node.assetName || node.label || "reference.png",
+              mimeType: node.assetMimeType || "image/png",
+              assetId: node.assetId,
+            };
+          })
+        : await Promise.all((await Promise.all(inputs.images.map((node) =>
+            workflowImageToFile(
+              node,
+              remote
+                ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
+                : readAsset,
+            )
+          ))).map(async (file) => {
+            if (file.size > MAX_IMAGE_BYTES) {
+              throw new Error("单张参考图片不能超过 10MB。");
+            }
+            return {
+              name: file.name,
+              mimeType: file.type,
+              size: file.size,
+              dataUrl: await fileToDataUrl(file),
+            } satisfies GenerateReferenceImage;
+          }));
+      if (
+        scheduler.outputKind !== "video" &&
+        images.reduce((sum, image) => sum + (image.size ?? 0), 0) > MAX_IMAGE_TOTAL_BYTES
+      ) {
         throw new Error("参考图片合计不能超过 30MB。");
       }
-      const images = await Promise.all(files.map(async (file) => ({
-        name: file.name,
-        mimeType: file.type,
-        size: file.size,
-        dataUrl: await fileToDataUrl(file),
-      } satisfies GenerateReferenceImage)));
       const created = createWorkflowRun(graphRef.current, scheduler.id, Date.now());
       if (!created.resultIds.length) return;
       createdResultIds = created.resultIds;
@@ -1547,7 +1583,10 @@ export function WorkflowCanvas() {
     storyId: string,
     status: "stopped" | "failed",
   ) {
-    commitGraph((current) => markStoryAssetPlanning(current, storyId, status));
+    commitGraph((current) => {
+      const assetUpdated = markStoryAssetPlanning(current, storyId, status);
+      return markMangaPlanning(assetUpdated, storyId, status);
+    });
   }
 
   function approveFoundation(storyId: string) {
@@ -1558,6 +1597,14 @@ export function WorkflowCanvas() {
       return next;
     });
     return message;
+  }
+
+  function selectStoryboardMode(storyId: string, mode: AgentStoryboardMode) {
+    commitGraph((current) => setStoryStoryboardMode(current, storyId, mode));
+  }
+
+  function approveContinuity(storyId: string) {
+    commitGraph((current) => acknowledgeMangaContinuity(current, storyId));
   }
 
   async function readAgentImages(
@@ -1631,9 +1678,11 @@ export function WorkflowCanvas() {
         if (
           node.storyRole === "analysis" &&
           node.storyId &&
-          node.planningStatus === "planning"
+          (node.planningStatus === "planning" ||
+            node.mangaPlanningStatus === "planning")
         ) {
           graphToSave = markStoryAssetPlanning(graphToSave, node.storyId, "stopped");
+          graphToSave = markMangaPlanning(graphToSave, node.storyId, "stopped");
         }
       });
     }
@@ -1705,9 +1754,71 @@ export function WorkflowCanvas() {
     });
   }
 
+  function cloneStoryboardProject() {
+    if (!projects) return;
+    if (agentBusy || runningSchedulersRef.current.size) {
+      window.alert("请等待当前 Agent 或生成任务结束后再创建对照版。");
+      return;
+    }
+    if (remote && cloudSyncState !== "idle") {
+      window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+      return;
+    }
+    try {
+      createMangaCinematographyComparisonGraph(graphRef.current);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "当前项目不能创建电影语言对照版。");
+      return;
+    }
+    const active = projects.projects.find((project) => project.id === projects.activeProjectId);
+    if (!active) return;
+    setProjectEditor({
+      mode: "clone-storyboard",
+      value: `${active.name}-电影语言版`,
+      error: "",
+    });
+  }
+
   async function saveProjectName() {
     if (!projects || !projectEditor) return;
     try {
+      if (projectEditor.mode === "clone-storyboard") {
+        setProjectCloneBusy(true);
+        try {
+          if (remote) {
+            const cloned = await cloneCloudStoryboardProject(
+              projects.activeProjectId,
+              projectEditor.value,
+            );
+            const registry = await loadCloudProjects();
+            setProjectEditor(null);
+            activeProjectIdRef.current = cloned.id;
+            setProjects(registry);
+            setHydrated(false);
+            await reloadCloudProject(cloned.id);
+            setHydrated(true);
+            return;
+          }
+          persistActiveProject();
+          const clonedGraph = createMangaCinematographyComparisonGraph(graphRef.current);
+          const created = createWorkflowProject(projects, projectEditor.value);
+          window.localStorage.setItem(
+            workflowProjectGraphKey(created.project.id),
+            JSON.stringify(clonedGraph),
+          );
+          window.localStorage.setItem(
+            workflowProjectViewportKey(created.project.id),
+            JSON.stringify({ x: 0, y: 0, scale: 1 }),
+          );
+          window.localStorage.removeItem(workflowProjectBatchKey(created.project.id));
+          window.localStorage.removeItem(workflowProjectConversationKey(created.project.id));
+          setProjectEditor(null);
+          await activateProject(created.registry, created.project.id);
+          return;
+        } finally {
+          setProjectCloneBusy(false);
+        }
+      }
       if (projectEditor.mode === "create") {
         if (remote) {
           const created = await createCloudProject(projectEditor.value);
@@ -1816,14 +1927,14 @@ export function WorkflowCanvas() {
     }
 
     persistActiveProject();
-    const removedAssetIds = projectSourceAssetIds(graphRef.current);
+    const removedAssetIds = projectAssetIds(graphRef.current);
     const remainingProjects = projects.projects.filter((project) => project.id !== active.id);
     const remainingAssetIds = new Set<string>();
     remainingProjects.forEach((project) => {
       const candidate = parseWorkflowGraph(window.localStorage.getItem(
         workflowProjectGraphKey(project.id),
       ));
-      projectSourceAssetIds(candidate).forEach((assetId) => remainingAssetIds.add(assetId));
+      projectAssetIds(candidate).forEach((assetId) => remainingAssetIds.add(assetId));
     });
     removedAssetIds.forEach((assetId) => {
       if (!remainingAssetIds.has(assetId)) void deleteAsset(assetId);
@@ -2086,6 +2197,15 @@ export function WorkflowCanvas() {
               <Download size={15} />
             </button>
           ) : null}
+          <button
+            aria-label="创建电影语言对照版"
+            title="创建电影语言对照版"
+            type="button"
+            disabled={projectCloneBusy}
+            onClick={cloneStoryboardProject}
+          >
+            <Clapperboard size={15} />
+          </button>
           {agentBusy ? <span className="workflow-project-status">Agent 处理中</span> : null}
           {remote && cloudSyncState === "saving" ? (
             <span className="workflow-project-status">正在同步</span>
@@ -2115,7 +2235,13 @@ export function WorkflowCanvas() {
               void saveProjectName();
             }}
           >
-            <h2>{projectEditor.mode === "create" ? "新建项目" : "重命名项目"}</h2>
+            <h2>{
+              projectEditor.mode === "create"
+                ? "新建项目"
+                : projectEditor.mode === "clone-storyboard"
+                  ? "创建电影语言对照版"
+                  : "重命名项目"
+            }</h2>
             <label>
               项目名称
               <input
@@ -2130,7 +2256,9 @@ export function WorkflowCanvas() {
             {projectEditor.error ? <p>{projectEditor.error}</p> : null}
             <div>
               <button type="button" onClick={() => setProjectEditor(null)}>取消</button>
-              <button type="submit">保存</button>
+              <button type="submit" disabled={projectCloneBusy}>
+                {projectCloneBusy ? "正在复制" : "保存"}
+              </button>
             </div>
           </form>
         </div>
@@ -2379,6 +2507,8 @@ export function WorkflowCanvas() {
         getSnapshot={currentAgentSnapshot}
         onPlanningInterrupted={updateAssetPlanningStatus}
         onApproveFoundation={approveFoundation}
+        onSelectStoryboardMode={selectStoryboardMode}
+        onApproveContinuity={approveContinuity}
         onConfirmOperation={confirmAgentOperation}
         onReadImages={readAgentImages}
         describeOperation={describeAgentOperation}

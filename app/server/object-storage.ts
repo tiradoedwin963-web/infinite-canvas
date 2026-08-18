@@ -39,6 +39,18 @@ export async function createUploadUrl(input: {
   } as COS.GetObjectUrlParams & { Headers: Record<string, string> });
 }
 
+export async function createReadUrl(key: string) {
+  const config = storageConfig();
+  return storageClient().getObjectUrl({
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: key,
+    Method: "GET",
+    Sign: true,
+    Expires: 15 * 60,
+  });
+}
+
 export async function inspectObject(key: string) {
   const config = storageConfig();
   return storageClient().headObject({
@@ -64,6 +76,21 @@ export async function deleteObject(key: string) {
     Bucket: config.bucket,
     Region: config.region,
     Key: key,
+  });
+}
+
+function encodedObjectKey(key: string) {
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
+export async function copyObject(sourceKey: string, targetKey: string) {
+  const config = storageConfig();
+  await storageClient().putObjectCopy({
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: targetKey,
+    CopySource: `${config.bucket}.cos.${config.region}.myqcloud.com/${encodedObjectKey(sourceKey)}`,
+    MetadataDirective: "Copy",
   });
 }
 

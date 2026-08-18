@@ -25,6 +25,13 @@ import {
   resetStoryFoundationApproval,
   runnableAssetSchedulers,
 } from "./story-assets.ts";
+import { assertComicStoryboardOperation } from "./storyboard.ts";
+import {
+  createMangaContinuityReport,
+  createMangaScenePlans,
+  createMangaShotBatch,
+  createMangaStoryBeats,
+} from "./manga-director.ts";
 
 export const WORKFLOW_BATCH_STORAGE_KEY = "lingke-workflow-batch-v1";
 
@@ -83,6 +90,7 @@ export function createWorkflowAgentSnapshot(
         ...(node.foundationApprovedAt !== undefined
           ? { foundationApprovedAt: node.foundationApprovedAt }
           : {}),
+        ...(node.storyboardMode ? { storyboardMode: node.storyboardMode } : {}),
         ...(node.storyVisualStyle
           ? { storyVisualStyle: node.storyVisualStyle }
           : {}),
@@ -96,6 +104,24 @@ export function createWorkflowAgentSnapshot(
           ? { projectAspectRatio: node.projectAspectRatio }
           : {}),
         ...(node.storyImageModel ? { storyImageModel: node.storyImageModel } : {}),
+        ...(node.mangaPlanningStage
+          ? { mangaPlanningStage: node.mangaPlanningStage }
+          : {}),
+        ...(node.mangaPlanningStatus
+          ? { mangaPlanningStatus: node.mangaPlanningStatus }
+          : {}),
+        ...(node.mangaPlanningChunkIndex !== undefined
+          ? { mangaPlanningChunkIndex: node.mangaPlanningChunkIndex }
+          : {}),
+        ...(node.continuityApprovedAt !== undefined
+          ? { continuityApprovedAt: node.continuityApprovedAt }
+          : {}),
+        ...(node.storyBeats ? { storyBeats: node.storyBeats } : {}),
+        ...(node.scenePlan ? { scenePlan: node.scenePlan } : {}),
+        ...(node.shotPlan ? { shotPlan: node.shotPlan } : {}),
+        ...(node.continuityReport
+          ? { continuityReport: node.continuityReport }
+          : {}),
         ...(node.type === "source" && node.assetName
           ? { assetName: node.assetName }
           : {}),
@@ -117,25 +143,26 @@ export function createWorkflowAgentSnapshot(
 
 export function mergeStoryWorkflowChunks(
   chunks: AgentCreateStoryWorkflowOperation[],
+  requireFinal = true,
 ): AgentCreateStoryWorkflowOperation {
   if (!chunks.length) throw new Error("Agent 未返回短剧工作流方案。");
   const first = chunks[0];
   const shots = [] as AgentCreateStoryWorkflowOperation["shots"];
   const refs = new Set<string>();
   chunks.forEach((chunk, index) => {
-    if (
-      chunk.chunkIndex !== index ||
-      chunk.ref !== first.ref ||
-      chunk.title !== first.title ||
-      chunk.globalContext !== first.globalContext ||
-      chunk.imageModel !== first.imageModel ||
-      chunk.videoModel !== first.videoModel ||
-      chunk.aspectRatio !== first.aspectRatio ||
-      chunk.imageResolution !== first.imageResolution ||
-      chunk.videoResolution !== first.videoResolution ||
-      chunk.isFinal !== (index === chunks.length - 1)
-    ) {
-      throw new Error("短剧工作流分批内容不连续，未创建节点。");
+    if (chunk.chunkIndex !== index) {
+      throw new Error(
+        `短剧工作流批次编号不连续：期望 ${index}，收到 ${chunk.chunkIndex}。未创建节点。`,
+      );
+    }
+    if (chunk.ref !== first.ref) {
+      throw new Error("短剧工作流批次引用的短剧不一致，未创建节点。");
+    }
+    if (chunk.shots.length < 1 || chunk.shots.length > 8) {
+      throw new Error("短剧工作流单个逻辑批次必须包含 1 至 8 个分镜，未创建节点。");
+    }
+    if (chunk.isFinal && index !== chunks.length - 1) {
+      throw new Error("短剧工作流结束标记出现在非末批，未创建节点。");
     }
     chunk.shots.forEach((shot) => {
       if (refs.has(shot.ref)) throw new Error(`短剧分镜 ${shot.ref} 重复。`);
@@ -143,11 +170,13 @@ export function mergeStoryWorkflowChunks(
       shots.push(shot);
     });
   });
-  if (!chunks.at(-1)?.isFinal) throw new Error("短剧工作流方案尚未完成。");
+  if (requireFinal && !chunks.at(-1)?.isFinal) {
+    throw new Error("短剧工作流方案尚未完成。");
+  }
   return {
     ...first,
     chunkIndex: 0,
-    isFinal: true,
+    isFinal: Boolean(chunks.at(-1)?.isFinal),
     shots,
     adjustments: [...new Set(chunks.flatMap((chunk) => chunk.adjustments ?? []))],
   };
@@ -178,11 +207,37 @@ export function applyWorkflowAgentOperations(
       );
       return;
     }
+    if (operation.type === "create_manga_story_beats") {
+      next = createMangaStoryBeats(next, operation);
+      messages.push(`已创建 ${operation.beats.length} 个剧情与情绪节拍。`);
+      return;
+    }
+    if (operation.type === "create_manga_scene_plans") {
+      next = createMangaScenePlans(next, operation);
+      messages.push(`已创建 ${operation.plans.length} 个场面调度方案。`);
+      return;
+    }
+    if (operation.type === "create_manga_shot_batch") {
+      next = createMangaShotBatch(next, operation);
+      messages.push(`已创建漫剧镜头第 ${operation.chunkIndex + 1} 批，共 ${operation.shots.length} 镜。`);
+      return;
+    }
+    if (operation.type === "create_manga_continuity_report") {
+      next = createMangaContinuityReport(next, operation);
+      const warnings = operation.report.issues.filter((issue) => issue.severity === "warning").length;
+      messages.push(
+        warnings
+          ? `已完成连续性检查并创建视频工作流，仍有 ${warnings} 个警告等待确认。`
+          : "连续性检查通过，已创建秒级视频工作流。",
+      );
+      return;
+    }
     if (operation.type !== "create_story_workflow") {
       messages.push("当前工作流画布不支持此普通操作。");
       return;
     }
-    const created = createStoryWorkflow(next, operation);
+    const assetStoryId = assertComicStoryboardOperation(next, operation);
+    const created = createStoryWorkflow(next, operation, undefined, assetStoryId);
     next = created.graph;
     messages.push(
       `已创建短剧“${operation.title}”：${operation.shots.length} 个分镜、${operation.shots.length * 5 + 1} 个节点。短剧 ID：${created.storyId}。`,
@@ -197,6 +252,17 @@ export function createWorkflowBatchRun(
   operation: Extract<AgentDangerousOperation, { type: "run_story_workflow" }>,
   idFactory = () => crypto.randomUUID(),
 ): WorkflowBatchRun {
+  const directorAnalysis = graph.nodes.find((node) =>
+    node.storyId === operation.storyId && node.storyRole === "analysis" &&
+    Boolean(node.mangaPlanningStage)
+  );
+  if (
+    directorAnalysis &&
+    (directorAnalysis.mangaPlanningStatus !== "complete" ||
+      !directorAnalysis.continuityApprovedAt)
+  ) {
+    throw new Error("连续性警告尚未确认，不能提交视频生成。");
+  }
   const selected = new Set(operation.shotRefs);
   const storySchedulers = graph.nodes.filter(
     (node): node is WorkflowSchedulerNode =>
@@ -362,6 +428,17 @@ export function describeWorkflowRun(
   graph: WorkflowGraph,
   operation: Extract<AgentDangerousOperation, { type: "run_story_workflow" }>,
 ) {
+  const directorAnalysis = graph.nodes.find((node) =>
+    node.storyId === operation.storyId && node.storyRole === "analysis" &&
+    Boolean(node.mangaPlanningStage)
+  );
+  if (
+    directorAnalysis &&
+    (directorAnalysis.mangaPlanningStatus !== "complete" ||
+      !directorAnalysis.continuityApprovedAt)
+  ) {
+    throw new Error("连续性警告尚未确认，不能提交视频生成。");
+  }
   const selected = new Set(operation.shotRefs);
   const schedulers = graph.nodes.filter(
     (node): node is WorkflowSchedulerNode =>
@@ -371,6 +448,9 @@ export function describeWorkflowRun(
   );
   const images = schedulers.filter((node) => node.outputKind === "image").length;
   const videos = schedulers.filter((node) => node.outputKind === "video").length;
+  if (!images) {
+    return `批量生成 ${videos} 个视频片段；依赖就绪的镜头将同层并行，可能产生 ${videos} 笔模型费用`;
+  }
   return `批量生成 ${images} 个分镜图片和 ${videos} 个视频片段；依赖就绪的同层任务将全部并行，可能产生 ${images + videos} 笔模型费用`;
 }
 

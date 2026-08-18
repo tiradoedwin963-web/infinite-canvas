@@ -1,0 +1,511 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  parseAgentModelResponse,
+} from "../app/ai/agent.ts";
+import {
+  createWorkflowBatchRun,
+  describeWorkflowRun,
+} from "../app/workflow/agent.ts";
+import {
+  acknowledgeMangaContinuity,
+  buildMangaVideoPrompt,
+  createMangaCinematographyComparisonGraph,
+  createMangaContinuityReport,
+  createMangaScenePlans,
+  createMangaShotBatch,
+  createMangaStoryBeats,
+  remapWorkflowAssetIds,
+} from "../app/workflow/manga-director.ts";
+import { parseWorkflowGraph, readWorkflowInputs } from "../app/workflow/graph.ts";
+import { setStoryStoryboardMode } from "../app/workflow/storyboard.ts";
+
+function ids() {
+  let value = 0;
+  return () => `manga-${++value}`;
+}
+
+function readyGraph() {
+  const storyId = "story";
+  const result = (id, assetRef, assetKind) => ({
+    id,
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "image",
+    schedulerId: `${id}-scheduler`,
+    text: assetRef,
+    model: "gpt-image-2",
+    status: "success",
+    progress: "",
+    error: "",
+    resultUrl: `https://example.com/${assetRef}.png`,
+    storyId,
+    storyRole: "asset-result",
+    assetRef,
+    assetKind,
+    assetRole: "result",
+  });
+  return setStoryStoryboardMode({
+    version: 1,
+    nodes: [{
+      id: "analysis",
+      x: 0,
+      y: 0,
+      type: "source",
+      kind: "text",
+      text: "剧本分析",
+      storyId,
+      storyRole: "analysis",
+      storyboardMode: undefined,
+      assetStrategy: "foundation-pair-v1",
+      foundationApprovedAt: 1,
+      planningStage: "complete",
+      planningStatus: "complete",
+      projectAspectRatio: "16:9",
+    },
+    result("lead-node", "lead", "character"),
+    result("scene-node", "scene", "scene"),
+    result("prop-node", "prop", "prop")],
+    edges: [],
+  }, storyId, "comic");
+}
+
+function beatOperation() {
+  return {
+    type: "create_manga_story_beats",
+    storyId: "story",
+    stageIndex: 0,
+    beats: [{
+      beatId: "beat-001",
+      sequence: 1,
+      sceneId: "scene",
+      narrativePurpose: "建立人物处境",
+      emotionalGoal: "紧张",
+      summary: "主角进入房间并察觉异常",
+    }],
+  };
+}
+
+function sceneOperation() {
+  return {
+    type: "create_manga_scene_plans",
+    storyId: "story",
+    stageIndex: 1,
+    plans: [{
+      sceneId: "scene",
+      beatIds: ["beat-001"],
+      spatialLayout: "门在画面左侧，桌子在右后方",
+      blocking: "主角由左向右走到桌前",
+      eyeline: "主角看向右后方道具",
+      axis: "保持门与桌子的180度轴线",
+      entrancesExits: "左侧入画，右侧停下",
+      lighting: "右侧窗户提供柔和冷色主光",
+      colorTone: "低饱和冷色，人物略亮于背景",
+    }],
+  };
+}
+
+function shotPlan(overrides = {}) {
+  return {
+    shotId: "shot-001",
+    sequence: 1,
+    sceneId: "scene",
+    beatId: "beat-001",
+    duration: 12,
+    durationReason: "",
+    narrativePurpose: "让观众发现主角察觉异常",
+    emotionalGoal: "逐步紧张",
+    shotSize: "中景",
+    lens: "标准焦段",
+    perspective: "自然透视",
+    cameraAngle: "平视",
+    cameraMovement: "缓慢推近",
+    composition: "主角位于左侧三分线，道具位于右后方",
+    blocking: "主角从左侧入画并停在桌前",
+    characterIds: ["lead"],
+    characterPosition: "主角由左向右移动",
+    characterMovement: "走三步后停下并转头",
+    eyeline: "看向右后方道具",
+    propIds: ["prop"],
+    action: "主角靠近桌面并察觉道具",
+    dialogue: "无",
+    voiceover: "无",
+    soundEffect: "脚步声和衣料摩擦",
+    musicCue: "低频弦乐渐强",
+    lighting: "右侧窗户冷色柔光，人物有轻微轮廓光",
+    colorTone: "低饱和冷蓝",
+    texture: "手绘水粉笔触",
+    startFrame: "主角刚从左侧进入中景",
+    endFrame: "主角停下看向道具",
+    transitionIn: "直接切入",
+    transitionOut: "动作切",
+    imagePrompt: "主角进入房间的静态构图",
+    videoPrompt: "",
+    negativePrompt: "禁止人物变脸、跳轴和道具消失",
+    previousShotId: "",
+    nextShotId: "",
+    continuityNotes: "保持主角由左向右及右侧冷光",
+    generationStatus: "planned",
+    timeline: [
+      { startSecond: 0, endSecond: 4, visualAction: "主角入画", performance: "谨慎观察", camera: "中景固定", audio: "脚步声" },
+      { startSecond: 4, endSecond: 8, visualAction: "主角走向桌面", performance: "神情收紧", camera: "缓慢推近", audio: "弦乐渐强" },
+      { startSecond: 8, endSecond: 12, visualAction: "主角停下转头", performance: "屏住呼吸", camera: "停在中近景", audio: "环境声降低" },
+    ],
+    referenceNodeIds: ["lead-node", "scene-node", "prop-node"],
+    continuityWarnings: [],
+    ...overrides,
+  };
+}
+
+function plannedGraph() {
+  const idFactory = ids();
+  let graph = createMangaStoryBeats(readyGraph(), beatOperation(), idFactory);
+  graph = createMangaScenePlans(graph, sceneOperation(), idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [shotPlan()],
+  }, idFactory);
+  return { graph, idFactory };
+}
+
+test("normalizes shot reference assets to character, scene, and prop order", () => {
+  const idFactory = ids();
+  let graph = createMangaStoryBeats(readyGraph(), beatOperation(), idFactory);
+  graph = createMangaScenePlans(graph, sceneOperation(), idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [shotPlan({ referenceNodeIds: ["prop-node", "scene-node", "lead-node"] })],
+  }, idFactory);
+  const shot = graph.nodes.find((node) => node.storyRole === "shot").shotPlan;
+  assert.deepEqual(shot.referenceNodeIds, ["lead-node", "scene-node", "prop-node"]);
+});
+
+test("parses numbered manga director stages and rejects a mismatched stage index", () => {
+  const payload = {
+    message: "导演阶段",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_story_beats",
+      story_id: "story",
+      stage_index: 0,
+      beats: [{
+        beat_id: "beat-001",
+        sequence: 1,
+        scene_id: "scene",
+        narrative_purpose: "建立处境",
+        emotional_goal: "紧张",
+        summary: "人物察觉异常",
+      }],
+    }, {
+      type: "create_manga_scene_plans",
+      story_id: "story",
+      stage_index: 1,
+      plans: [{
+        scene_id: "scene",
+        beat_ids: ["beat-001"],
+        spatial_layout: "门左桌右",
+        blocking: "人物由左入画",
+        eyeline: "看向右侧",
+        axis: "保持同侧机位",
+        entrances_exits: "左入右停",
+        lighting: "右侧冷光",
+        color_tone: "低饱和冷色",
+      }],
+    }, {
+      type: "create_manga_continuity_report",
+      story_id: "story",
+      stage_index: 3,
+      report: { issues: [] },
+    }],
+  };
+  assert.deepEqual(
+    parseAgentModelResponse(JSON.stringify(payload)).operations.map((operation) =>
+      "stageIndex" in operation ? operation.stageIndex : undefined
+    ),
+    [0, 1, 3],
+  );
+  payload.operations[1].stage_index = 2;
+  assert.throws(() => parseAgentModelResponse(JSON.stringify(payload)), /不受支持/);
+});
+
+test("builds staged manga plans and materializes only direct video nodes", () => {
+  const { graph: planned, idFactory } = plannedGraph();
+  assert.equal(planned.nodes.filter((node) => node.storyRole === "shot").length, 1);
+  assert.equal(planned.nodes.filter((node) => node.type === "scheduler").length, 0);
+  const completed = createMangaContinuityReport(planned, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [] },
+  }, idFactory);
+  const scheduler = completed.nodes.find((node) => node.storyRole === "video-scheduler");
+  assert.equal(completed.nodes.filter((node) => node.storyRole === "storyboard-scheduler").length, 0);
+  assert.equal(completed.nodes.filter((node) => node.storyRole === "storyboard").length, 0);
+  assert.equal(completed.nodes.filter((node) => node.storyRole === "clip").length, 1);
+  assert.equal(scheduler.duration, "12");
+  assert.match(scheduler.prompt, /\[0-4秒\][\s\S]*\[4-8秒\][\s\S]*\[8-12秒\]/);
+  assert.deepEqual(
+    readWorkflowInputs(completed, scheduler.id).images.map((node) => node.id),
+    ["lead-node", "scene-node", "prop-node"],
+  );
+  const batch = createWorkflowBatchRun(completed, {
+    type: "run_story_workflow",
+    storyId: "story",
+    shotRefs: [],
+  }, () => "batch");
+  assert.equal(batch.schedulerIds.length, 1);
+  assert.match(describeWorkflowRun(completed, { type: "run_story_workflow", storyId: "story", shotRefs: [] }), /批量生成 1 个视频片段/);
+  assert.doesNotMatch(describeWorkflowRun(completed, { type: "run_story_workflow", storyId: "story", shotRefs: [] }), /分镜图片/);
+  assert.equal(parseWorkflowGraph(JSON.stringify(completed)).nodes.length, completed.nodes.length);
+});
+
+test("keeps planning after a premature final batch and orders a later missing beat", () => {
+  const idFactory = ids();
+  const beats = [1, 2, 3].map((sequence) => ({
+    beatId: `beat-${String(sequence).padStart(3, "0")}`,
+    sequence,
+    sceneId: "scene",
+    narrativePurpose: `推进第 ${sequence} 个节拍`,
+    emotionalGoal: "连续推进",
+    summary: `节拍 ${sequence}`,
+  }));
+  let graph = createMangaStoryBeats(readyGraph(), {
+    type: "create_manga_story_beats",
+    storyId: "story",
+    stageIndex: 0,
+    beats,
+  }, idFactory);
+  graph = createMangaScenePlans(graph, {
+    ...sceneOperation(),
+    plans: [{ ...sceneOperation().plans[0], beatIds: beats.map((beat) => beat.beatId) }],
+  }, idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [
+      shotPlan({ shotId: "shot-001", sequence: 1, beatId: "beat-002" }),
+      shotPlan({ shotId: "shot-002", sequence: 2, beatId: "beat-003" }),
+    ],
+  }, idFactory);
+  assert.equal(graph.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStage, "shot-plans");
+  assert.equal(graph.nodes.find((node) => node.storyRole === "analysis").mangaPlanningChunkIndex, 1);
+
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 1,
+    isFinal: false,
+    shots: [shotPlan({ shotId: "shot-003", sequence: 3, beatId: "beat-001" })],
+  }, idFactory);
+  const ordered = graph.nodes
+    .filter((node) => node.storyRole === "shot")
+    .map((node) => node.shotPlan)
+    .sort((left, right) => left.sequence - right.sequence);
+  assert.deepEqual(ordered.map((shot) => shot.beatId), ["beat-001", "beat-002", "beat-003"]);
+  assert.deepEqual(ordered.map((shot) => shot.shotId), ["shot-001", "shot-002", "shot-003"]);
+  assert.equal(graph.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStage, "continuity");
+});
+
+test("keeps continuity warnings visible and blocks generation until approval", () => {
+  const { graph: planned, idFactory } = plannedGraph();
+  const warned = createMangaContinuityReport(planned, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [{
+      code: "axis-jump",
+      severity: "warning",
+      shotId: "shot-001",
+      reason: "人物方向可能无动机反转",
+      suggestion: "保持同侧机位",
+      autoFixable: false,
+    }] },
+  }, idFactory);
+  assert.equal(warned.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStatus, "awaiting-continuity-approval");
+  assert.throws(() => createWorkflowBatchRun(warned, {
+    type: "run_story_workflow", storyId: "story", shotRefs: [],
+  }), /尚未确认/);
+  const approved = acknowledgeMangaContinuity(warned, "story", 99);
+  assert.equal(approved.nodes.find((node) => node.storyRole === "analysis").continuityApprovedAt, 99);
+  assert.equal(createWorkflowBatchRun(approved, {
+    type: "run_story_workflow", storyId: "story", shotRefs: [],
+  }).schedulerIds.length, 1);
+});
+
+test("rejects invalid second timelines, short shots without reasons, and continuity errors", () => {
+  const response = (shot) => JSON.stringify({
+    message: "镜头规划",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_shot_batch",
+      story_id: "story",
+      chunk_index: 0,
+      is_final: true,
+      shots: [shot],
+    }],
+  });
+  const snake = JSON.parse(JSON.stringify(shotPlan()));
+  snake.shot_id = snake.shotId;
+  snake.beat_id = snake.beatId;
+  snake.scene_id = snake.sceneId;
+  snake.reference_node_ids = snake.referenceNodeIds;
+  snake.timeline = snake.timeline.map((segment) => ({
+    start_second: segment.startSecond,
+    end_second: segment.endSecond,
+    visual_action: segment.visualAction,
+    performance: segment.performance,
+    camera: segment.camera,
+    audio: segment.audio,
+  }));
+  delete snake.shotId;
+  delete snake.beatId;
+  delete snake.sceneId;
+  delete snake.referenceNodeIds;
+  assert.doesNotThrow(() => parseAgentModelResponse(response(snake)));
+  const emptyOptional = structuredClone(snake);
+  emptyOptional.characterPosition = "";
+  emptyOptional.characterMovement = "";
+  emptyOptional.eyeline = "";
+  emptyOptional.dialogue = "";
+  emptyOptional.voiceover = "";
+  emptyOptional.soundEffect = "";
+  emptyOptional.musicCue = "";
+  emptyOptional.continuityNotes = "";
+  emptyOptional.timeline[0].performance = "";
+  emptyOptional.timeline[0].audio = "";
+  const normalized = parseAgentModelResponse(response(emptyOptional));
+  assert.equal(normalized.operations[0].shots[0].dialogue, "无");
+  assert.equal(normalized.operations[0].shots[0].timeline[0].audio, "无");
+  const gap = structuredClone(snake);
+  gap.timeline[1].start_second = 5;
+  gap.timeline.at(-1).end_second = 11;
+  const normalizedTimeline = parseAgentModelResponse(response(gap))
+    .operations[0].shots[0].timeline;
+  assert.equal(normalizedTimeline[0].startSecond, 0);
+  assert.equal(normalizedTimeline[1].startSecond, normalizedTimeline[0].endSecond);
+  assert.equal(normalizedTimeline.at(-1).endSecond, 12);
+  const inverted = structuredClone(snake);
+  inverted.timeline[0].end_second = 12;
+  assert.throws(() => parseAgentModelResponse(response(inverted)), /timeline/);
+  const short = structuredClone(snake);
+  short.duration = 8;
+  short.durationReason = "";
+  short.timeline = [{ start_second: 0, end_second: 8, visual_action: "反应", performance: "惊讶", camera: "特写", audio: "无" }];
+  assert.throws(() => parseAgentModelResponse(response(short)), /duration_reason/);
+
+  const { graph: planned, idFactory } = plannedGraph();
+  assert.throws(() => createMangaContinuityReport(planned, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [{
+      code: "missing-prop",
+      severity: "error",
+      shotId: "shot-001",
+      reason: "关键道具无原因消失",
+      suggestion: "恢复道具或拆镜说明",
+      autoFixable: false,
+    }] },
+  }, idFactory), /结构错误/);
+});
+
+test("keeps only the selected cinematography fields in the deterministic video prompt", () => {
+  const prompt = buildMangaVideoPrompt(shotPlan({
+    composition: "框中框构图，门框限制人物空间",
+    shotSize: "中近景",
+    cameraAngle: "眼平正侧面",
+    cameraMovement: "缓慢推近，轻微跟随人物呼吸",
+    transitionIn: "动作承接",
+    transitionOut: "遮挡切换意图",
+  }));
+  assert.match(prompt, /框中框构图/);
+  assert.match(prompt, /中近景/);
+  assert.match(prompt, /眼平正侧面/);
+  assert.match(prompt, /缓慢推近/);
+  assert.match(prompt, /动作承接 → 遮挡切换意图/);
+  assert.doesNotMatch(prompt, /点构图|环绕|大远景/);
+});
+
+test("creates an isolated cinematography comparison graph and remaps its assets", () => {
+  const storyId = "snow-white";
+  const analysis = {
+    id: "analysis",
+    x: 0,
+    y: 0,
+    type: "source",
+    kind: "text",
+    text: "分析",
+    storyId,
+    storyRole: "analysis",
+    storyboardMode: "comic",
+    assetStrategy: "foundation-pair-v1",
+    foundationApprovedAt: 1,
+    planningStage: "complete",
+    planningStatus: "complete",
+    mangaPlanningStage: "complete",
+    mangaPlanningStatus: "complete",
+    mangaPlanningChunkIndex: 0,
+    continuityApprovedAt: 2,
+  };
+  const assetNodes = Array.from({ length: 29 }, (_, index) => {
+    const ref = `asset-${index + 1}`;
+    return [
+      { id: `${ref}-spec`, x: 0, y: index, type: "source", kind: "text", text: ref, storyId, storyRole: "asset-spec", assetRef: ref, assetKind: index < 10 ? "character" : index < 20 ? "scene" : "prop", assetRole: "spec" },
+      { id: `${ref}-scheduler`, x: 1, y: index, type: "scheduler", outputKind: "image", model: "gpt-image-2", prompt: ref, aspectRatio: "16:9", resolution: "1K", duration: "", outputCount: 1, error: "", storyId, storyRole: "asset-scheduler", assetRef: ref, assetKind: index < 10 ? "character" : index < 20 ? "scene" : "prop", assetRole: "scheduler" },
+      { id: `${ref}-result`, x: 2, y: index, type: "result", kind: "image", schedulerId: `${ref}-scheduler`, text: ref, model: "gpt-image-2", status: "success", progress: "", error: "", resultUrl: `/api/workflow/assets/${ref}`, assetId: ref, storyId, storyRole: "asset-result", assetRef: ref, assetKind: index < 10 ? "character" : index < 20 ? "scene" : "prop", assetRole: "result" },
+    ];
+  }).flat();
+  const beats = Array.from({ length: 40 }, (_, index) => ({
+    beatId: `beat-${index + 1}`,
+    sequence: index + 1,
+    sceneId: `scene-${(index % 8) + 1}`,
+    narrativePurpose: "推进剧情",
+    emotionalGoal: "保持情绪连续",
+    summary: `节拍 ${index + 1}`,
+  }));
+  const beatNode = { id: "beats", x: 3, y: 0, type: "source", kind: "text", text: "节拍", storyId, storyRole: "story-beats", storyBeats: beats };
+  const sceneNodes = Array.from({ length: 8 }, (_, index) => ({
+    id: `scene-plan-${index + 1}`,
+    x: 4,
+    y: index,
+    type: "source",
+    kind: "text",
+    text: "调度",
+    storyId,
+    storyRole: "scene-plan",
+    scenePlan: { sceneId: `scene-${index + 1}` },
+  }));
+  const shotNodes = Array.from({ length: 98 }, (_, index) => [
+    { id: `shot-${index + 1}`, x: 5, y: index, type: "source", kind: "text", text: "分镜", storyId, storyRole: "shot", shotPlan: { shotId: `shot-${index + 1}` } },
+    { id: `video-${index + 1}`, x: 6, y: index, type: "scheduler", outputKind: "video", model: "seedance-2.0", prompt: "视频", aspectRatio: "16:9", resolution: "720p", duration: "10", outputCount: 1, error: "", storyId, storyRole: "video-scheduler" },
+    { id: `clip-${index + 1}`, x: 7, y: index, type: "result", kind: "video", schedulerId: `video-${index + 1}`, text: "占位", model: "seedance-2.0", status: "ready", progress: "待生成", error: "", storyId, storyRole: "clip" },
+  ]).flat();
+  const report = { id: "continuity", x: 8, y: 0, type: "source", kind: "text", text: "连续性", storyId, storyRole: "continuity-report", continuityReport: { issues: [] } };
+  const original = { version: 1, nodes: [analysis, ...assetNodes, beatNode, ...sceneNodes, ...shotNodes, report], edges: [] };
+  const cloned = createMangaCinematographyComparisonGraph(original);
+  assert.equal(original.nodes.filter((node) => node.storyRole === "shot").length, 98);
+  assert.equal(cloned.nodes.filter((node) => node.assetRole === "result").length, 29);
+  assert.equal(cloned.nodes.find((node) => node.storyRole === "story-beats").storyBeats.length, 40);
+  assert.equal(cloned.nodes.filter((node) => node.storyRole === "scene-plan").length, 8);
+  assert.equal(cloned.nodes.some((node) => ["shot", "video-scheduler", "clip", "continuity-report"].includes(node.storyRole)), false);
+  const clonedAnalysis = cloned.nodes.find((node) => node.storyRole === "analysis");
+  assert.equal(clonedAnalysis.mangaPlanningStage, "shot-plans");
+  assert.equal(clonedAnalysis.mangaPlanningChunkIndex, 0);
+  assert.equal(clonedAnalysis.continuityApprovedAt, undefined);
+  const mapping = new Map(Array.from({ length: 29 }, (_, index) => [
+    `asset-${index + 1}`,
+    `copy-${index + 1}`,
+  ]));
+  const remapped = remapWorkflowAssetIds(cloned, mapping);
+  assert.equal(remapped.nodes.filter((node) => node.assetId?.startsWith("copy-")).length, 29);
+  assert.match(remapped.nodes.find((node) => node.assetId === "copy-1").resultUrl, /copy-1$/);
+});

@@ -21,6 +21,39 @@ function request(overrides = {}) {
   };
 }
 
+function comicWorkflowCanvas({ mode = "comic", assetAvailable = true } = {}) {
+  return {
+    ...canvas,
+    mode: "workflow",
+    nodes: [
+      {
+        id: "analysis",
+        type: "source",
+        kind: "text",
+        storyId: "story-1",
+        storyRole: "analysis",
+        assetStrategy: "foundation-pair-v1",
+        foundationApprovedAt: 123,
+        storyboardMode: mode,
+        planningStage: "complete",
+        planningStatus: "complete",
+        text: "分析",
+      },
+      {
+        id: "asset-result",
+        type: "result",
+        kind: "image",
+        storyId: "story-1",
+        storyRole: "asset-result",
+        assetRef: "lead",
+        assetRole: "result",
+        assetAvailable,
+        status: assetAvailable ? "success" : "ready",
+      },
+    ],
+  };
+}
+
 const clientConfig = {
   baseUrl: "https://lingke.example",
   apiKey: "secret",
@@ -28,6 +61,15 @@ const clientConfig = {
   toolManual: "RUNTIME_IMAGE_TOOL_MANUAL_MARKER",
   workflowToolManual: "RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER",
   storyAssetToolManual: "RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER",
+  commonShotManual: "RUNTIME_COMMON_SHOT_MANUAL_MARKER",
+  comicStoryboardManual: "RUNTIME_COMIC_STORYBOARD_MANUAL_MARKER",
+  mangaDirectorCoreManual: "RUNTIME_MANGA_DIRECTOR_CORE_MARKER",
+  mangaStageManuals: {
+    "story-beats": "RUNTIME_MANGA_STORY_BEATS_MARKER",
+    "scene-plans": "RUNTIME_MANGA_SCENE_PLANS_MARKER",
+    "shot-plans": "RUNTIME_MANGA_SHOT_PLANS_MARKER",
+    continuity: "RUNTIME_MANGA_CONTINUITY_MARKER",
+  },
 };
 
 function upstreamSseResponse(content) {
@@ -112,6 +154,7 @@ test("calls the fixed agent model and parses its JSON response", async () => {
   assert.equal(upstreamRequest.url, "https://lingke.example/v1/chat/completions");
   assert.equal(upstreamRequest.body.model, "gpt-5.6-sol");
   assert.equal(upstreamRequest.body.stream, true);
+  assert.equal(upstreamRequest.body.max_tokens, undefined);
   assert.equal(upstreamRequest.init.headers.Authorization, "Bearer secret");
   assert.match(JSON.stringify(upstreamRequest.body.messages), /画布快照/);
   assert.match(JSON.stringify(upstreamRequest.body.messages), /RUNTIME_AGENT_MD_MARKER/);
@@ -119,11 +162,210 @@ test("calls the fixed agent model and parses its JSON response", async () => {
   assert.match(systemMessage, /RUNTIME_IMAGE_TOOL_MANUAL_MARKER/);
   assert.match(systemMessage, /RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER/);
   assert.match(systemMessage, /RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_COMMON_SHOT_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_COMIC_STORYBOARD_MANUAL_MARKER/);
   assert.match(systemMessage, /"mode":"text","model":"gpt-5\.6-sol"/);
   assert.match(systemMessage, /"model":"gemini-3-pro-image-preview"/);
-  assert.match(systemMessage, /"aspectRatios":\["1:1","4:3","3:4","16:9","9:16"\]/);
+  assert.match(systemMessage, /"aspectRatios":\["16:9","1:1","4:3","3:4","9:16"\]/);
   assert.match(systemMessage, /model 字段只能填写 model 值/);
   assert.doesNotMatch(systemMessage, /text:gpt-5\.6-sol/);
+});
+
+test("reserves enough structured output tokens for two-shot manga batches", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: '{"message":"继续","workflow_state":"active","operations":[]}' } }],
+    });
+  });
+  const mangaCanvas = comicWorkflowCanvas();
+  mangaCanvas.nodes[0].mangaPlanningStage = "shot-plans";
+  await client.respond(validateAgentRequest(request({
+    canvas: mangaCanvas,
+    phase: "active",
+    messages: [
+      { role: "user", content: "开始" },
+      { role: "assistant", content: "已进入镜头规划" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  assert.equal(body.max_tokens, 16_384);
+  assert.equal(body.response_format.type, "json_schema");
+  assert.equal(body.response_format.json_schema.strict, true);
+  const shotSchema = body.response_format.json_schema.schema.properties.operations
+    .items.properties.shots.items;
+  assert.equal(shotSchema.additionalProperties, false);
+  assert.ok(shotSchema.required.includes("camera_movement"));
+  assert.ok(shotSchema.required.includes("timeline"));
+});
+
+test("loads comic stage rules without the detailed cinematography manual before shot planning", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        message: "资产库已就绪。",
+        workflow_state: "active",
+        operations: [],
+      }) } }],
+    });
+  });
+  await client.respond(validateAgentRequest(request({
+    phase: "active",
+    messages: [
+      { role: "user", content: "完整剧本" },
+      { role: "assistant", content: "资产已完成" },
+      { role: "user", content: "开始漫剧分镜" },
+    ],
+    canvas: {
+      ...canvas,
+      mode: "workflow",
+      nodes: [{
+        id: "analysis",
+        type: "source",
+        kind: "text",
+        x: 0,
+        y: 0,
+        width: 288,
+        height: 200,
+        storyId: "story-1",
+        storyRole: "analysis",
+        assetStrategy: "foundation-pair-v1",
+        foundationApprovedAt: 123,
+        storyboardMode: "comic",
+        planningStage: "complete",
+        planningStatus: "complete",
+        mangaPlanningStage: "story-beats",
+        mangaPlanningStatus: "planning",
+        text: "分析",
+        prompt: "",
+        model: "",
+        status: "ready",
+        hasVisual: false,
+      }],
+    },
+  })));
+  const systemMessage = body.messages[0].content;
+  assert.doesNotMatch(systemMessage, /RUNTIME_COMMON_SHOT_MANUAL_MARKER/);
+  assert.match(systemMessage, /RUNTIME_COMIC_STORYBOARD_MANUAL_MARKER/);
+  assert.match(systemMessage, /RUNTIME_MANGA_DIRECTOR_CORE_MARKER/);
+  assert.match(systemMessage, /RUNTIME_MANGA_STORY_BEATS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_SCENE_PLANS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_SHOT_PLANS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_CONTINUITY_MARKER/);
+});
+
+test("loads the detailed cinematography manual only during manga shot planning", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        message: "镜头规划准备就绪。",
+        workflow_state: "active",
+        operations: [],
+      }) } }],
+    });
+  });
+  const stagedCanvas = comicWorkflowCanvas();
+  stagedCanvas.nodes[0].mangaPlanningStage = "shot-plans";
+  stagedCanvas.nodes[0].mangaPlanningStatus = "planning";
+  await client.respond(validateAgentRequest(request({ canvas: stagedCanvas })));
+  const systemMessage = body.messages[0].content;
+  assert.match(systemMessage, /RUNTIME_COMMON_SHOT_MANUAL_MARKER/);
+  assert.match(systemMessage, /RUNTIME_MANGA_SHOT_PLANS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_CONTINUITY_MARKER/);
+});
+
+test("rejects a manga director operation from the wrong project stage", async () => {
+  const client = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({
+      message: "情绪节拍已整理。",
+      workflow_state: "active",
+      operations: [{
+        type: "create_manga_story_beats",
+        story_id: "story-1",
+        stage_index: 0,
+        beats: [{
+          beat_id: "beat-001",
+          sequence: 1,
+          scene_id: "scene-1",
+          narrative_purpose: "建立人物处境",
+          emotional_goal: "紧张",
+          summary: "人物进入房间并察觉异常",
+        }],
+      }],
+    }) } }],
+  }));
+  const stagedCanvas = comicWorkflowCanvas();
+  stagedCanvas.nodes[0].mangaPlanningStage = "scene-plans";
+  stagedCanvas.nodes[0].mangaPlanningStatus = "planning";
+  await assert.rejects(
+    () => client.respond(validateAgentRequest(request({ canvas: stagedCanvas }))),
+    /当前项目阶段不一致/,
+  );
+});
+
+test("rejects storyboard output until the selected comic asset library is ready", async () => {
+  const operation = {
+    type: "create_story_workflow",
+    ref: "comic-plan",
+    title: "雨夜归人",
+    global_context: "保持资产连续",
+    image_model: "gemini-3-pro-image-preview",
+    video_model: "seedance-2.0",
+    aspect_ratio: "9:16",
+    image_resolution: "1K",
+    video_resolution: "720p",
+    chunk_index: 0,
+    is_final: true,
+    shots: [{
+      ref: "shot-01",
+      title: "回望",
+      script: "结构化分镜文本",
+      image_prompt: "静态首帧",
+      video_prompt: "回望动作",
+      duration: "5",
+      reference_node_ids: ["asset-result"],
+    }],
+  };
+  const client = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({
+      message: "已规划分镜。",
+      workflow_state: "active",
+      operations: [operation],
+    }) } }],
+  }));
+  const history = [
+    { role: "user", content: "完整剧本" },
+    { role: "assistant", content: "资产已完成" },
+    { role: "user", content: "开始漫剧分镜" },
+  ];
+  const accepted = await client.respond(validateAgentRequest(request({
+    phase: "active",
+    messages: history,
+    canvas: comicWorkflowCanvas(),
+  })));
+  assert.equal(accepted.operations[0].type, "create_story_workflow");
+
+  await assert.rejects(
+    () => client.respond(validateAgentRequest(request({
+      phase: "active",
+      messages: history,
+      canvas: comicWorkflowCanvas({ assetAvailable: false }),
+    }))),
+    /成功的资产结果|尚未全部生成/,
+  );
+  await assert.rejects(
+    () => client.respond(validateAgentRequest(request({
+      phase: "active",
+      messages: history,
+      canvas: comicWorkflowCanvas({ mode: "tvc" }),
+    }))),
+    /选择漫剧能力/,
+  );
 });
 
 test("streams only the controlled progress summary and returns the validated result", async () => {
