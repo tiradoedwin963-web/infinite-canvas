@@ -2018,3 +2018,38 @@
 - `tests/agent-provider.test.mjs`、`tests/manga-director.test.mjs`：覆盖全阶段 Schema 选择与明确错误文案。
 - `progress.md`：记录本轮实现和验证。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts manga-director-core.md manga-story-beats-tools.md manga-scene-plan-tools.md manga-shot-plan-tools.md manga-continuity-tools.md docs/canvas.md tests/agent-provider.test.mjs tests/manga-director.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-19 - Task: 漫剧分镜表与多镜头视频片段工作流
+
+### What was done
+- 在漫剧导演开始前增加项目级节奏选择：长镜直出保留原有 5–15 秒规则，短片剪辑将每行分镜严格限制为 2 或 3 秒；创建首个镜头后节奏与分镜类型一同锁定，旧项目按长镜直出兼容读取。
+- 新增从既有 ShotPlan 确定性投影的 14 列分镜表，包含累计时间码、资产图号与名称、摄影、表演、声音、切点、连续性及光影质感；画布可横向查看，云端和本地均可导出不含原图的 Excel。
+- 短片剪辑模式按连续场景将多个分镜文本合并为最长 30 秒的 Seedance 2.5 视频片段；片段不足 4 秒时优先并入相邻场景，无法合并时拒绝创建不合法任务。片段按分镜表时码写入内部切镜，参考资产按首次出现去重且最多传入 5 张。
+- 保持长镜直出原有单镜提示词和三节点工作流，未重新启用分镜图片生成，也未改动 PostgreSQL 表或工作流 `v1`。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，178 项自动化测试全部通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit --incremental false`：未通过；仓库既有 `.ts` 扩展导入配置、历史页面与云端接口类型错误仍存在，未作为本轮可通过验证依据。
+- 新增回归覆盖短片 2–3 秒 Schema、节奏锁定、场景分组、30 秒/4 秒边界、视频参考去重、分镜表累计时间码以及 Excel 的 14 列和汇总公式；未发起图片、视频或 Agent 付费请求。
+
+### Notes
+- `app/ai/agent.ts`：按项目节奏解析和校验镜头时长，并保存视频片段元数据。
+- `app/ai/agent-provider.ts`：按当前项目节奏向模型发送对应的严格镜头 Schema 与导演上下文。
+- `app/workflow/graph.ts`：在不升级 `v1` 的前提下兼容节奏和视频片段可选元数据。
+- `app/workflow/storyboard.ts`：保存漫剧节奏并在首镜创建后阻止切换。
+- `app/workflow/manga-director.ts`：创建短片多镜头片段、Seedance 2.5 调度器及按秒组装的片段提示词。
+- `app/workflow/agent.ts`：批量运行时把指定镜头归一化到包含它的视频片段。
+- `app/workflow/storyboard-table.ts`：从 ShotPlan 投影统一分镜表数据，供画布与导出共用。
+- `app/server/storyboard-xlsx.ts`：生成含标题、汇总公式、冻结表头和换行单元格的 `.xlsx`。
+- `app/api/workflow/projects/[id]/storyboard.xlsx/route.ts`：提供按登录账号和项目所有权校验的云端导出接口。
+- `app/api/workflow/storyboard.xlsx/route.ts`：提供仅本地开发模式使用的分镜表导出接口。
+- `components/canvas-agent-sidebar.tsx`：增加节奏选择与按当前节奏继续导演规划的指令。
+- `components/workflow/workflow-canvas.tsx`：增加分镜表入口、表格弹层和本地/云端 Excel 下载。
+- `app/globals.css`：增加分镜表弹层与横向表格样式，并隔离滚动事件。
+- `manga-director-core.md`、`manga-shot-plan-tools.md`、`shot-common-tools.md`、`docs/canvas.md`：记录双节奏、视频片段和分镜表行为。
+- `tests/agent-provider.test.mjs`、`tests/manga-director.test.mjs`、`tests/storyboard.test.mjs`、`tests/storyboard-xlsx.test.mjs`：覆盖新节奏、片段、表格和 Excel 导出。
+- `package.json`、`package-lock.json`：加入 Excel 导出依赖 `exceljs`。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/workflow/agent.ts app/workflow/graph.ts app/workflow/manga-director.ts app/workflow/storyboard.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx app/globals.css docs/canvas.md manga-director-core.md manga-shot-plan-tools.md shot-common-tools.md package.json package-lock.json tests/agent-provider.test.mjs tests/manga-director.test.mjs tests/storyboard.test.mjs progress.md`，再执行 `git clean -f app/workflow/storyboard-table.ts app/server/storyboard-xlsx.ts tests/storyboard-xlsx.test.mjs app/api/workflow/storyboard.xlsx/route.ts app/api/workflow/projects/[id]/storyboard.xlsx/route.ts`；提交后使用 `git revert <本轮提交哈希>`。

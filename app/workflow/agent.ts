@@ -46,6 +46,13 @@ export type WorkflowBatchRun = {
   status: "running" | "completed" | "partial-failure";
 };
 
+function schedulerContainsShot(
+  scheduler: WorkflowSchedulerNode,
+  shotRef: string,
+) {
+  return scheduler.videoSegment?.shotIds.includes(shotRef) || scheduler.shotRef === shotRef;
+}
+
 export function createWorkflowAgentSnapshot(
   graph: WorkflowGraph,
   viewport: Viewport,
@@ -91,6 +98,9 @@ export function createWorkflowAgentSnapshot(
           ? { foundationApprovedAt: node.foundationApprovedAt }
           : {}),
         ...(node.storyboardMode ? { storyboardMode: node.storyboardMode } : {}),
+        ...(node.mangaStoryboardTempo
+          ? { mangaStoryboardTempo: node.mangaStoryboardTempo }
+          : {}),
         ...(node.storyVisualStyle
           ? { storyVisualStyle: node.storyVisualStyle }
           : {}),
@@ -122,6 +132,7 @@ export function createWorkflowAgentSnapshot(
         ...(node.continuityReport
           ? { continuityReport: node.continuityReport }
           : {}),
+        ...(node.videoSegment ? { videoSegment: node.videoSegment } : {}),
         ...(node.type === "source" && node.assetName
           ? { assetName: node.assetName }
           : {}),
@@ -275,13 +286,13 @@ export function createWorkflowBatchRun(
   if (
     selected.size &&
     [...selected].some(
-      (shotRef) => !storySchedulers.some((node) => node.shotRef === shotRef),
+      (shotRef) => !storySchedulers.some((node) => schedulerContainsShot(node, shotRef)),
     )
   ) {
     throw new Error("部分指定分镜已不存在，请重新提出批量生成要求。");
   }
   const schedulers = storySchedulers.filter(
-    (node) => !selected.size || Boolean(node.shotRef && selected.has(node.shotRef)),
+    (node) => !selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef)),
   );
   return {
     version: 1,
@@ -444,7 +455,8 @@ export function describeWorkflowRun(
     (node): node is WorkflowSchedulerNode =>
       node.type === "scheduler" &&
       node.storyId === operation.storyId &&
-      (!selected.size || Boolean(node.shotRef && selected.has(node.shotRef))),
+      (node.storyRole === "storyboard-scheduler" || node.storyRole === "video-scheduler") &&
+      (!selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef))),
   );
   const images = schedulers.filter((node) => node.outputKind === "image").length;
   const videos = schedulers.filter((node) => node.outputKind === "video").length;

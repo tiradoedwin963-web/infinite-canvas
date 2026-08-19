@@ -1087,6 +1087,122 @@ body {
   color: #fff;
 }
 
+.workflow-storyboard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(31, 29, 27, 0.3);
+  backdrop-filter: blur(3px);
+}
+
+.workflow-storyboard-table {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1440px, calc(100vw - 48px));
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(42, 41, 38, 0.14);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(42, 39, 35, 0.26);
+}
+
+.workflow-storyboard-table > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(42, 41, 38, 0.1);
+}
+
+.workflow-storyboard-table h2 {
+  margin: 0;
+  color: #292824;
+  font-size: 16px;
+}
+
+.workflow-storyboard-table p {
+  max-width: 860px;
+  margin: 7px 0 0;
+  color: #77736d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workflow-storyboard-table > header > div:last-child {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-storyboard-table button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 11px;
+  background: #f1efec;
+  color: #57534e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workflow-storyboard-table button:first-child {
+  background: #292824;
+  color: #fff;
+}
+
+.workflow-storyboard-scroll {
+  overscroll-behavior: contain;
+  overflow: auto;
+}
+
+.workflow-storyboard-scroll table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  color: #3f3c37;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workflow-storyboard-scroll th,
+.workflow-storyboard-scroll td {
+  max-width: 360px;
+  min-width: 118px;
+  padding: 10px 12px;
+  border-right: 1px solid #ece8e3;
+  border-bottom: 1px solid #ece8e3;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.workflow-storyboard-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #6c5ce7;
+  color: #fff;
+  font-weight: 700;
+}
+
+.workflow-storyboard-scroll td:nth-child(1),
+.workflow-storyboard-scroll td:nth-child(2),
+.workflow-storyboard-scroll td:nth-child(3) {
+  min-width: 92px;
+  text-align: center;
+}
+
 .workflow-node {
   contain: layout style;
   content-visibility: auto;

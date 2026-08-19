@@ -10,6 +10,7 @@ import {
 import {
   acknowledgeMangaContinuity,
   buildMangaVideoPrompt,
+  buildMangaShortCutVideoPrompt,
   createMangaCinematographyComparisonGraph,
   createMangaContinuityReport,
   createMangaScenePlans,
@@ -17,17 +18,19 @@ import {
   createMangaStoryBeats,
   refreshMangaVideoSchedulerPrompts,
   remapWorkflowAssetIds,
+  groupMangaShortCutSegments,
 } from "../app/workflow/manga-director.ts";
 import { validateMangaShotCinematography } from "../app/workflow/manga-cinematography.ts";
 import { parseWorkflowGraph, readWorkflowInputs } from "../app/workflow/graph.ts";
 import { setStoryStoryboardMode } from "../app/workflow/storyboard.ts";
+import { createStoryboardTable } from "../app/workflow/storyboard-table.ts";
 
 function ids() {
   let value = 0;
   return () => `manga-${++value}`;
 }
 
-function readyGraph() {
+function readyGraph(tempo = "long-form") {
   const storyId = "story";
   const result = (id, assetRef, assetKind) => ({
     id,
@@ -70,7 +73,23 @@ function readyGraph() {
     result("scene-node", "scene", "scene"),
     result("prop-node", "prop", "prop")],
     edges: [],
-  }, storyId, "comic");
+  }, storyId, "comic", tempo);
+}
+
+function shortShot(overrides = {}) {
+  return shotPlan({
+    duration: 2,
+    durationReason: "",
+    timeline: [{
+      startSecond: 0,
+      endSecond: 2,
+      visualAction: "主角抬眼并握紧斗篷",
+      performance: "短促惊讶后收紧表情",
+      camera: "中近景轻推",
+      audio: "衣料轻响",
+    }],
+    ...overrides,
+  });
 }
 
 function beatOperation() {
@@ -271,6 +290,68 @@ test("builds staged manga plans and materializes only direct video nodes", () =>
   assert.equal(parseWorkflowGraph(JSON.stringify(completed)).nodes.length, completed.nodes.length);
 });
 
+test("uses 2–3 second storyboard rows and groups them into Seedance 2.5 segments", () => {
+  const idFactory = ids();
+  let graph = createMangaStoryBeats(readyGraph("short-cut"), beatOperation(), idFactory);
+  graph = createMangaScenePlans(graph, sceneOperation(), idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [
+      shortShot({ shotId: "draft-a", sequence: 1 }),
+      shortShot({ shotId: "draft-b", sequence: 2, shotSize: "中近景" }),
+    ],
+  }, idFactory);
+  const completed = createMangaContinuityReport(graph, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [] },
+  }, idFactory);
+  const scheduler = completed.nodes.find((node) => node.storyRole === "video-scheduler");
+  assert.equal(scheduler.model, "seedance-2.5");
+  assert.equal(scheduler.duration, "4");
+  assert.deepEqual(scheduler.videoSegment.shotIds, ["shot-001", "shot-002"]);
+  assert.equal(completed.nodes.filter((node) => node.storyRole === "video-scheduler").length, 1);
+  assert.match(scheduler.prompt, /连续多镜头/);
+  assert.match(scheduler.prompt, /\[0-2秒｜shot-001\][\s\S]*\[2-4秒｜shot-002\]/);
+  const table = createStoryboardTable(completed, "story");
+  assert.equal(table.rows.length, 2);
+  assert.deepEqual(table.rows.map((row) => row.timecode), ["00:00–00:02", "00:02–00:04"]);
+  assert.equal(table.productionRule.includes("Seedance 2.5"), true);
+});
+
+test("merges a short scene into the adjacent segment and rejects an unmergeable tail", () => {
+  const shots = [
+    shortShot({ shotId: "shot-001", sequence: 1, sceneId: "scene-a", duration: 2 }),
+    shortShot({ shotId: "shot-002", sequence: 2, sceneId: "scene-b", duration: 3 }),
+    shortShot({ shotId: "shot-003", sequence: 3, sceneId: "scene-b", duration: 3 }),
+  ];
+  const grouped = groupMangaShortCutSegments(shots);
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].duration, 8);
+  assert.deepEqual(grouped[0].sceneIds, ["scene-a", "scene-b"]);
+  assert.match(buildMangaShortCutVideoPrompt(grouped[0]), /在 2 秒切换画面/);
+
+  const full = Array.from({ length: 10 }, (_, index) => shortShot({
+    shotId: `long-${index + 1}`,
+    sequence: index + 1,
+    sceneId: "scene-a",
+    duration: 3,
+  }));
+  assert.throws(
+    () => groupMangaShortCutSegments([...full, shortShot({
+      shotId: "tail",
+      sequence: 11,
+      sceneId: "scene-b",
+      duration: 2,
+    })]),
+    /不足 4 秒/,
+  );
+});
+
 test("keeps planning after a premature final batch and orders a later missing beat", () => {
   const idFactory = ids();
   const beats = [1, 2, 3].map((sequence) => ({
@@ -406,6 +487,15 @@ test("rejects invalid second timelines, short shots without reasons, and continu
   short.durationReason = "";
   short.timeline = [{ start_second: 0, end_second: 8, visual_action: "反应", performance: "惊讶", camera: "特写", audio: "无" }];
   assert.throws(() => parseAgentModelResponse(response(short)), /duration_reason/);
+
+  const shortCut = structuredClone(snake);
+  shortCut.duration = 2;
+  shortCut.duration_reason = "";
+  shortCut.timeline = [{ start_second: 0, end_second: 2, visual_action: "主角抬眼", performance: "惊讶", camera: "特写轻推", audio: "无" }];
+  assert.doesNotThrow(() => parseAgentModelResponse(response(shortCut), { mangaTempo: "short-cut" }));
+  shortCut.duration = 4;
+  shortCut.timeline = [{ start_second: 0, end_second: 4, visual_action: "主角抬眼", performance: "惊讶", camera: "特写轻推", audio: "无" }];
+  assert.throws(() => parseAgentModelResponse(response(shortCut), { mangaTempo: "short-cut" }), /2 或 3 秒/);
 
   const crossShot = structuredClone(snake);
   crossShot.end_frame = "切入下一镜的角色眼睛特写";

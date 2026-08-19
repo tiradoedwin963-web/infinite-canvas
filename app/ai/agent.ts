@@ -41,6 +41,7 @@ export class AgentRequestTimeoutError extends Error {
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
 export type AgentWorkflowState = "clarifying" | "active";
+export type AgentMangaStoryboardTempo = "long-form" | "short-cut";
 
 export type AgentStoredAction = {
   label: string;
@@ -119,6 +120,7 @@ export type AgentWorkflowNodeSnapshot = {
   assetStrategy?: "foundation-pair-v1";
   foundationApprovedAt?: number;
   storyboardMode?: AgentStoryboardMode;
+  mangaStoryboardTempo?: AgentMangaStoryboardTempo;
   storyVisualStyle?: string;
   assetAvailable?: boolean;
   planningStage?: AgentStoryAssetPlanningStage;
@@ -134,6 +136,7 @@ export type AgentWorkflowNodeSnapshot = {
   scenePlan?: ScenePlan;
   shotPlan?: ShotPlan;
   continuityReport?: ContinuityReport;
+  videoSegment?: MangaVideoSegment;
   assetName?: string;
   text: string;
   prompt: string;
@@ -377,6 +380,14 @@ export type ShotPlan = {
   timeline: ShotTimelineSegment[];
   referenceNodeIds: string[];
   continuityWarnings: string[];
+};
+
+export type MangaVideoSegment = {
+  segmentId: string;
+  shotIds: string[];
+  sceneIds: string[];
+  duration: number;
+  referenceNodeIds: string[];
 };
 
 export type ContinuityIssue = {
@@ -789,7 +800,19 @@ function parseShotTimeline(value: unknown, duration: number) {
   ) ? parsed : null;
 }
 
-function parseMangaShots(value: unknown): ShotPlan[] | null {
+function validMangaShotDuration(
+  duration: number,
+  durationReason: string,
+  tempo: AgentMangaStoryboardTempo,
+) {
+  if (tempo === "short-cut") return duration === 2 || duration === 3;
+  return duration >= 5 && duration <= 15 && (duration >= 10 || Boolean(durationReason));
+}
+
+function parseMangaShots(
+  value: unknown,
+  tempo: AgentMangaStoryboardTempo = "long-form",
+): ShotPlan[] | null {
   if (!Array.isArray(value) || !value.length || value.length > 8) return null;
   const shots = value.map((item) => {
     if (!isRecord(item)) return null;
@@ -872,8 +895,7 @@ function parseMangaShots(value: unknown): ShotPlan[] | null {
       shot.negativePrompt, shot.continuityNotes,
     ];
     return Number.isInteger(shot.sequence) && shot.sequence >= 1 &&
-        Number.isInteger(duration) && duration >= 5 && duration <= 15 &&
-        (duration >= 10 || Boolean(durationReason)) && timeline &&
+        Number.isInteger(duration) && validMangaShotDuration(duration, durationReason, tempo) && timeline &&
         referenceNodeIds.length >= 1 && referenceNodeIds.length <= 5 &&
         new Set(referenceNodeIds).size === referenceNodeIds.length &&
         required.every(Boolean)
@@ -886,7 +908,10 @@ function parseMangaShots(value: unknown): ShotPlan[] | null {
   return validateMangaShotCinematography(parsed) ? null : parsed;
 }
 
-function describeInvalidMangaShots(value: unknown) {
+function describeInvalidMangaShots(
+  value: unknown,
+  tempo: AgentMangaStoryboardTempo = "long-form",
+) {
   if (!Array.isArray(value) || !value.length || value.length > 8) {
     return "镜头批次必须包含 1 至 8 镜";
   }
@@ -912,14 +937,14 @@ function describeInvalidMangaShots(value: unknown) {
     const sequence = Number(item.sequence);
     if (!Number.isInteger(sequence) || sequence < 1) return `${shotId} 的 sequence 必须为正整数`;
     const duration = Number(item.duration);
-    if (!Number.isInteger(duration) || duration < 5 || duration > 15) {
-      return `${shotId} 的 duration 必须为 5 至 15 的整数`;
-    }
-    if (
-      duration < 10 &&
-      !readString(item.duration_reason ?? item.durationReason).trim()
-    ) {
-      return `${shotId} 短于 10 秒，必须填写 duration_reason`;
+    if (!Number.isInteger(duration) || !validMangaShotDuration(
+      duration,
+      readString(item.duration_reason ?? item.durationReason).trim(),
+      tempo,
+    )) {
+      return tempo === "short-cut"
+        ? `${shotId} 的 duration 必须为 2 或 3 秒`
+        : `${shotId} 的 duration 必须为 5 至 15 的整数；5 至 9 秒必须填写 duration_reason`;
     }
     if (!parseShotTimeline(item.timeline, duration)) {
       return `${shotId} 的 timeline 必须从 0 秒连续覆盖到 ${duration} 秒`;
@@ -974,7 +999,8 @@ export function isPersistedScenePlan(value: unknown): value is ScenePlan {
 }
 
 export function isPersistedShotPlan(value: unknown): value is ShotPlan {
-  return parseMangaShots([value]) !== null;
+  return parseMangaShots([value], "long-form") !== null ||
+    parseMangaShots([value], "short-cut") !== null;
 }
 
 export function isPersistedContinuityReport(
@@ -1038,7 +1064,10 @@ function normalizeStoryWorkflowBatches(
   });
 }
 
-function parseOperation(value: unknown): AgentOperation | null {
+function parseOperation(
+  value: unknown,
+  mangaTempo: AgentMangaStoryboardTempo = "long-form",
+): AgentOperation | null {
   if (!isRecord(value)) return null;
   const type = readString(value.type);
 
@@ -1171,9 +1200,9 @@ function parseOperation(value: unknown): AgentOperation | null {
     const storyId = readString(value.story_id ?? value.storyId).trim();
     const chunkIndex = readFinite(value.chunk_index ?? value.chunkIndex);
     const isFinal = readBoolean(value.is_final ?? value.isFinal);
-    const shots = parseMangaShots(value.shots);
+    const shots = parseMangaShots(value.shots, mangaTempo);
     if (!shots) {
-      throw new Error(`Agent 镜头结构校验失败：${describeInvalidMangaShots(value.shots)}`);
+      throw new Error(`Agent 镜头结构校验失败：${describeInvalidMangaShots(value.shots, mangaTempo)}`);
     }
     return storyId && chunkIndex !== null && Number.isInteger(chunkIndex) &&
         chunkIndex >= 0 && isFinal !== null
@@ -1277,7 +1306,10 @@ function parseOperation(value: unknown): AgentOperation | null {
   return null;
 }
 
-export function parseAgentModelResponse(raw: string): AgentResponse {
+export function parseAgentModelResponse(
+  raw: string,
+  options: { mangaTempo?: AgentMangaStoryboardTempo } = {},
+): AgentResponse {
   const cleaned = raw
     .replace(/^[\u200B-\u200D\u2060\uFEFF]+|[\u200B-\u200D\u2060\uFEFF]+$/g, "")
     .trim()
@@ -1310,7 +1342,9 @@ export function parseAgentModelResponse(raw: string): AgentResponse {
     throw new Error("Agent 未返回有效的工作流状态。");
   }
   const rawOperations = Array.isArray(value.operations) ? value.operations : [];
-  const parsedOperations = rawOperations.map(parseOperation);
+  const parsedOperations = rawOperations.map((operation) =>
+    parseOperation(operation, options.mangaTempo),
+  );
   if (parsedOperations.some((operation) => operation === null)) {
     throw new Error("Agent 返回了不受支持的画布操作。");
   }

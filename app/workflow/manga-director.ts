@@ -4,10 +4,12 @@ import type {
   AgentCreateMangaScenePlansOperation,
   AgentCreateMangaShotBatchOperation,
   AgentCreateMangaStoryBeatsOperation,
+  AgentMangaStoryboardTempo,
   AgentMangaPlanningStage,
   AgentStoryAnalysis,
   ContinuityIssue,
   ContinuityReport,
+  MangaVideoSegment,
   ScenePlan,
   ShotPlan,
   StoryBeat,
@@ -45,6 +47,10 @@ export type MangaProject = {
   scenes: ScenePlan[];
   shots: ShotPlan[];
   continuity?: ContinuityReport;
+};
+
+type SegmentPlan = MangaVideoSegment & {
+  shots: ShotPlan[];
 };
 
 const COLUMN_STEP = WORKFLOW_NODE_WIDTH + 120;
@@ -164,6 +170,36 @@ export function buildMangaVideoPrompt(shot: ShotPlan) {
     `对白：${currentShotText(shot.dialogue, "无")}。旁白：${currentShotText(shot.voiceover, "无")}。音效：${currentShotText(shot.soundEffect, "无")}。音乐：${currentShotText(shot.musicCue, "无")}。`,
     `连续性约束：${currentShotText(shot.continuityNotes, "保持人物、场景和道具一致")}。`,
     `禁止项：${currentShotText(shot.negativePrompt, "无")}。禁止改变人物身份、脸型、发型、服装、场景结构、道具造型、人物数量和原创画面风格。`,
+  ].join("\n");
+}
+
+export function buildMangaShortCutVideoPrompt(segment: SegmentPlan) {
+  let cursor = 0;
+  const timeline = segment.shots.map((shot, index) => {
+    const start = cursor;
+    const end = start + shot.duration;
+    cursor = end;
+    const cut = index === segment.shots.length - 1
+      ? ""
+      : `\n在 ${end} 秒切换画面：${currentShotText(shot.transitionOut, "用当前动作或画面形状自然承接") }。`;
+    return [
+      `[${start}-${end}秒｜${shot.shotId}]`,
+      `画面与构图：${currentShotText(shot.composition, "保持当前构图")}；${currentShotText(shot.shotSize, "中景")}，${currentShotText(shot.lens, "标准焦段")}，${currentShotText(shot.perspective, "自然透视")}，${currentShotText(shot.cameraAngle, "平视")}，${currentShotText(shot.cameraMovement, "轻微推近")}。`,
+      `人物与动作：${currentShotText(shot.blocking, "保持当前人物调度")}；${currentShotText(shot.action, "完成当前动作")}；表演：${currentShotText(shot.emotionalGoal, "无")}；视线：${currentShotText(shot.eyeline, "无")}。`,
+      `光影与质感：${currentShotText(shot.lighting, "保持当前光线")}；${currentShotText(shot.colorTone, "保持当前色彩")}；${currentShotText(shot.texture, "保持当前质感")}。`,
+      `起始状态：${currentShotText(shot.startFrame, "当前镜头开始时的可见画面")}。结束状态：${currentShotText(shot.endFrame, "当前镜头结束时的可见画面")}。`,
+      `对白：${currentShotText(shot.dialogue, "无")}。旁白：${currentShotText(shot.voiceover, "无")}。音效：${currentShotText(shot.soundEffect, "无")}。音乐：${currentShotText(shot.musicCue, "无")}。`,
+      cut,
+    ].filter(Boolean).join("\n");
+  }).join("\n\n");
+  const restrictions = [...new Set(segment.shots.map((shot) =>
+    currentShotText(shot.negativePrompt, "无"),
+  ))].join("；");
+  return [
+    `本片段仅生成 0 至 ${segment.duration} 秒内的连续多镜头画面与动作。`,
+    `本片段包含 ${segment.shots.length} 个按秒切换的剪辑镜头；只生成片段内部画面，不延伸到片段外。`,
+    timeline,
+    `禁止项：${restrictions}。禁止改变人物身份、脸型、发型、服装、场景结构、道具造型、人物数量和原创画面风格。`,
   ].join("\n");
 }
 
@@ -311,6 +347,7 @@ export function createMangaShotBatch(
   idFactory = () => crypto.randomUUID(),
 ) {
   const analysis = requireStage(graph, operation.storyId, "shot-plans");
+  const tempo = analysis.mangaStoryboardTempo ?? "long-form";
   const expectedChunk = analysis.mangaPlanningChunkIndex ?? 0;
   if (operation.chunkIndex !== expectedChunk) {
     throw new Error(`漫剧镜头批次不连续：期望 ${expectedChunk}，收到 ${operation.chunkIndex}。`);
@@ -333,6 +370,17 @@ export function createMangaShotBatch(
     existingIds.has(shot.shotId) || !beatIds.has(shot.beatId) || !sceneIds.has(shot.sceneId)
   )) {
     throw new Error("镜头批次包含重复镜头或不存在的剧情节拍、场景 ID。");
+  }
+  if (operation.shots.some((shot) => tempo === "short-cut"
+    ? shot.duration !== 2 && shot.duration !== 3
+    : shot.duration < 5 || shot.duration > 15 ||
+      (shot.duration < 10 && !shot.durationReason)
+  )) {
+    throw new Error(
+      tempo === "short-cut"
+        ? "短片剪辑模式的每行分镜必须为 2 或 3 秒。"
+        : "长镜直出模式的普通镜头必须为 10 至 15 秒；5 至 9 秒必须说明原因。",
+    );
   }
   const normalizedShots = operation.shots.map((shot, index) => {
     if (shot.sequence !== existing.length + index + 1) {
@@ -452,6 +500,56 @@ function normalizedShotLinks(shots: ShotPlan[]) {
     }));
 }
 
+function uniqueInOrder(values: string[]) {
+  return [...new Set(values)];
+}
+
+export function groupMangaShortCutSegments(shots: ShotPlan[]): SegmentPlan[] {
+  const ordered = [...shots].sort((left, right) => left.sequence - right.sequence);
+  if (!ordered.length) return [];
+  const groups: ShotPlan[][] = [];
+  ordered.forEach((shot) => {
+    const current = groups.at(-1);
+    const currentDuration = current?.reduce((total, item) => total + item.duration, 0) ?? 0;
+    if (current && current[0]?.sceneId === shot.sceneId && currentDuration + shot.duration <= 30) {
+      current.push(shot);
+    } else {
+      groups.push([shot]);
+    }
+  });
+  for (let index = 0; index < groups.length; index += 1) {
+    const current = groups[index];
+    const duration = current.reduce((total, shot) => total + shot.duration, 0);
+    if (duration >= 4) continue;
+    const next = groups[index + 1];
+    const previous = groups[index - 1];
+    const nextDuration = next?.reduce((total, shot) => total + shot.duration, 0) ?? Infinity;
+    const previousDuration = previous?.reduce((total, shot) => total + shot.duration, 0) ?? Infinity;
+    if (next && duration + nextDuration <= 30) {
+      groups.splice(index, 2, [...current, ...next]);
+      index -= 1;
+      continue;
+    }
+    if (previous && duration + previousDuration <= 30) {
+      groups.splice(index - 1, 2, [...previous, ...current]);
+      index -= 2;
+      continue;
+    }
+    throw new Error("短片剪辑存在不足 4 秒且无法并入相邻场景的视频片段。");
+  }
+  return groups.map((group, index) => {
+    const duration = group.reduce((total, shot) => total + shot.duration, 0);
+    return {
+      segmentId: `segment-${String(index + 1).padStart(3, "0")}`,
+      shotIds: group.map((shot) => shot.shotId),
+      sceneIds: uniqueInOrder(group.map((shot) => shot.sceneId)),
+      duration,
+      referenceNodeIds: uniqueInOrder(group.flatMap((shot) => shot.referenceNodeIds)).slice(0, 5),
+      shots: group,
+    };
+  });
+}
+
 function reportText(report: ContinuityReport) {
   if (!report.issues.length) return "连续性检查通过，未发现问题。";
   return report.issues.map((issue) =>
@@ -491,56 +589,91 @@ export function createMangaContinuityReport(
     list.push(issue);
     warningsByShot.set(issue.shotId, list);
   });
-  const model = DEFAULT_MODEL_BY_MODE.video;
+  const tempo: AgentMangaStoryboardTempo = analysis.mangaStoryboardTempo ?? "long-form";
+  const model = tempo === "short-cut" ? "seedance-2.5" : DEFAULT_MODEL_BY_MODE.video;
   const config = getModelConfig("video", model)!;
+  const shotNodeById = new Map(shotNodes.map((node) => [node.shotPlan!.shotId, node]));
+  const segments: SegmentPlan[] = tempo === "short-cut"
+    ? groupMangaShortCutSegments(ordered)
+    : ordered.map((plan) => ({
+        segmentId: plan.shotId,
+        shotIds: [plan.shotId],
+        sceneIds: [plan.sceneId],
+        duration: plan.duration,
+        referenceNodeIds: plan.referenceNodeIds,
+        shots: [plan],
+      }));
   const createdNodes: WorkflowNode[] = [];
   const createdEdges: WorkflowEdge[] = [];
-  shotNodes.forEach((shotNode) => {
-    const plan = planById.get(shotNode.shotRef!)!;
+  segments.forEach((segment) => {
+    const firstShotNode = shotNodeById.get(segment.shotIds[0])!;
     const schedulerId = idFactory();
     const resultId = idFactory();
-    const x = shotNode.x + COLUMN_STEP;
+    const x = firstShotNode.x + COLUMN_STEP;
+    const label = tempo === "short-cut"
+      ? `${segment.segmentId} · ${segment.duration}秒视频片段`
+      : `${segment.segmentId} · ${segment.duration}秒视频`;
+    const prompt = tempo === "short-cut"
+      ? buildMangaShortCutVideoPrompt(segment)
+      : segment.shots[0]!.videoPrompt;
     createdNodes.push(
       {
         id: schedulerId,
         x,
-        y: shotNode.y,
+        y: firstShotNode.y,
         width: WORKFLOW_NODE_WIDTH,
         height: 360,
         type: "scheduler",
         outputKind: "video",
         model,
-        prompt: plan.videoPrompt,
+        prompt,
         aspectRatio: analysis.projectAspectRatio || "16:9",
         resolution: config.defaultResolution ?? config.resolutions[0] ?? "720p",
-        duration: String(plan.duration),
+        duration: String(segment.duration),
         outputCount: 1,
         error: "",
-        label: `${plan.shotId} · ${plan.duration}秒视频`,
+        label,
         storyId: operation.storyId,
-        shotRef: plan.shotId,
+        shotRef: segment.shotIds[0],
         storyRole: "video-scheduler",
+        videoSegment: {
+          segmentId: segment.segmentId,
+          shotIds: segment.shotIds,
+          sceneIds: segment.sceneIds,
+          duration: segment.duration,
+          referenceNodeIds: segment.referenceNodeIds,
+        },
       },
       {
         id: resultId,
         x: x + COLUMN_STEP,
-        y: shotNode.y,
+        y: firstShotNode.y,
         type: "result",
         kind: "video",
         schedulerId,
-        text: `${plan.shotId} 视频片段占位`,
+        text: `${segment.segmentId} 视频片段占位`,
         model,
         status: "ready",
         progress: "待生成",
         error: "",
-        label: `${plan.shotId} · 视频片段占位`,
+        label: `${segment.segmentId} · 视频片段占位`,
         storyId: operation.storyId,
-        shotRef: plan.shotId,
+        shotRef: segment.shotIds[0],
         storyRole: "clip",
+        videoSegment: {
+          segmentId: segment.segmentId,
+          shotIds: segment.shotIds,
+          sceneIds: segment.sceneIds,
+          duration: segment.duration,
+          referenceNodeIds: segment.referenceNodeIds,
+        },
       },
     );
-    createdEdges.push(makeEdge(shotNode.id, schedulerId, idFactory));
-    plan.referenceNodeIds.forEach((nodeId) => {
+    segment.shotIds.forEach((shotId) => {
+      const shotNode = shotNodeById.get(shotId);
+      if (shotNode) createdEdges.push(makeEdge(shotNode.id, schedulerId, idFactory));
+    });
+    segment.referenceNodeIds.forEach((nodeId) => {
       createdEdges.push(makeEdge(nodeId, schedulerId, idFactory));
     });
     createdEdges.push(makeEdge(schedulerId, resultId, idFactory));
@@ -630,6 +763,8 @@ export function refreshMangaVideoSchedulerPrompts(graph: WorkflowGraph) {
       return node;
     }
     const plan = node.shotRef ? planByRef.get(node.shotRef) : undefined;
+    const segmentShots = node.videoSegment?.shotIds.map((id) => planByRef.get(id))
+      .filter((item): item is ShotPlan => Boolean(item)) ?? [];
     const result = resultBySchedulerId.get(node.id);
     if (
       !plan || !result || result.taskId ||
@@ -637,7 +772,9 @@ export function refreshMangaVideoSchedulerPrompts(graph: WorkflowGraph) {
     ) {
       return node;
     }
-    const prompt = buildMangaVideoPrompt(plan);
+    const prompt = node.videoSegment && segmentShots.length > 1
+      ? buildMangaShortCutVideoPrompt({ ...node.videoSegment, shots: segmentShots })
+      : buildMangaVideoPrompt(plan);
     if (prompt === node.prompt) return node;
     changed = true;
     return { ...node, prompt };

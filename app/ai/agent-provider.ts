@@ -8,6 +8,7 @@ import {
   type AgentResponse,
   type AgentSurfaceSnapshot,
   type AgentStoryboardMode,
+  type AgentMangaStoryboardTempo,
   type AgentMangaPlanningStage,
 } from "./agent.ts";
 import {
@@ -137,6 +138,7 @@ function systemPrompt(
   canvasMode: AgentRequest["canvas"]["mode"],
   storyboardMode?: AgentStoryboardMode,
   mangaPlanningStage?: AgentMangaPlanningStage,
+  mangaStoryboardTempo: AgentMangaStoryboardTempo = "long-form",
 ) {
   const models = JSON.stringify(
     ALL_MODELS.map((model) => ({ mode: model.mode, model: model.value })),
@@ -189,6 +191,7 @@ ${stageManual}`
 
 当前会话阶段：${phase}。
 当前画布类型：${canvasMode}。
+当前漫剧镜头节奏：${mangaStoryboardTempo === "short-cut" ? "短片剪辑；每行分镜严格为 2 或 3 秒，视频会按场景合并为最长 30 秒片段。" : "长镜直出；普通镜头为 10 至 15 秒，5 至 9 秒必须说明原因。"}。
 可用于 generate_content 的 mode/model 组合：${models}。model 字段只能填写 model 值，不得添加 mode 前缀。
 
 图片生成 Tool 手册：
@@ -223,6 +226,13 @@ function selectedMangaPlanningStage(canvas: AgentSurfaceSnapshot) {
     node.mangaPlanningStage &&
     node.mangaPlanningStage !== "complete"
   )?.mangaPlanningStage;
+}
+
+function selectedMangaStoryboardTempo(canvas: AgentSurfaceSnapshot) {
+  if (canvas.mode !== "workflow") return "long-form" as const;
+  return canvas.nodes.find((node) =>
+    node.storyRole === "analysis" && node.storyboardMode === "comic"
+  )?.mangaStoryboardTempo ?? "long-form";
 }
 
 function validateMangaDirectorOperations(
@@ -554,7 +564,8 @@ const MANGA_SHOT_STRING_FIELDS = [
   "continuity_notes",
 ] as const;
 
-const MANGA_SHOT_RESPONSE_FORMAT = mangaDirectorResponseFormat(
+function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
+  return mangaDirectorResponseFormat(
   "manga_shot_batch",
   ["type", "story_id", "chunk_index", "is_final", "shots"],
   {
@@ -579,7 +590,9 @@ const MANGA_SHOT_RESPONSE_FORMAT = mangaDirectorResponseFormat(
             MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
           ),
           sequence: { type: "integer" },
-          duration: { type: "integer" },
+          duration: tempo === "short-cut"
+            ? { type: "integer", enum: [2, 3] }
+            : { type: "integer", minimum: 5, maximum: 15 },
           character_ids: { type: "array", items: { type: "string" } },
           prop_ids: { type: "array", items: { type: "string" } },
           reference_node_ids: { type: "array", items: { type: "string" } },
@@ -608,7 +621,8 @@ const MANGA_SHOT_RESPONSE_FORMAT = mangaDirectorResponseFormat(
       },
     },
   },
-);
+  );
+}
 
 const MANGA_CONTINUITY_RESPONSE_FORMAT = mangaDirectorResponseFormat(
   "manga_continuity_report",
@@ -651,10 +665,13 @@ const MANGA_CONTINUITY_RESPONSE_FORMAT = mangaDirectorResponseFormat(
   },
 );
 
-const MANGA_RESPONSE_FORMATS: Record<AgentMangaPlanningStage, unknown> = {
+const MANGA_RESPONSE_FORMATS: Record<
+  Exclude<AgentMangaPlanningStage, "complete">,
+  unknown
+> = {
   "story-beats": MANGA_STORY_BEATS_RESPONSE_FORMAT,
   "scene-plans": MANGA_SCENE_PLANS_RESPONSE_FORMAT,
-  "shot-plans": MANGA_SHOT_RESPONSE_FORMAT,
+  "shot-plans": mangaShotResponseFormat("long-form"),
   continuity: MANGA_CONTINUITY_RESPONSE_FORMAT,
 };
 
@@ -707,6 +724,7 @@ export function createCanvasAgentClient(
             request.canvas.mode,
             selectedStoryboardMode(request.canvas),
             selectedMangaPlanningStage(request.canvas),
+            selectedMangaStoryboardTempo(request.canvas),
           ),
         },
         ...request.messages,
@@ -731,8 +749,10 @@ export function createCanvasAgentClient(
       let response: Response;
       try {
         const mangaPlanningStage = selectedMangaPlanningStage(request.canvas);
-        const responseFormat = mangaPlanningStage
-          ? MANGA_RESPONSE_FORMATS[mangaPlanningStage]
+        const responseFormat = mangaPlanningStage && mangaPlanningStage !== "complete"
+          ? mangaPlanningStage === "shot-plans"
+            ? mangaShotResponseFormat(selectedMangaStoryboardTempo(request.canvas))
+            : MANGA_RESPONSE_FORMATS[mangaPlanningStage]
           : undefined;
         response = await fetcher(`${baseUrl}/v1/chat/completions`, {
           method: "POST",
@@ -787,7 +807,9 @@ export function createCanvasAgentClient(
       }
       if (!content) throw new CanvasAgentError("画布 Agent 未返回可显示的回复。", 502);
       try {
-        const parsed = parseAgentModelResponse(content);
+        const parsed = parseAgentModelResponse(content, {
+          mangaTempo: selectedMangaStoryboardTempo(request.canvas),
+        });
         const progressSummary =
           parsed.progressSummary ?? FALLBACK_PROGRESS_SUMMARY;
         options.onProgress?.(progressSummary);

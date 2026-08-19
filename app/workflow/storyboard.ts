@@ -1,4 +1,5 @@
 import type {
+  AgentMangaStoryboardTempo,
   AgentCreateStoryWorkflowOperation,
   AgentStoryboardMode,
 } from "../ai/agent.ts";
@@ -11,6 +12,7 @@ import type {
 export type StoryboardReadiness = {
   storyId: string;
   mode?: AgentStoryboardMode;
+  tempo: AgentMangaStoryboardTempo;
   ready: boolean;
   locked: boolean;
   assetCount: number;
@@ -48,6 +50,7 @@ export function storyStoryboardReadiness(
   return {
     storyId,
     mode: analysis?.storyboardMode,
+    tempo: analysis?.mangaStoryboardTempo ?? "long-form",
     ready: Boolean(
       analysis?.planningStage === "complete" &&
       analysis.planningStatus === "complete" &&
@@ -64,12 +67,16 @@ export function setStoryStoryboardMode(
   graph: WorkflowGraph,
   storyId: string,
   mode: AgentStoryboardMode,
+  tempo: AgentMangaStoryboardTempo = "long-form",
 ): WorkflowGraph {
   const state = storyStoryboardReadiness(graph, storyId);
   if (!analysisNode(graph, storyId)) throw new Error("未找到对应的剧本分析节点。");
   if (!state.ready) throw new Error("资产库尚未全部生成并确认，不能选择分镜类型。");
   if (state.locked && state.mode !== mode) {
     throw new Error("当前项目已经创建分镜，不能切换分镜类型。");
+  }
+  if (state.locked && state.mode === "comic" && state.tempo !== tempo) {
+    throw new Error("当前项目已经创建分镜，不能切换制作节奏。");
   }
   return {
     ...graph,
@@ -78,6 +85,7 @@ export function setStoryStoryboardMode(
         ? {
             ...node,
             storyboardMode: mode,
+            ...(mode === "comic" ? { mangaStoryboardTempo: tempo } : {}),
             ...(mode === "comic" && !node.mangaPlanningStage
               ? {
                   mangaPlanningStage: "story-beats" as const,

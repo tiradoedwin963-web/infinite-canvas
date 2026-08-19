@@ -11,6 +11,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Table2,
   Trash2,
   Video,
   Workflow,
@@ -23,6 +24,7 @@ import {
   type AgentDangerousOperation,
   type AgentInspectedImage,
   type AgentOperation,
+  type AgentMangaStoryboardTempo,
   type AgentStoryboardMode,
 } from "@/app/ai/agent";
 import {
@@ -105,6 +107,10 @@ import {
   syncStoryFoundationStatuses,
 } from "@/app/workflow/story-assets";
 import { setStoryStoryboardMode } from "@/app/workflow/storyboard";
+import {
+  createStoryboardTable,
+  STORYBOARD_TABLE_HEADERS,
+} from "@/app/workflow/storyboard-table";
 import {
   acknowledgeMangaContinuity,
   createMangaCinematographyComparisonGraph,
@@ -309,6 +315,7 @@ export function WorkflowCanvas() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [projectCloneBusy, setProjectCloneBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
+  const [storyboardTableStoryId, setStoryboardTableStoryId] = useState<string | null>(null);
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
   >("idle");
@@ -1601,8 +1608,12 @@ export function WorkflowCanvas() {
     return message;
   }
 
-  function selectStoryboardMode(storyId: string, mode: AgentStoryboardMode) {
-    commitGraph((current) => setStoryStoryboardMode(current, storyId, mode));
+  function selectStoryboardMode(
+    storyId: string,
+    mode: AgentStoryboardMode,
+    tempo: AgentMangaStoryboardTempo = "long-form",
+  ) {
+    commitGraph((current) => setStoryStoryboardMode(current, storyId, mode, tempo));
   }
 
   function approveContinuity(storyId: string) {
@@ -2035,6 +2046,49 @@ export function WorkflowCanvas() {
     URL.revokeObjectURL(url);
   }
 
+  function openStoryboardTable() {
+    const storyId = graphRef.current.nodes.find((node) =>
+      node.storyRole === "analysis" && node.storyId && graphRef.current.nodes.some((candidate) =>
+        candidate.storyId === node.storyId && candidate.storyRole === "shot",
+      ),
+    )?.storyId;
+    if (!storyId) {
+      window.alert("当前项目尚未创建漫剧镜头，暂时没有可查看的分镜表。");
+      return;
+    }
+    setStoryboardTableStoryId(storyId);
+  }
+
+  async function exportStoryboardTable(storyId: string) {
+    const active = projects?.projects.find((project) => project.id === projects.activeProjectId);
+    try {
+      const response = remote && active
+        ? await fetch(`/api/workflow/projects/${encodeURIComponent(active.id)}/storyboard.xlsx`)
+        : await fetch("/api/workflow/storyboard.xlsx", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: active?.name ?? "漫剧分镜表",
+              storyId,
+              graph: graphRef.current,
+            }),
+          });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const blob = await response.blob();
+      const filename = `${(active?.name ?? "漫剧分镜表").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法导出分镜表。");
+    }
+  }
+
   function deleteNode(node: WorkflowNode) {
     if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
@@ -2161,6 +2215,12 @@ export function WorkflowCanvas() {
         },
     [canvasSize, graph, isAgentOpen, viewport],
   );
+  const storyboardTable = useMemo(
+    () => storyboardTableStoryId
+      ? createStoryboardTable(graph, storyboardTableStoryId)
+      : null,
+    [graph, storyboardTableStoryId],
+  );
 
   return (
     <main
@@ -2199,6 +2259,9 @@ export function WorkflowCanvas() {
               <Download size={15} />
             </button>
           ) : null}
+          <button aria-label="查看分镜表" title="查看分镜表" type="button" onClick={openStoryboardTable}>
+            <Table2 size={15} />
+          </button>
           <button
             aria-label="创建电影语言对照版"
             title="创建电影语言对照版"
@@ -2263,6 +2326,40 @@ export function WorkflowCanvas() {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+      {storyboardTable ? (
+        <div className="workflow-storyboard-backdrop" data-workflow-isolated>
+          <section className="workflow-storyboard-table" role="dialog" aria-modal="true" aria-label="漫剧分镜表">
+            <header>
+              <div>
+                <h2>{storyboardTable.title}｜分镜表</h2>
+                <p>{storyboardTable.rows.length} 镜 · {storyboardTable.totalDuration} 秒 · 校验{storyboardTable.validation} · {storyboardTable.productionRule}</p>
+              </div>
+              <div>
+                <button type="button" onClick={() => void exportStoryboardTable(storyboardTable.storyId)}>
+                  <Download size={15} /> 导出 Excel
+                </button>
+                <button aria-label="关闭分镜表" type="button" onClick={() => setStoryboardTableStoryId(null)}>
+                  <X size={18} />
+                </button>
+              </div>
+            </header>
+            <div className="workflow-storyboard-scroll">
+              <table>
+                <thead><tr>{STORYBOARD_TABLE_HEADERS.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+                <tbody>{storyboardTable.rows.map((row) => (
+                  <tr key={row.shotId}>
+                    <td>{row.shotId}</td><td>{row.timecode}</td><td>{row.duration}</td>
+                    <td>{row.referenceAssets}</td><td>{row.sceneTime}</td><td>{row.shotSizeLens}</td>
+                    <td>{row.camera}</td><td>{row.composition}</td><td>{row.performance}</td>
+                    <td>{row.voiceover}</td><td>{row.sound}</td><td>{row.transition}</td>
+                    <td>{row.continuity}</td><td>{row.lightingTexture}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </section>
         </div>
       ) : null}
       <div

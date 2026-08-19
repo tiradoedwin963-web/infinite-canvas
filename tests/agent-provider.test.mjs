@@ -201,6 +201,32 @@ test("reserves enough structured output tokens for two-shot manga batches", asyn
   assert.ok(shotSchema.required.includes("timeline"));
 });
 
+test("uses the short-cut duration schema only for a short-cut project", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: '{"message":"继续","workflow_state":"active","operations":[]}' } }],
+    });
+  });
+  const mangaCanvas = comicWorkflowCanvas();
+  mangaCanvas.nodes[0].mangaPlanningStage = "shot-plans";
+  mangaCanvas.nodes[0].mangaStoryboardTempo = "short-cut";
+  await client.respond(validateAgentRequest(request({
+    canvas: mangaCanvas,
+    phase: "active",
+    messages: [
+      { role: "user", content: "开始" },
+      { role: "assistant", content: "已进入镜头规划" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  const duration = body.response_format.json_schema.schema.properties.operations
+    .items.properties.shots.items.properties.duration;
+  assert.deepEqual(duration.enum, [2, 3]);
+  assert.match(body.messages[0].content, /短片剪辑；每行分镜严格为 2 或 3 秒/);
+});
+
 test("uses one strict response schema for every manga director stage", async () => {
   const stages = [
     ["story-beats", "create_manga_story_beats", "beats"],

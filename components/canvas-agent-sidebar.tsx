@@ -49,6 +49,7 @@ import {
   type AgentSurfaceSnapshot,
   type AgentStoryAssetKind,
   type AgentStoryboardMode,
+  type AgentMangaStoryboardTempo,
   type AgentMangaPlanningStage,
   type AgentWorkflowSnapshot,
 } from "@/app/ai/agent";
@@ -123,6 +124,7 @@ type CanvasAgentSidebarProps = {
   onSelectStoryboardMode?: (
     storyId: string,
     mode: AgentStoryboardMode,
+    tempo?: AgentMangaStoryboardTempo,
   ) => void;
   onApproveContinuity?: (storyId: string) => void;
   onConfirmOperation: (
@@ -191,6 +193,9 @@ export function CanvasAgentSidebar({
   const [streamingSummary, setStreamingSummary] = useState("");
   const [requestStartedAt, setRequestStartedAt] = useState<number | null>(null);
   const [requestClock, setRequestClock] = useState(() => Date.now());
+  const [mangaTempoByStory, setMangaTempoByStory] = useState<
+    Record<string, AgentMangaStoryboardTempo>
+  >({});
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const planningAbortRef = useRef<AbortController | null>(null);
@@ -299,6 +304,7 @@ export function CanvasAgentSidebar({
       return [{
         storyId: analysis.storyId,
         mode: analysis.storyboardMode,
+        mangaStoryboardTempo: analysis.mangaStoryboardTempo ?? "long-form",
         assetCount: results.length,
         mangaPlanningStage: analysis.mangaPlanningStage,
         mangaPlanningStatus: analysis.mangaPlanningStatus,
@@ -773,7 +779,7 @@ export function CanvasAgentSidebar({
             id: `manga-director-user-${stage}-${chunkIndex}`,
             role: "user",
             content: stage === "shot-plans"
-              ? `继续短剧 ${mangaStoryId} 的镜头规划，只返回 ${expectedType}。操作字段 chunk_index 必须严格等于 ${chunkIndex}，这是批次编号，不是镜头编号；已有 ${shotCount} 镜，新镜头 ref 从 shot-${String(shotCount + 1).padStart(3, "0")} 开始，不得重复。当前尚未覆盖的剧情节拍为：${uncoveredBeatIds.join("、") || "无"}；本批必须优先覆盖这些节拍，不得用已覆盖节拍替代。每批1至2镜；每镜必须包含阶段手册列出的全部字段，无内容时填写“无”，不得省略字段。普通镜头10至15秒，5至9秒必须说明原因，时间轴用连续整数秒区间。只有尚未覆盖列表在本批后变为空时 is_final=true。`
+              ? `继续短剧 ${mangaStoryId} 的镜头规划，只返回 ${expectedType}。操作字段 chunk_index 必须严格等于 ${chunkIndex}，这是批次编号，不是镜头编号；已有 ${shotCount} 镜，新镜头 ref 从 shot-${String(shotCount + 1).padStart(3, "0")} 开始，不得重复。当前尚未覆盖的剧情节拍为：${uncoveredBeatIds.join("、") || "无"}；本批必须优先覆盖这些节拍，不得用已覆盖节拍替代。每批1至2镜；每镜必须包含阶段手册列出的全部字段，无内容时填写“无”，不得省略字段。${analysis.mangaStoryboardTempo === "short-cut" ? "当前为短片剪辑：每镜严格为2或3秒，时间轴用连续整数秒区间；视频将按场景合并为最长30秒片段。" : "当前为长镜直出：普通镜头10至15秒，5至9秒必须说明原因，时间轴用连续整数秒区间。"}只有尚未覆盖列表在本批后变为空时 is_final=true。`
               : `继续短剧 ${mangaStoryId} 的 ${MANGA_STAGE_LABEL[stage]} 阶段，只返回 ${expectedType}，不得返回其他操作或运行生成。`,
             createdAt: Date.now(),
           };
@@ -1481,16 +1487,51 @@ export function CanvasAgentSidebar({
                       ? "当前项目已经创建秒级漫剧视频工作流，分镜类型已锁定。"
                     : `资产库已就绪（${control.assetCount} 项）。请选择本项目的分镜能力。`}
                 </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    aria-label="选择漫剧分镜"
-                    className="inline-flex h-8 items-center justify-center rounded-full bg-zinc-900 px-3 text-xs font-medium text-white disabled:opacity-60"
-                    disabled={control.locked || isSending || isConfirmationBusy}
-                    type="button"
-                    onClick={() => onSelectStoryboardMode?.(control.storyId, "comic")}
-                  >
-                    {control.mode === "comic" ? "已选漫剧" : "漫剧"}
-                  </button>
+                {control.mode !== "comic" ? (
+                  <>
+                    <p className="mt-0 mb-2">先选择漫剧的项目级镜头节奏；创建首个镜头后不能切换。</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ["long-form", "长镜直出"],
+                        ["short-cut", "短片剪辑"],
+                      ] as const).map(([tempo, label]) => (
+                        <button
+                          key={tempo}
+                          aria-label={`选择${label}`}
+                          className={`inline-flex h-8 items-center justify-center rounded-full border px-3 text-xs font-medium ${
+                            (mangaTempoByStory[control.storyId] ?? "long-form") === tempo
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-violet-200 bg-white text-violet-950"
+                          }`}
+                          disabled={control.locked || isSending || isConfirmationBusy}
+                          type="button"
+                          onClick={() => setMangaTempoByStory((current) => ({
+                            ...current,
+                            [control.storyId]: tempo,
+                          }))}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      aria-label="确认漫剧节奏并开始导演规划"
+                      className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full bg-zinc-900 px-3 text-xs font-medium text-white disabled:opacity-60"
+                      disabled={control.locked || isSending || isConfirmationBusy}
+                      type="button"
+                      onClick={() => onSelectStoryboardMode?.(
+                        control.storyId,
+                        "comic",
+                        mangaTempoByStory[control.storyId] ?? "long-form",
+                      )}
+                    >
+                      确认漫剧节奏并开始规划
+                    </button>
+                  </>
+                ) : (
+                  <p className="mt-0 mb-2">当前制作规则：{control.mangaStoryboardTempo === "short-cut" ? "短片剪辑（每行2–3秒，按场景合并视频片段）" : "长镜直出（普通镜头10–15秒）"}。</p>
+                )}
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
                     aria-label="TVC 分镜待开发"
                     className="inline-flex h-8 items-center justify-center rounded-full border border-violet-200 bg-white px-3 text-xs font-medium text-violet-500 opacity-70"

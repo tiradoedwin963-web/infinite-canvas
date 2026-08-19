@@ -81,7 +81,7 @@ function storyboardOperation(referenceNodeIds = ["lead-result", "scene-result"])
 }
 
 test("persists an optional storyboard mode without upgrading workflow v1", () => {
-  const selected = setStoryStoryboardMode(readyAssetGraph(), "asset-story", "comic");
+  const selected = setStoryStoryboardMode(readyAssetGraph(), "asset-story", "comic", "short-cut");
   const restored = parseWorkflowGraph(JSON.stringify(selected));
   assert.equal(restored.version, 1);
   assert.equal(
@@ -92,7 +92,29 @@ test("persists an optional storyboard mode without upgrading workflow v1", () =>
     restored.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStage,
     "story-beats",
   );
+  assert.equal(
+    restored.nodes.find((node) => node.storyRole === "analysis").mangaStoryboardTempo,
+    "short-cut",
+  );
   assert.equal(storyStoryboardReadiness(restored, "asset-story").ready, true);
+});
+
+test("locks the selected manga tempo after the first shot", () => {
+  const graph = setStoryStoryboardMode(readyAssetGraph(), "asset-story", "comic", "short-cut");
+  graph.nodes.push({
+    id: "shot",
+    x: 0,
+    y: 0,
+    type: "source",
+    kind: "text",
+    text: "分镜",
+    storyId: "asset-story",
+    storyRole: "shot",
+  });
+  assert.throws(
+    () => setStoryStoryboardMode(graph, "asset-story", "comic", "long-form"),
+    /不能切换制作节奏/,
+  );
 });
 
 test("requires every planned asset before selecting a storyboard mode", () => {

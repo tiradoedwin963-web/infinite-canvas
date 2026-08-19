@@ -9,8 +9,10 @@ import type {
   AgentCreateStoryWorkflowOperation,
   AgentMangaPlanningStage,
   AgentMangaPlanningStatus,
+  AgentMangaStoryboardTempo,
   AgentStoryboardMode,
   ContinuityReport,
+  MangaVideoSegment,
   ScenePlan,
   ShotPlan,
   StoryBeat,
@@ -103,6 +105,7 @@ type WorkflowNodeBase = {
   assetStrategy?: "foundation-pair-v1";
   foundationApprovedAt?: number;
   storyboardMode?: AgentStoryboardMode;
+  mangaStoryboardTempo?: AgentMangaStoryboardTempo;
   storyVisualStyle?: string;
   planningStage?: WorkflowAssetPlanningStage;
   planningStatus?: WorkflowAssetPlanningStatus;
@@ -117,6 +120,7 @@ type WorkflowNodeBase = {
   scenePlan?: ScenePlan;
   shotPlan?: ShotPlan;
   continuityReport?: ContinuityReport;
+  videoSegment?: MangaVideoSegment;
 };
 
 export type WorkflowSourceNode = WorkflowNodeBase & {
@@ -258,6 +262,9 @@ function validBase(node: Partial<WorkflowNode>) {
     (node.storyboardMode === undefined ||
       node.storyboardMode === "comic" ||
       node.storyboardMode === "tvc") &&
+    (node.mangaStoryboardTempo === undefined ||
+      node.mangaStoryboardTempo === "long-form" ||
+      node.mangaStoryboardTempo === "short-cut") &&
     (node.storyVisualStyle === undefined ||
       typeof node.storyVisualStyle === "string") &&
     (node.planningStage === undefined ||
@@ -300,6 +307,17 @@ function validBase(node: Partial<WorkflowNode>) {
     && (node.shotPlan === undefined || isPersistedShotPlan(node.shotPlan))
     && (node.continuityReport === undefined ||
       isPersistedContinuityReport(node.continuityReport))
+    && (node.videoSegment === undefined ||
+      typeof node.videoSegment.segmentId === "string" &&
+      Array.isArray(node.videoSegment.shotIds) &&
+      node.videoSegment.shotIds.every((id) => typeof id === "string") &&
+      Array.isArray(node.videoSegment.sceneIds) &&
+      node.videoSegment.sceneIds.every((id) => typeof id === "string") &&
+      Number.isInteger(node.videoSegment.duration) &&
+      node.videoSegment.duration >= 4 &&
+      node.videoSegment.duration <= 30 &&
+      Array.isArray(node.videoSegment.referenceNodeIds) &&
+      node.videoSegment.referenceNodeIds.every((id) => typeof id === "string"))
   );
 }
 
