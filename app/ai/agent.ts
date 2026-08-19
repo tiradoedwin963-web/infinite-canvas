@@ -1,4 +1,5 @@
 import type { ComposerMode } from "./models.ts";
+import { validateMangaShotCinematography } from "../workflow/manga-cinematography.ts";
 
 export const AGENT_MODEL = "gpt-5.6-sol";
 export const AGENT_CHAT_STORAGE_KEY = "canvas-agent-chat-v1";
@@ -807,9 +808,8 @@ function parseMangaShots(value: unknown): ShotPlan[] | null {
   });
   if (shots.some((shot) => shot === null)) return null;
   const parsed = shots as ShotPlan[];
-  return new Set(parsed.map((shot) => shot.shotId)).size === parsed.length
-    ? parsed
-    : null;
+  if (new Set(parsed.map((shot) => shot.shotId)).size !== parsed.length) return null;
+  return validateMangaShotCinematography(parsed) ? null : parsed;
 }
 
 function describeInvalidMangaShots(value: unknown) {

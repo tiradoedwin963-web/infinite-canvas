@@ -1973,3 +1973,26 @@
 - `docs/canvas.md`：说明公共摄影语言、对照项目和不设固定镜头数的确定性续批规则。
 - `progress.md`：追加本轮实施、验证和回滚记录。
 - 回滚点：当前工作区包含多轮未提交改动；提交前只能按上述文件反向应用本轮公共摄影、对照复制和确定性续批补丁，禁止直接 `git restore` 覆盖前序工作；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-19 - Task: 优化漫剧镜头提示词与电影化切镜规则
+
+### What was done
+- 将导演层的转场意图与单镜视频生成提示词分离：相似形状、动作承接、眼神、遮挡和声音撞击仍保留在 ShotPlan 的切点字段中，视频模型只接收当前镜头 0 至时长秒内的画面、动作、表演、声音和约束。
+- 增加镜头节奏与动静校验：特写/大特写及中远景和更远景别均最多连续 3 镜；固定机位必须存在可读的人物、道具或环境动作，避免死镜头。
+- 为当前活动工作流新增幂等提示词刷新：只重写未提交的 `ready` 或无任务 ID 的 `failed` 视频调度器；已成功、进行中、暂停或已保存任务 ID 的结果保持不变，不触发任何生成请求。
+
+### Testing
+- `npx tsc --noEmit`：未通过，仓库既有 TypeScript 配置未启用 `.ts` 导入且存在本轮外的类型错误；未作为本轮通过依据。
+- `npm run lint`：通过。
+- `node --test tests/manga-director.test.mjs`：11 项通过，覆盖当前镜头提示词、切点剔除、死镜头、景别连续性和待生成调度器刷新。
+- `npm test`：通过，生产构建成功，171 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/workflow/manga-cinematography.ts`：新增共享的跨镜场记、固定死镜头和景别连续性校验。
+- `app/ai/agent.ts`：Agent 镜头批次解析接入电影化校验。
+- `app/workflow/manga-director.ts`：重组单镜视频提示词，并提供待生成调度器的幂等提示词刷新。
+- `components/workflow/workflow-canvas.tsx`：活动项目载入后自动应用安全的待生成提示词刷新。
+- `shot-common-tools.md`、`manga-shot-plan-tools.md`、`manga-director-core.md`、`docs/canvas.md`：记录特写触发、景别节奏、死镜头和切点职责规则。
+- `tests/manga-director.test.mjs`：新增提示词、切点、景别和刷新回归测试。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/workflow/manga-director.ts components/workflow/workflow-canvas.tsx shot-common-tools.md manga-shot-plan-tools.md manga-director-core.md docs/canvas.md tests/manga-director.test.mjs progress.md`，再执行 `git clean -f app/workflow/manga-cinematography.ts`。

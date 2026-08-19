@@ -15,8 +15,10 @@ import {
   createMangaScenePlans,
   createMangaShotBatch,
   createMangaStoryBeats,
+  refreshMangaVideoSchedulerPrompts,
   remapWorkflowAssetIds,
 } from "../app/workflow/manga-director.ts";
+import { validateMangaShotCinematography } from "../app/workflow/manga-cinematography.ts";
 import { parseWorkflowGraph, readWorkflowInputs } from "../app/workflow/graph.ts";
 import { setStoryStoryboardMode } from "../app/workflow/storyboard.ts";
 
@@ -402,6 +404,10 @@ test("rejects invalid second timelines, short shots without reasons, and continu
   short.timeline = [{ start_second: 0, end_second: 8, visual_action: "反应", performance: "惊讶", camera: "特写", audio: "无" }];
   assert.throws(() => parseAgentModelResponse(response(short)), /duration_reason/);
 
+  const crossShot = structuredClone(snake);
+  crossShot.end_frame = "切入下一镜的角色眼睛特写";
+  assert.throws(() => parseAgentModelResponse(response(crossShot)), /镜头/);
+
   const { graph: planned, idFactory } = plannedGraph();
   assert.throws(() => createMangaContinuityReport(planned, {
     type: "create_manga_continuity_report",
@@ -426,13 +432,105 @@ test("keeps only the selected cinematography fields in the deterministic video p
     cameraMovement: "缓慢推近，轻微跟随人物呼吸",
     transitionIn: "动作承接",
     transitionOut: "遮挡切换意图",
+    previousShotId: "shot-000",
+    nextShotId: "shot-002",
   }));
   assert.match(prompt, /框中框构图/);
   assert.match(prompt, /中近景/);
   assert.match(prompt, /眼平正侧面/);
   assert.match(prompt, /缓慢推近/);
-  assert.match(prompt, /动作承接 → 遮挡切换意图/);
+  assert.match(prompt, /本镜仅生成 0 至 12 秒内的画面与动作/);
+  assert.match(prompt, /脚步声和衣料摩擦/);
+  assert.match(prompt, /主角刚从左侧进入中景/);
+  assert.match(prompt, /主角停下看向道具/);
+  assert.doesNotMatch(prompt, /转场|切镜|前镜|后镜|动作承接|遮挡切换意图|shot-000|shot-002/);
   assert.doesNotMatch(prompt, /点构图|环绕|大远景/);
+});
+
+test("keeps cut intentions in the plan while stripping them from the generated video prompt", () => {
+  const plan = shotPlan({
+    startFrame: "水滴落在叶面，形成清晰的圆形水纹。",
+    endFrame: "水纹扩散至满画面；匹配下一镜的眼睛。",
+    transitionOut: "相似形状匹配切入下一镜眼睛",
+  });
+  const prompt = buildMangaVideoPrompt(plan);
+  assert.equal(plan.transitionOut, "相似形状匹配切入下一镜眼睛");
+  assert.match(prompt, /水滴落在叶面/);
+  assert.doesNotMatch(prompt, /匹配下一镜|转场|切镜/);
+});
+
+test("rejects dead locked-off shots and repetitive shot-size runs", () => {
+  assert.match(validateMangaShotCinematography([shotPlan({ startFrame: "同上" })]), /首尾画面/);
+  const staticShot = shotPlan({
+    cameraMovement: "固定机位",
+    action: "主角静止不动",
+    blocking: "主角站在画面中央",
+    characterMovement: "无",
+    timeline: [{
+      startSecond: 0,
+      endSecond: 12,
+      visualAction: "人物保持静止",
+      performance: "无变化",
+      camera: "中景固定",
+      audio: "无",
+    }],
+  });
+  assert.match(validateMangaShotCinematography([staticShot]), /固定死镜头/);
+  assert.equal(validateMangaShotCinematography([shotPlan({
+    cameraMovement: "固定机位",
+    action: "树叶轻摆",
+    characterMovement: "无",
+  })]), null);
+
+  const closeShots = Array.from({ length: 4 }, (_, index) => shotPlan({
+    shotId: `close-${index + 1}`,
+    sequence: index + 1,
+    shotSize: index < 3 ? "特写" : "大特写",
+  }));
+  assert.equal(validateMangaShotCinematography(closeShots.slice(0, 3)), null);
+  assert.match(validateMangaShotCinematography(closeShots), /连续 4 个特写/);
+
+  const wideShots = Array.from({ length: 4 }, (_, index) => shotPlan({
+    shotId: `wide-${index + 1}`,
+    sequence: index + 1,
+    shotSize: index === 0 ? "全景" : "中远景",
+  }));
+  assert.equal(validateMangaShotCinematography(wideShots.slice(0, 3)), null);
+  assert.match(validateMangaShotCinematography(wideShots), /连续 4 个中远景/);
+});
+
+test("refreshes only unsent manga video scheduler prompts", () => {
+  const { graph: planned, idFactory } = plannedGraph();
+  const workflow = createMangaContinuityReport(planned, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [] },
+  }, idFactory);
+  const stale = {
+    ...workflow,
+    nodes: workflow.nodes.map((node) =>
+      node.type === "scheduler" && node.storyRole === "video-scheduler"
+        ? { ...node, prompt: "旧提示词：转场到下一镜" }
+        : node,
+    ),
+  };
+  const refreshed = refreshMangaVideoSchedulerPrompts(stale);
+  const scheduler = refreshed.nodes.find((node) =>
+    node.type === "scheduler" && node.storyRole === "video-scheduler",
+  );
+  assert.match(scheduler.prompt, /本镜仅生成 0 至 12 秒内的画面与动作/);
+  assert.doesNotMatch(scheduler.prompt, /转场|下一镜/);
+
+  const success = {
+    ...stale,
+    nodes: stale.nodes.map((node) =>
+      node.type === "result" && node.storyRole === "clip"
+        ? { ...node, status: "success", taskId: "existing-task" }
+        : node,
+    ),
+  };
+  assert.equal(refreshMangaVideoSchedulerPrompts(success), success);
 });
 
 test("creates an isolated cinematography comparison graph and remaps its assets", () => {

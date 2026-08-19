@@ -21,6 +21,10 @@ import {
   type WorkflowResultNode,
   type WorkflowSourceNode,
 } from "./graph.ts";
+import {
+  currentShotText,
+  validateMangaShotCinematography,
+} from "./manga-cinematography.ts";
 
 export type ScriptAnalysis = AgentStoryAnalysis;
 export type CharacterBible = ReturnType<typeof assetBibles>[number];
@@ -147,18 +151,19 @@ function formatSceneText(plan: ScenePlan) {
 
 export function buildMangaVideoPrompt(shot: ShotPlan) {
   const timeline = shot.timeline.map((segment) =>
-    `[${segment.startSecond}-${segment.endSecond}秒] 画面动作：${segment.visualAction}；表演：${segment.performance}；摄影：${segment.camera}；声音：${segment.audio}。`
+    `[${segment.startSecond}-${segment.endSecond}秒] 画面动作：${currentShotText(segment.visualAction, "保持当前镜头动作")}；表演：${currentShotText(segment.performance, "无")}；摄影：${currentShotText(segment.camera, "保持当前镜头摄影")}；声音：${currentShotText(segment.audio, "无")}。`
   ).join("\n");
   return [
-    `镜头时长：${shot.duration}秒。叙事目的：${shot.narrativePurpose}。情绪目标：${shot.emotionalGoal}。`,
-    `景别与摄影：${shot.shotSize}，${shot.lens}，${shot.perspective}，${shot.cameraAngle}，${shot.cameraMovement}。`,
-    `构图与调度：${shot.composition}；${shot.blocking}；人物位置：${shot.characterPosition}；人物移动：${shot.characterMovement}；视线：${shot.eyeline}。`,
-    `光影与质感：${shot.lighting}；${shot.colorTone}；${shot.texture}。`,
-    `开始画面：${shot.startFrame}。结束画面：${shot.endFrame}。`,
+    `本镜仅生成 0 至 ${shot.duration} 秒内的画面与动作。`,
+    `叙事目的：${currentShotText(shot.narrativePurpose, "完成当前叙事动作")}。情绪目标：${currentShotText(shot.emotionalGoal, "无")}。`,
+    `景别与摄影：${currentShotText(shot.shotSize, "中景")}，${currentShotText(shot.lens, "标准焦段")}，${currentShotText(shot.perspective, "自然透视")}，${currentShotText(shot.cameraAngle, "平视")}，${currentShotText(shot.cameraMovement, "轻微推近")}。`,
+    `构图与调度：${currentShotText(shot.composition, "保持当前构图")}；${currentShotText(shot.blocking, "保持当前人物调度")}；人物位置：${currentShotText(shot.characterPosition, "无")}；人物移动：${currentShotText(shot.characterMovement, "无")}；视线：${currentShotText(shot.eyeline, "无")}。`,
+    `光影与质感：${currentShotText(shot.lighting, "保持当前光线")}；${currentShotText(shot.colorTone, "保持当前色彩")}；${currentShotText(shot.texture, "保持当前质感")}。`,
+    `起始画面：${currentShotText(shot.startFrame, "当前镜头开始时的可见画面")}。结束画面：${currentShotText(shot.endFrame, "当前镜头结束时的可见画面")}。`,
     timeline,
-    `对白：${shot.dialogue}。旁白：${shot.voiceover}。音效：${shot.soundEffect}。音乐：${shot.musicCue}。`,
-    `连续性：${shot.continuityNotes}。转场：${shot.transitionIn} → ${shot.transitionOut}。`,
-    `禁止项：${shot.negativePrompt}。禁止改变人物身份、脸型、发型、服装、场景结构、道具造型、人物数量和原创画面风格。`,
+    `对白：${currentShotText(shot.dialogue, "无")}。旁白：${currentShotText(shot.voiceover, "无")}。音效：${currentShotText(shot.soundEffect, "无")}。音乐：${currentShotText(shot.musicCue, "无")}。`,
+    `连续性约束：${currentShotText(shot.continuityNotes, "保持人物、场景和道具一致")}。`,
+    `禁止项：${currentShotText(shot.negativePrompt, "无")}。禁止改变人物身份、脸型、发型、服装、场景结构、道具造型、人物数量和原创画面风格。`,
   ].join("\n");
 }
 
@@ -338,6 +343,11 @@ export function createMangaShotBatch(
       referenceNodeIds: expectedReferenceIds(graph, operation.storyId, shot),
     };
   });
+  const cinematographyError = validateMangaShotCinematography([
+    ...existing,
+    ...normalizedShots,
+  ]);
+  if (cinematographyError) throw new Error(cinematographyError);
   const coveredBeatIds = new Set([...existing, ...normalizedShots].map((shot) => shot.beatId));
   const missingBeatIds = [...beatIds].filter((beatId) => !coveredBeatIds.has(beatId));
   const planningComplete = missingBeatIds.length === 0;
@@ -603,6 +613,36 @@ export function acknowledgeMangaContinuity(
     mangaPlanningStatus: "complete",
     continuityApprovedAt: now,
   });
+}
+
+export function refreshMangaVideoSchedulerPrompts(graph: WorkflowGraph) {
+  const planByRef = new Map(graph.nodes.flatMap((node) =>
+    node.type === "source" && node.storyRole === "shot" && node.shotPlan
+      ? [[node.shotPlan.shotId, node.shotPlan] as const]
+      : [],
+  ));
+  const resultBySchedulerId = new Map(graph.nodes.flatMap((node) =>
+    node.type === "result" ? [[node.schedulerId, node] as const] : [],
+  ));
+  let changed = false;
+  const nodes = graph.nodes.map((node): WorkflowNode => {
+    if (node.type !== "scheduler" || node.storyRole !== "video-scheduler") {
+      return node;
+    }
+    const plan = node.shotRef ? planByRef.get(node.shotRef) : undefined;
+    const result = resultBySchedulerId.get(node.id);
+    if (
+      !plan || !result || result.taskId ||
+      (result.status !== "ready" && result.status !== "failed")
+    ) {
+      return node;
+    }
+    const prompt = buildMangaVideoPrompt(plan);
+    if (prompt === node.prompt) return node;
+    changed = true;
+    return { ...node, prompt };
+  });
+  return changed ? { ...graph, nodes } : graph;
 }
 
 export function markMangaPlanning(

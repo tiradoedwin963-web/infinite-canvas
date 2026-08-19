@@ -109,6 +109,7 @@ import {
   acknowledgeMangaContinuity,
   createMangaCinematographyComparisonGraph,
   markMangaPlanning,
+  refreshMangaVideoSchedulerPrompts,
 } from "@/app/workflow/manga-director";
 import {
   createWorkflowGraphPersistence,
@@ -553,9 +554,10 @@ export function WorkflowCanvas() {
   useEffect(() => {
     if (!hydrated) return;
     const synced = syncStoryFoundationStatuses(graph);
-    if (synced === graph) return;
-    graphRef.current = synced;
-    setGraph(synced);
+    const refreshed = refreshMangaVideoSchedulerPrompts(synced);
+    if (refreshed === graph) return;
+    graphRef.current = refreshed;
+    setGraph(refreshed);
   }, [graph, hydrated]);
 
   useEffect(() => {
