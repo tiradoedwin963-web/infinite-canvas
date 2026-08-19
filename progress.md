@@ -1996,3 +1996,25 @@
 - `shot-common-tools.md`、`manga-shot-plan-tools.md`、`manga-director-core.md`、`docs/canvas.md`：记录特写触发、景别节奏、死镜头和切点职责规则。
 - `tests/manga-director.test.mjs`：新增提示词、切点、景别和刷新回归测试。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/workflow/manga-director.ts components/workflow/workflow-canvas.tsx shot-common-tools.md manga-shot-plan-tools.md manga-director-core.md docs/canvas.md tests/manga-director.test.mjs progress.md`，再执行 `git clean -f app/workflow/manga-cinematography.ts`。
+
+## 2026-08-19 - Task: 稳定化漫剧导演阶段的 Agent JSON 输出
+
+### What was done
+- 为剧情节拍、场面调度、镜头规划和连续性检查分别接入当前阶段专属的严格 JSON Schema；每次上游调用只能返回一个匹配阶段的蛇形字段操作。
+- 保留阶段顺序、短剧 ID、批次、资产引用、镜头秒级时长与原子落图校验，不以空值补齐关键导演数据。
+- 将剧情节拍、场面调度和连续性报告的结构失败改为具体字段错误，替代笼统的“不受支持的画布操作”；连续性报告不再默许缺失 `auto_fixable`。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：18 项通过，覆盖四阶段 Schema、唯一操作约束与字段级错误。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，173 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：为四个导演阶段选择严格 JSON Schema，并约束唯一、当前阶段操作。
+- `app/ai/agent.ts`：提供剧情节拍、场面调度和连续性报告的字段级结构错误，收紧连续性报告必填布尔字段。
+- `manga-director-core.md`、`manga-story-beats-tools.md`、`manga-scene-plan-tools.md`、`manga-shot-plan-tools.md`、`manga-continuity-tools.md`：同步严格蛇形 JSON 输出规则。
+- `docs/canvas.md`：说明漫剧导演阶段的结构化输出与原子落图行为。
+- `tests/agent-provider.test.mjs`、`tests/manga-director.test.mjs`：覆盖全阶段 Schema 选择与明确错误文案。
+- `progress.md`：记录本轮实现和验证。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts manga-director-core.md manga-story-beats-tools.md manga-scene-plan-tools.md manga-shot-plan-tools.md manga-continuity-tools.md docs/canvas.md tests/agent-provider.test.mjs tests/manga-director.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

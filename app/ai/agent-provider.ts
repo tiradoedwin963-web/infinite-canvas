@@ -434,6 +434,115 @@ function upstreamFailure(response: Response, payload: unknown) {
 
 const FALLBACK_PROGRESS_SUMMARY = "已完成当前阶段处理，正在校验可应用结果。";
 
+function mangaDirectorResponseFormat(
+  name: string,
+  required: string[],
+  properties: Record<string, unknown>,
+) {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name,
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["progress_summary", "message", "workflow_state", "operations"],
+        properties: {
+          progress_summary: { type: "string" },
+          message: { type: "string" },
+          workflow_state: { type: "string", enum: ["active"] },
+          operations: {
+            type: "array",
+            minItems: 1,
+            maxItems: 1,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required,
+              properties,
+            },
+          },
+        },
+      },
+    },
+  } as const;
+}
+
+const MANGA_STORY_BEATS_RESPONSE_FORMAT = mangaDirectorResponseFormat(
+  "manga_story_beats",
+  ["type", "story_id", "stage_index", "beats"],
+  {
+    type: { type: "string", enum: ["create_manga_story_beats"] },
+    story_id: { type: "string" },
+    stage_index: { type: "integer", enum: [0] },
+    beats: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "beat_id",
+          "sequence",
+          "scene_id",
+          "narrative_purpose",
+          "emotional_goal",
+          "summary",
+        ],
+        properties: {
+          beat_id: { type: "string" },
+          sequence: { type: "integer" },
+          scene_id: { type: "string" },
+          narrative_purpose: { type: "string" },
+          emotional_goal: { type: "string" },
+          summary: { type: "string" },
+        },
+      },
+    },
+  },
+);
+
+const MANGA_SCENE_PLANS_RESPONSE_FORMAT = mangaDirectorResponseFormat(
+  "manga_scene_plans",
+  ["type", "story_id", "stage_index", "plans"],
+  {
+    type: { type: "string", enum: ["create_manga_scene_plans"] },
+    story_id: { type: "string" },
+    stage_index: { type: "integer", enum: [1] },
+    plans: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "scene_id",
+          "beat_ids",
+          "spatial_layout",
+          "blocking",
+          "eyeline",
+          "axis",
+          "entrances_exits",
+          "lighting",
+          "color_tone",
+        ],
+        properties: {
+          scene_id: { type: "string" },
+          beat_ids: { type: "array", items: { type: "string" } },
+          spatial_layout: { type: "string" },
+          blocking: { type: "string" },
+          eyeline: { type: "string" },
+          axis: { type: "string" },
+          entrances_exits: { type: "string" },
+          lighting: { type: "string" },
+          color_tone: { type: "string" },
+        },
+      },
+    },
+  },
+);
+
 const MANGA_SHOT_STRING_FIELDS = [
   "shot_id", "scene_id", "beat_id", "duration_reason", "narrative_purpose",
   "emotional_goal", "shot_size", "lens", "perspective", "camera_angle",
@@ -445,71 +554,53 @@ const MANGA_SHOT_STRING_FIELDS = [
   "continuity_notes",
 ] as const;
 
-const MANGA_SHOT_RESPONSE_FORMAT = {
-  type: "json_schema",
-  json_schema: {
-    name: "manga_shot_batch",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["progress_summary", "message", "workflow_state", "operations"],
-      properties: {
-        progress_summary: { type: "string" },
-        message: { type: "string" },
-        workflow_state: { type: "string", enum: ["active"] },
-        operations: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["type", "story_id", "chunk_index", "is_final", "shots"],
-            properties: {
-              type: { type: "string", enum: ["create_manga_shot_batch"] },
-              story_id: { type: "string" },
-              chunk_index: { type: "integer" },
-              is_final: { type: "boolean" },
-              shots: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: [
-                    ...MANGA_SHOT_STRING_FIELDS,
-                    "sequence", "duration", "character_ids", "prop_ids", "timeline",
-                    "reference_node_ids", "continuity_warnings",
-                  ],
-                  properties: {
-                    ...Object.fromEntries(
-                      MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
-                    ),
-                    sequence: { type: "integer" },
-                    duration: { type: "integer" },
-                    character_ids: { type: "array", items: { type: "string" } },
-                    prop_ids: { type: "array", items: { type: "string" } },
-                    reference_node_ids: { type: "array", items: { type: "string" } },
-                    continuity_warnings: { type: "array", items: { type: "string" } },
-                    timeline: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        additionalProperties: false,
-                        required: [
-                          "start_second", "end_second", "visual_action",
-                          "performance", "camera", "audio",
-                        ],
-                        properties: {
-                          start_second: { type: "integer" },
-                          end_second: { type: "integer" },
-                          visual_action: { type: "string" },
-                          performance: { type: "string" },
-                          camera: { type: "string" },
-                          audio: { type: "string" },
-                        },
-                      },
-                    },
-                  },
-                },
+const MANGA_SHOT_RESPONSE_FORMAT = mangaDirectorResponseFormat(
+  "manga_shot_batch",
+  ["type", "story_id", "chunk_index", "is_final", "shots"],
+  {
+    type: { type: "string", enum: ["create_manga_shot_batch"] },
+    story_id: { type: "string" },
+    chunk_index: { type: "integer" },
+    is_final: { type: "boolean" },
+    shots: {
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          ...MANGA_SHOT_STRING_FIELDS,
+          "sequence", "duration", "character_ids", "prop_ids", "timeline",
+          "reference_node_ids", "continuity_warnings",
+        ],
+        properties: {
+          ...Object.fromEntries(
+            MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
+          ),
+          sequence: { type: "integer" },
+          duration: { type: "integer" },
+          character_ids: { type: "array", items: { type: "string" } },
+          prop_ids: { type: "array", items: { type: "string" } },
+          reference_node_ids: { type: "array", items: { type: "string" } },
+          continuity_warnings: { type: "array", items: { type: "string" } },
+          timeline: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "start_second", "end_second", "visual_action",
+                "performance", "camera", "audio",
+              ],
+              properties: {
+                start_second: { type: "integer" },
+                end_second: { type: "integer" },
+                visual_action: { type: "string" },
+                performance: { type: "string" },
+                camera: { type: "string" },
+                audio: { type: "string" },
               },
             },
           },
@@ -517,7 +608,55 @@ const MANGA_SHOT_RESPONSE_FORMAT = {
       },
     },
   },
-} as const;
+);
+
+const MANGA_CONTINUITY_RESPONSE_FORMAT = mangaDirectorResponseFormat(
+  "manga_continuity_report",
+  ["type", "story_id", "stage_index", "report"],
+  {
+    type: { type: "string", enum: ["create_manga_continuity_report"] },
+    story_id: { type: "string" },
+    stage_index: { type: "integer", enum: [3] },
+    report: {
+      type: "object",
+      additionalProperties: false,
+      required: ["issues"],
+      properties: {
+        issues: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "code",
+              "severity",
+              "shot_id",
+              "reason",
+              "suggestion",
+              "auto_fixable",
+            ],
+            properties: {
+              code: { type: "string" },
+              severity: { type: "string", enum: ["error", "warning"] },
+              shot_id: { type: "string" },
+              related_shot_id: { type: "string" },
+              reason: { type: "string" },
+              suggestion: { type: "string" },
+              auto_fixable: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+  },
+);
+
+const MANGA_RESPONSE_FORMATS: Record<AgentMangaPlanningStage, unknown> = {
+  "story-beats": MANGA_STORY_BEATS_RESPONSE_FORMAT,
+  "scene-plans": MANGA_SCENE_PLANS_RESPONSE_FORMAT,
+  "shot-plans": MANGA_SHOT_RESPONSE_FORMAT,
+  continuity: MANGA_CONTINUITY_RESPONSE_FORMAT,
+};
 
 export function createCanvasAgentClient(
   config: {
@@ -591,6 +730,10 @@ export function createCanvasAgentClient(
 
       let response: Response;
       try {
+        const mangaPlanningStage = selectedMangaPlanningStage(request.canvas);
+        const responseFormat = mangaPlanningStage
+          ? MANGA_RESPONSE_FORMATS[mangaPlanningStage]
+          : undefined;
         response = await fetcher(`${baseUrl}/v1/chat/completions`, {
           method: "POST",
           headers: {
@@ -601,10 +744,10 @@ export function createCanvasAgentClient(
             model: AGENT_MODEL,
             messages,
             temperature: 0.2,
-            ...(selectedMangaPlanningStage(request.canvas) === "shot-plans"
+            ...(responseFormat
               ? {
                   max_tokens: 16_384,
-                  response_format: MANGA_SHOT_RESPONSE_FORMAT,
+                  response_format: responseFormat,
                 }
               : {}),
             stream: true,

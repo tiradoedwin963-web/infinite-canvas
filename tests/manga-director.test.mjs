@@ -234,7 +234,10 @@ test("parses numbered manga director stages and rejects a mismatched stage index
     [0, 1, 3],
   );
   payload.operations[1].stage_index = 2;
-  assert.throws(() => parseAgentModelResponse(JSON.stringify(payload)), /不受支持/);
+  assert.throws(
+    () => parseAgentModelResponse(JSON.stringify(payload)),
+    /场面调度结构校验失败：stage_index 必须为 1/,
+  );
 });
 
 test("builds staged manga plans and materializes only direct video nodes", () => {

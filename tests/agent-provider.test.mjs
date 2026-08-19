@@ -5,6 +5,7 @@ import {
   createCanvasAgentClient,
   validateAgentRequest,
 } from "../app/ai/agent-provider.ts";
+import { parseAgentModelResponse } from "../app/ai/agent.ts";
 
 const canvas = {
   viewport: { x: 0, y: 0, scale: 1, width: 1000, height: 700 },
@@ -198,6 +199,104 @@ test("reserves enough structured output tokens for two-shot manga batches", asyn
   assert.equal(shotSchema.additionalProperties, false);
   assert.ok(shotSchema.required.includes("camera_movement"));
   assert.ok(shotSchema.required.includes("timeline"));
+});
+
+test("uses one strict response schema for every manga director stage", async () => {
+  const stages = [
+    ["story-beats", "create_manga_story_beats", "beats"],
+    ["scene-plans", "create_manga_scene_plans", "plans"],
+    ["shot-plans", "create_manga_shot_batch", "shots"],
+    ["continuity", "create_manga_continuity_report", "report"],
+  ];
+  for (const [stage, operationType, payloadField] of stages) {
+    let body;
+    const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+      body = JSON.parse(init.body);
+      return Response.json({
+        choices: [{ message: { content: JSON.stringify({
+          message: "继续规划。",
+          workflow_state: "active",
+          operations: [],
+        }) } }],
+      });
+    });
+    const mangaCanvas = comicWorkflowCanvas();
+    mangaCanvas.nodes[0].mangaPlanningStage = stage;
+    mangaCanvas.nodes[0].mangaPlanningStatus = "planning";
+    await client.respond(validateAgentRequest(request({
+      canvas: mangaCanvas,
+      phase: "active",
+      messages: [
+        { role: "user", content: "继续" },
+        { role: "assistant", content: "当前阶段已准备" },
+        { role: "user", content: "继续规划" },
+      ],
+    })));
+    const schema = body.response_format.json_schema.schema;
+    const operation = schema.properties.operations;
+    assert.equal(body.max_tokens, 16_384);
+    assert.equal(body.response_format.json_schema.strict, true);
+    assert.equal(operation.minItems, 1);
+    assert.equal(operation.maxItems, 1);
+    assert.deepEqual(operation.items.properties.type.enum, [operationType]);
+    assert.ok(operation.items.required.includes(payloadField));
+  }
+});
+
+test("reports the failed manga director field instead of an unsupported operation", () => {
+  const response = (operation) => JSON.stringify({
+    message: "继续规划。",
+    workflow_state: "active",
+    operations: [operation],
+  });
+  assert.throws(
+    () => parseAgentModelResponse(response({
+      type: "create_manga_story_beats",
+      story_id: "story-1",
+      stage_index: 0,
+      beats: [{
+        beat_id: "beat-001",
+        sequence: 1,
+        scene_id: "scene-1",
+        narrative_purpose: "建立处境",
+        emotional_goal: "紧张",
+      }],
+    })),
+    /剧情节拍结构校验失败：beats\[0\] 的 summary 不能为空/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse(response({
+      type: "create_manga_scene_plans",
+      story_id: "story-1",
+      stage_index: 1,
+      plans: [{
+        scene_id: "scene-1",
+        beat_ids: ["beat-001"],
+        blocking: "角色对峙",
+        eyeline: "相互注视",
+        axis: "保持同侧",
+        entrances_exits: "无人进出",
+        lighting: "侧光",
+        color_tone: "冷色",
+      }],
+    })),
+    /场面调度结构校验失败：plans\[0\] 的 spatial_layout 不能为空/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse(response({
+      type: "create_manga_continuity_report",
+      story_id: "story-1",
+      stage_index: 3,
+      report: { issues: [{
+        code: "axis-jump",
+        severity: "warning",
+        shot_id: "shot-001",
+        reason: "人物方向反转",
+        suggestion: "增加过轴镜头",
+      }] },
+    })),
+    /连续性报告结构校验失败：report\.issues\[0\] 的 auto_fixable 必须是布尔值/,
+  );
 });
 
 test("loads comic stage rules without the detailed cinematography manual before shot planning", async () => {

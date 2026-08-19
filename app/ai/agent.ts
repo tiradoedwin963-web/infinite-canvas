@@ -680,6 +680,80 @@ function parseScenePlans(value: unknown): ScenePlan[] | null {
     : null;
 }
 
+function missingStringField(
+  value: Record<string, unknown>,
+  fields: string[],
+) {
+  return fields.find((field) => {
+    const camel = field.replace(/_([a-z])/g, (_, character: string) =>
+      character.toUpperCase()
+    );
+    return !readString(value[field] ?? value[camel]).trim();
+  });
+}
+
+function describeInvalidMangaStoryBeats(value: unknown) {
+  if (!Array.isArray(value) || !value.length) {
+    return "beats 必须包含至少一个剧情节拍";
+  }
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) return `beats[${index}] 必须是对象`;
+    const missing = missingStringField(item, [
+      "beat_id",
+      "scene_id",
+      "narrative_purpose",
+      "emotional_goal",
+      "summary",
+    ]);
+    if (missing) return `beats[${index}] 的 ${missing} 不能为空`;
+    if (!Number.isInteger(Number(item.sequence)) || Number(item.sequence) < 1) {
+      return `beats[${index}] 的 sequence 必须是正整数`;
+    }
+  }
+  return "beats 的 beat_id 不能重复";
+}
+
+function describeInvalidMangaScenePlans(value: unknown) {
+  if (!Array.isArray(value) || !value.length) {
+    return "plans 必须包含至少一个场面调度";
+  }
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) return `plans[${index}] 必须是对象`;
+    const missing = missingStringField(item, [
+      "scene_id",
+      "spatial_layout",
+      "blocking",
+      "eyeline",
+      "axis",
+      "entrances_exits",
+      "lighting",
+      "color_tone",
+    ]);
+    if (missing) return `plans[${index}] 的 ${missing} 不能为空`;
+    if (!readStringList(item.beat_ids ?? item.beatIds).length) {
+      return `plans[${index}] 的 beat_ids 必须包含至少一个剧情节拍 ID`;
+    }
+  }
+  return "plans 的 scene_id 不能重复";
+}
+
+function describeInvalidMangaContinuityReport(value: unknown) {
+  if (!isRecord(value)) return "report 必须是对象";
+  if (!Array.isArray(value.issues)) return "report.issues 必须是数组";
+  for (const [index, item] of value.issues.entries()) {
+    if (!isRecord(item)) return `report.issues[${index}] 必须是对象`;
+    const missing = missingStringField(item, ["code", "shot_id", "reason", "suggestion"]);
+    if (missing) return `report.issues[${index}] 的 ${missing} 不能为空`;
+    if (item.severity !== "error" && item.severity !== "warning") {
+      return `report.issues[${index}] 的 severity 必须是 error 或 warning`;
+    }
+    if (typeof (item.auto_fixable ?? item.autoFixable) !== "boolean") {
+      return `report.issues[${index}] 的 auto_fixable 必须是布尔值`;
+    }
+  }
+  return "连续性报告字段无效";
+}
+
 function parseShotTimeline(value: unknown, duration: number) {
   if (!Array.isArray(value) || !value.length) return null;
   const timeline = value.map((item) => {
@@ -870,6 +944,7 @@ function parseContinuityReport(value: unknown): ContinuityReport | null {
     const severity = item.severity === "error" || item.severity === "warning"
       ? item.severity
       : null;
+    const autoFixable = item.auto_fixable ?? item.autoFixable;
     const issue: ContinuityIssue = {
       code: readString(item.code).trim(),
       severity: severity ?? "error",
@@ -879,9 +954,9 @@ function parseContinuityReport(value: unknown): ContinuityReport | null {
         : {}),
       reason: readString(item.reason).trim(),
       suggestion: readString(item.suggestion).trim(),
-      autoFixable: item.auto_fixable === true || item.autoFixable === true,
+      autoFixable: autoFixable === true,
     };
-    return severity && issue.code && issue.shotId && issue.reason && issue.suggestion
+    return severity && typeof autoFixable === "boolean" && issue.code && issue.shotId && issue.reason && issue.suggestion
       ? issue
       : null;
   });
@@ -1068,18 +1143,28 @@ function parseOperation(value: unknown): AgentOperation | null {
     const storyId = readString(value.story_id ?? value.storyId).trim();
     const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
     const beats = parseStoryBeats(value.beats);
-    return storyId && stageIndex === 0 && beats
-      ? { type, storyId, stageIndex, beats }
-      : null;
+    if (!storyId) throw new Error("Agent 剧情节拍结构校验失败：story_id 不能为空。");
+    if (stageIndex !== 0) {
+      throw new Error("Agent 剧情节拍结构校验失败：stage_index 必须为 0。");
+    }
+    if (!beats) {
+      throw new Error(`Agent 剧情节拍结构校验失败：${describeInvalidMangaStoryBeats(value.beats)}。`);
+    }
+    return { type, storyId, stageIndex, beats };
   }
 
   if (type === "create_manga_scene_plans") {
     const storyId = readString(value.story_id ?? value.storyId).trim();
     const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
     const plans = parseScenePlans(value.plans);
-    return storyId && stageIndex === 1 && plans
-      ? { type, storyId, stageIndex, plans }
-      : null;
+    if (!storyId) throw new Error("Agent 场面调度结构校验失败：story_id 不能为空。");
+    if (stageIndex !== 1) {
+      throw new Error("Agent 场面调度结构校验失败：stage_index 必须为 1。");
+    }
+    if (!plans) {
+      throw new Error(`Agent 场面调度结构校验失败：${describeInvalidMangaScenePlans(value.plans)}。`);
+    }
+    return { type, storyId, stageIndex, plans };
   }
 
   if (type === "create_manga_shot_batch") {
@@ -1100,9 +1185,14 @@ function parseOperation(value: unknown): AgentOperation | null {
     const storyId = readString(value.story_id ?? value.storyId).trim();
     const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
     const report = parseContinuityReport(value.report);
-    return storyId && stageIndex === 3 && report
-      ? { type, storyId, stageIndex, report }
-      : null;
+    if (!storyId) throw new Error("Agent 连续性报告结构校验失败：story_id 不能为空。");
+    if (stageIndex !== 3) {
+      throw new Error("Agent 连续性报告结构校验失败：stage_index 必须为 3。");
+    }
+    if (!report) {
+      throw new Error(`Agent 连续性报告结构校验失败：${describeInvalidMangaContinuityReport(value.report)}。`);
+    }
+    return { type, storyId, stageIndex, report };
   }
 
   if (type === "create_story_workflow") {

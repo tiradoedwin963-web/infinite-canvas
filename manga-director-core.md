@@ -2,6 +2,7 @@
 
 - 先确定镜头叙事目的，再选择景别、焦段、机位、构图、调度、光影和转场；不得为了画面漂亮随机设计镜头。
 - 当前阶段只返回一个对应的专用安全操作，不返回其他操作，不运行图片或视频生成。
+- 四个阶段均使用运行时强制 JSON Schema：外层只能含 `progress_summary`、`message`、`workflow_state`、`operations`，`operations` 必须恰好一项，并使用当前阶段示例中的蛇形字段名；缺少字段或加入额外字段不会落图。
 - 四个阶段依次使用 `create_manga_story_beats`、`create_manga_scene_plans`、`create_manga_shot_batch` 和 `create_manga_continuity_report`，不得混用或跳过。
 - 情绪节拍、场面调度和连续性检查的 `stage_index` 固定为 0、1、3；镜头规划使用从 0 连续递增的 `chunk_index`。
 - 阶段顺序固定为 `story-beats → scene-plans → shot-plans → continuity → complete`。短剧 ID 必须使用画布分析节点中的实际 `storyId`。
