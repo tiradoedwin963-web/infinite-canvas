@@ -97,6 +97,20 @@ function requireWorkflowSnapshot(snapshot: AgentSurfaceSnapshot): AgentWorkflowS
   return snapshot;
 }
 
+function isActiveMangaDirector(snapshot: AgentSurfaceSnapshot) {
+  return snapshot.mode === "workflow" && snapshot.nodes.some((node) =>
+    node.storyRole === "analysis" &&
+    node.storyboardMode === "comic" &&
+    node.mangaPlanningStage &&
+    node.mangaPlanningStage !== "complete",
+  );
+}
+
+function mangaDirectorHistory(history: AgentMessage[]) {
+  const scriptMessage = history.find((message) => message.role === "user");
+  return scriptMessage ? [scriptMessage] : history.slice(-1);
+}
+
 function sortAndLimitConversations(conversations: AgentConversation[]) {
   return [...conversations]
     .sort((left, right) => right.updatedAt - left.updatedAt)
@@ -494,8 +508,12 @@ export function CanvasAgentSidebar({
       }
     };
     try {
+      const initialSnapshot = getSnapshot?.() ?? snapshot;
+      const initialHistory = isActiveMangaDirector(initialSnapshot)
+        ? mangaDirectorHistory(history)
+        : history;
       let response = await requestAgent(
-        history,
+        initialHistory,
         phase,
         undefined,
         planningController.signal,
@@ -505,7 +523,7 @@ export function CanvasAgentSidebar({
         const images = await onReadImages(response.inspectImageNodeIds);
         if (!images.length) throw new Error("Agent 无法读取请求的画布图片。");
         response = await requestAgent(
-          history,
+          initialHistory,
           phase,
           images,
           planningController.signal,
@@ -722,20 +740,7 @@ export function CanvasAgentSidebar({
         const mangaStoryId = mangaOperation.storyId;
         activeMangaStoryId = mangaStoryId;
         planningDetails.push(...onApplyOperations([mangaOperation]));
-        let mangaHistory: AgentMessage[] = [
-          ...history,
-          {
-            id: `manga-director-assistant-${Date.now()}`,
-            role: "assistant",
-            content: JSON.stringify({
-              progress_summary: response.progressSummary,
-              message: response.message,
-              workflow_state: response.workflowState,
-              operations: [mangaOperation],
-            }),
-            createdAt: Date.now(),
-          },
-        ];
+        const mangaHistory = mangaDirectorHistory(history);
 
         while (true) {
           const liveSnapshot = requireWorkflowSnapshot(getSnapshot?.() ?? snapshot);
@@ -808,20 +813,6 @@ export function CanvasAgentSidebar({
           }
           mangaOperation = nextOperations[0];
           planningDetails.push(...onApplyOperations([mangaOperation]));
-          mangaHistory = [
-            ...continuationHistory,
-            {
-              id: `manga-director-assistant-${stage}-${chunkIndex}`,
-              role: "assistant",
-              content: JSON.stringify({
-                progress_summary: nextResponse.progressSummary,
-                message: nextResponse.message,
-                workflow_state: nextResponse.workflowState,
-                operations: [mangaOperation],
-              }),
-              createdAt: Date.now(),
-            },
-          ];
           response = nextResponse;
         }
         const finalAnalysis = requireWorkflowSnapshot(getSnapshot?.() ?? snapshot).nodes.find((node) =>

@@ -2053,3 +2053,23 @@
 - `package.json`、`package-lock.json`：加入 Excel 导出依赖 `exceljs`。
 - `progress.md`：追加本轮实施、验证和回滚记录。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/workflow/agent.ts app/workflow/graph.ts app/workflow/manga-director.ts app/workflow/storyboard.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx app/globals.css docs/canvas.md manga-director-core.md manga-shot-plan-tools.md shot-common-tools.md package.json package-lock.json tests/agent-provider.test.mjs tests/manga-director.test.mjs tests/storyboard.test.mjs progress.md`，再执行 `git clean -f app/workflow/storyboard-table.ts app/server/storyboard-xlsx.ts tests/storyboard-xlsx.test.mjs app/api/workflow/storyboard.xlsx/route.ts app/api/workflow/projects/[id]/storyboard.xlsx/route.ts`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-19 - Task: 稳定漫剧导演续批上下文
+
+### What was done
+- 将漫剧导演请求收敛为完整剧本、当前阶段指令和当前项目的紧凑导演快照，不再在每个镜头批次重复发送全部资产说明、资产调度器提示词与历次 Agent 操作 JSON。
+- 紧凑快照保留分析、可用资产结果、剧情节拍、场面调度和最近四镜的完整 ShotPlan；更早镜头只保留连续性摘要，其他项目、素材说明和调度器节点不进入导演请求。
+
+### Testing
+- `npx tsc --noEmit`：未通过，仓库既有的 `.ts` 扩展导入配置、Cloudflare Worker 声明和历史页面类型错误仍存在；本轮未将其作为通过依据。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，178 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent.ts`：压缩导演阶段快照，过滤无关项目、资产说明和调度器提示词。
+- `components/canvas-agent-sidebar.tsx`：导演续批固定使用剧本基线与当前续批指令，不累积旧操作响应。
+- `tests/agent.test.mjs`：覆盖紧凑快照仅保留可用资产和导演必需数据。
+- `docs/canvas.md`：说明导演续批的上下文边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts components/canvas-agent-sidebar.tsx tests/agent.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

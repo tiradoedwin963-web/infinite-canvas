@@ -323,7 +323,7 @@ test("parses agent JSON wrapped in zero-width joiners and word joiners", () => {
   assert.equal(response.message, "已完成");
 });
 
-test("compacts old manga shots while keeping recent planning context", () => {
+test("compacts manga planning to the current project's director data", () => {
   const shotNodes = Array.from({ length: 6 }, (_, index) => ({
     id: `node-${index + 1}`,
     type: "source",
@@ -376,13 +376,75 @@ test("compacts old manga shots while keeping recent planning context", () => {
       model: "",
       status: "ready",
       hasVisual: false,
+    }, {
+      id: "asset-result",
+      type: "result",
+      kind: "image",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      storyId: "story-1",
+      storyRole: "asset-result",
+      assetRole: "result",
+      assetRef: "character-1",
+      assetAvailable: true,
+      label: "主角 · 资产占位",
+      text: "不应重复发送的长资产描述",
+      prompt: "不应重复发送的长图片提示词",
+      model: "image:gpt-image-2",
+      status: "success",
+      hasVisual: true,
+    }, {
+      id: "asset-scheduler",
+      type: "scheduler",
+      kind: "image",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      storyId: "story-1",
+      storyRole: "asset-scheduler",
+      assetRole: "scheduler",
+      text: "",
+      prompt: "不应发送的调度器提示词",
+      model: "image:gpt-image-2",
+      status: "ready",
+      hasVisual: false,
+    }, {
+      id: "other-project",
+      type: "source",
+      kind: "text",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      storyId: "story-2",
+      storyRole: "analysis",
+      text: "其他项目",
+      prompt: "",
+      model: "",
+      status: "ready",
+      hasVisual: false,
     }, ...shotNodes],
-    edges: [],
+    edges: [
+      { sourceId: "asset-result", targetId: "node-6" },
+      { sourceId: "asset-scheduler", targetId: "asset-result" },
+      { sourceId: "other-project", targetId: "analysis" },
+    ],
   };
   const compact = compactMangaPlanningSnapshot(snapshot);
-  assert.equal(compact.nodes[1].shotPlan, undefined);
-  assert.match(compact.nodes[1].text, /"shotId":"shot-1"/);
-  assert.ok(compact.nodes.at(-1).shotPlan);
+  const firstShot = compact.nodes.find((node) => node.id === "node-1");
+  const recentShot = compact.nodes.find((node) => node.id === "node-6");
+  const asset = compact.nodes.find((node) => node.id === "asset-result");
+  assert.equal(firstShot.shotPlan, undefined);
+  assert.match(firstShot.text, /"shotId":"shot-1"/);
+  assert.ok(recentShot.shotPlan);
+  assert.equal(asset.text, "主角 · 资产占位");
+  assert.equal(asset.prompt, "");
+  assert.equal(compact.nodes.some((node) => node.id === "asset-scheduler"), false);
+  assert.equal(compact.nodes.some((node) => node.id === "other-project"), false);
+  assert.deepEqual(compact.edges, [{ sourceId: "asset-result", targetId: "node-6" }]);
 });
 
 test("rejects operations on the wrong canvas and create-plus-run responses", () => {

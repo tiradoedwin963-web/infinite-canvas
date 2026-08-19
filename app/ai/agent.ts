@@ -179,8 +179,8 @@ export function compactMangaPlanningSnapshot(
   const analysis = snapshot.nodes.find((node) =>
     node.storyRole === "analysis" &&
     node.storyboardMode === "comic" &&
-    (node.mangaPlanningStage === "shot-plans" ||
-      node.mangaPlanningStage === "continuity")
+    node.mangaPlanningStage &&
+    node.mangaPlanningStage !== "complete"
   );
   if (!analysis?.storyId) return snapshot;
 
@@ -198,24 +198,45 @@ export function compactMangaPlanningSnapshot(
       ? shots.slice(-4).map((node) => node.id)
       : [],
   );
+  const compactedNodes = snapshot.nodes.flatMap((node) => {
+    if (node.storyId !== analysis.storyId) return [];
+    if (
+      node.storyRole === "analysis" ||
+      node.storyRole === "story-beats" ||
+      node.storyRole === "scene-plan"
+    ) {
+      return [node];
+    }
+    if (node.storyRole === "shot" && node.shotPlan) {
+      return [
+        fullShotIds.has(node.id)
+          ? node
+          : {
+              ...node,
+              shotPlan: undefined,
+              text: compactShotPlanText(node.shotPlan),
+              prompt: "",
+            },
+      ];
+    }
+    if (node.assetRole === "result" && node.assetRef && node.assetAvailable) {
+      return [{
+        ...node,
+        text: node.label ?? node.assetRef,
+        prompt: "",
+        model: "",
+      }];
+    }
+    return [];
+  });
+  const nodeIds = new Set(compactedNodes.map((node) => node.id));
 
   return {
     ...snapshot,
-    nodes: snapshot.nodes.map((node) => {
-      if (
-        node.storyId !== analysis.storyId ||
-        node.storyRole !== "shot" ||
-        !node.shotPlan ||
-        fullShotIds.has(node.id)
-      ) {
-        return node;
-      }
-      return {
-        ...node,
-        shotPlan: undefined,
-        text: compactShotPlanText(node.shotPlan),
-      };
-    }),
+    nodes: compactedNodes,
+    edges: snapshot.edges.filter((edge) =>
+      nodeIds.has(edge.sourceId) && nodeIds.has(edge.targetId),
+    ),
   };
 }
 
