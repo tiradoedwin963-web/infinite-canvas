@@ -2073,3 +2073,22 @@
 - `docs/canvas.md`：说明导演续批的上下文边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts components/canvas-agent-sidebar.tsx tests/agent.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-19 - Task: 修复导演续批的 JSON 传输外壳
+
+### What was done
+- 保持既有阶段、字段和镜头语义校验不变，仅在模型响应含有前置说明文字时定位其完整 JSON 响应对象，避免有效导演续批被误报为无法识别的操作格式。
+- 增加回归覆盖，确保前置说明文字不能绕过后续的工作流状态和操作校验。
+
+### Testing
+- `node --test tests/agent.test.mjs`：通过，22 项测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过，生产构建成功，179 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent.ts`：从含说明外壳的模型内容中提取完整、可校验的 Agent JSON 对象。
+- `tests/agent.test.mjs`：覆盖前置说明文字包裹的合法响应。
+- `docs/canvas.md`：说明传输外壳兼容不放松工作流校验。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts tests/agent.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

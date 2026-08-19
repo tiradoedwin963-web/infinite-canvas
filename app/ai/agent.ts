@@ -1351,6 +1351,50 @@ export function parseAgentModelResponse(
       }
     }
     if (value === undefined) {
+      for (let start = cleaned.indexOf("{"); start >= 0; start = cleaned.indexOf("{", start + 1)) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let end = start; end < cleaned.length; end += 1) {
+          const character = cleaned[end];
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+            } else if (character === "\\") {
+              escaped = true;
+            } else if (character === '"') {
+              inString = false;
+            }
+            continue;
+          }
+          if (character === '"') {
+            inString = true;
+          } else if (character === "{") {
+            depth += 1;
+          } else if (character === "}") {
+            depth -= 1;
+            if (depth === 0) {
+              try {
+                const candidate = JSON.parse(cleaned.slice(start, end + 1));
+                if (
+                  isRecord(candidate) &&
+                  ("workflow_state" in candidate || "workflowState" in candidate) &&
+                  "operations" in candidate
+                ) {
+                  value = candidate;
+                  break;
+                }
+              } catch {
+                // Continue searching for a complete agent response object.
+              }
+              break;
+            }
+          }
+        }
+        if (value !== undefined) break;
+      }
+    }
+    if (value === undefined) {
       throw new Error("Agent 返回了无法识别的操作格式。");
     }
   }

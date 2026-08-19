@@ -170,6 +170,18 @@ test("uses a controlled fallback message when a valid operation omits display te
   })), /未返回可显示的回复/);
 });
 
+test("parses a valid agent response after an upstream text envelope", () => {
+  const response = parseAgentModelResponse(
+    `模型已完成规划，结构化结果如下：\n${JSON.stringify({
+      message: "当前批次已校验。",
+      workflow_state: "active",
+      operations: [],
+    })}`,
+  );
+  assert.equal(response.message, "当前批次已校验。");
+  assert.deepEqual(response.operations, []);
+});
+
 test("rejects unknown or malformed model operations without partial application", () => {
   assert.throws(
     () => parseAgentModelResponse('{"message":"ok","workflow_state":"active","operations":[{"type":"eval"}]}'),
