@@ -156,6 +156,8 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(sidebar, /runAgentRequestWithTimeout/);
   assert.match(sidebar, /mangaRecoveryHistory/);
   assert.match(sidebar, /manga-recovery-failed/);
+  assert.match(sidebar, /error\.code === "invalid-operation"/);
+  assert.match(sidebar, /当前为影视剪辑：每镜为2至5秒或6至15秒/);
   assert.match(sidebar, /stage && stage !== "story-beats"/);
   assert.match(stream, /AgentSseError/);
 });

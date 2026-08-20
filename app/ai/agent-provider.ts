@@ -680,12 +680,12 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
   {
     type: { type: "string", enum: ["create_manga_shot_batch"] },
     story_id: { type: "string" },
-    chunk_index: { type: "integer" },
+    chunk_index: { type: "integer", minimum: 0 },
     is_final: { type: "boolean" },
     shots: {
       type: "array",
       minItems: 1,
-      maxItems: 8,
+      maxItems: 2,
       items: {
         type: "object",
         additionalProperties: false,
@@ -698,7 +698,8 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
           ...Object.fromEntries(
             MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
           ),
-          sequence: { type: "integer" },
+          shot_id: { type: "string", pattern: "^shot-[0-9]{3,}$" },
+          sequence: { type: "integer", minimum: 1 },
           duration: tempo === "short-cut"
             ? { type: "integer", enum: [2, 3] }
             : tempo === "multi-shot"

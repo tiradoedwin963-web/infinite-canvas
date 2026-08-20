@@ -312,6 +312,8 @@ test("builds a narrow manga recovery instruction from the live planning snapshot
   assert.match(instruction, /shot-003/);
   assert.match(instruction, /sequence=3/);
   assert.match(instruction, /beat-002/);
+  assert.match(instruction, /shot_id、scene_id、beat_id 必须为实际 ID/);
+  assert.match(instruction, /上述结构字段不得填写“无”、空字符串或省略/);
 });
 
 test("derives the next manga shot pair from the greatest existing sequence", () => {

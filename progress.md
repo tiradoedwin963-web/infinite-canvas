@@ -2333,3 +2333,26 @@
 - `docs/canvas.md`：说明一次性空流降级与停止边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 稳定漫剧镜头续批的结构编号
+
+### What was done
+- 收紧新镜头批次的严格 Schema：镜头 ID 必须为 `shot-001` 形式，`sequence` 必须为正整数，批次编号不得为负，单批最多 2 镜，与实际续批协议保持一致。
+- 将无效镜头结构纳入一次性导演恢复：首次坏批次不落图，系统用当前精确镜头 ID、序号、资产和节拍上下文重新请求一次；恢复仍失败即停止，不会无限重试或生成媒体。
+- 修正影视剪辑续批说明，避免将 `multi-shot` 错误提示为长镜直出，并明确只有文本字段可写“无”。
+
+### Testing
+- `node --test tests/agent.test.mjs tests/agent-provider.test.mjs tests/rendered-html.test.mjs`：通过，60 项针对性回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；Vinext 生产构建成功，201 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：收紧镜头批次 Schema 的 ID、整数和批量限制。
+- `app/ai/agent.ts`：在恢复指令中明确结构字段类型与“无”的适用边界。
+- `components/canvas-agent-sidebar.tsx`：无效操作只恢复一次，并使用正确的影视剪辑续批说明。
+- `manga-shot-plan-tools.md`：同步镜头结构字段规范与当前输出预算。
+- `docs/canvas.md`：记录镜头编号/数值字段与一次性结构恢复规则。
+- `tests/agent-provider.test.mjs`、`tests/agent.test.mjs`、`tests/rendered-html.test.mjs`：覆盖 Schema 约束、恢复指令与侧栏恢复边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts components/canvas-agent-sidebar.tsx manga-shot-plan-tools.md docs/canvas.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

@@ -504,8 +504,18 @@ test("uses the multi-shot duration schema and editing guidance for new comic pro
   })));
   const duration = body.response_format.json_schema.schema.properties.operations
     .items.properties.shots.items.properties.duration;
+  const shots = body.response_format.json_schema.schema.properties.operations
+    .items.properties.shots;
+  const shotProperties = shots.items.properties;
   assert.equal(duration.minimum, 2);
   assert.equal(duration.maximum, 15);
+  assert.equal(shots.maxItems, 2);
+  assert.equal(shotProperties.shot_id.pattern, "^shot-[0-9]{3,}$");
+  assert.equal(shotProperties.sequence.minimum, 1);
+  assert.equal(
+    body.response_format.json_schema.schema.properties.operations.items.properties.chunk_index.minimum,
+    0,
+  );
   assert.match(body.messages[0].content, /影视剪辑；每行分镜为 2 至 5 秒或 6 至 15 秒/);
 });
 

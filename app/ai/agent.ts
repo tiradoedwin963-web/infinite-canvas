@@ -343,7 +343,7 @@ export function createMangaRecoveryInstruction(
   const context = getMangaShotPlanningContext(snapshot, analysis.storyId);
   if (!context) return null;
   const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
-  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${context.shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${context.nextShotRef}、sequence=${context.nextSequence}；若返回 2 镜，必须依次为 ${context.nextShotRef}/${context.nextSequence} 和 ${context.followingShotRef}/${context.nextSequence + 1}，不得重复、跳号或改写既有镜头。优先覆盖：${context.uncoveredBeatIds.join("、") || "无"}；仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段；只有全部节拍覆盖后才可 is_final=true。`;
+  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${context.shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${context.nextShotRef}、sequence=${context.nextSequence}；若返回 2 镜，必须依次为 ${context.nextShotRef}/${context.nextSequence} 和 ${context.followingShotRef}/${context.nextSequence + 1}，不得重复、跳号或改写既有镜头。shot_id、scene_id、beat_id 必须为实际 ID；chunk_index、sequence、duration、timeline 的 start_second/end_second 必须是 JSON 整数；is_final 必须为布尔值；character_ids、prop_ids、reference_node_ids 必须为数组。上述结构字段不得填写“无”、空字符串或省略；“无”只可用于文本内容字段。优先覆盖：${context.uncoveredBeatIds.join("、") || "无"}；仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段；只有全部节拍覆盖后才可 is_final=true。`;
 }
 
 export type AgentInspectedImage = {
