@@ -490,7 +490,11 @@ function upstreamFailure(response: Response, payload: unknown) {
       `upstream-${response.status}`,
     );
   }
-  return new CanvasAgentError("画布 Agent 暂时不可用，请稍后重试。", 502);
+  return new CanvasAgentError(
+    `画布 Agent 上游返回 HTTP ${response.status}，请稍后重试。`,
+    502,
+    `upstream-${response.status}`,
+  );
 }
 
 const FALLBACK_PROGRESS_SUMMARY = "已完成当前阶段处理，正在校验可应用结果。";

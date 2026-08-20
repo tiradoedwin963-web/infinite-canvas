@@ -901,4 +901,17 @@ test("sanitizes upstream errors and invalid model output", async () => {
       /HTTP 502/.test(error.message) &&
       !/gateway failed/.test(error.message),
   );
+
+  const timeoutClient = createCanvasAgentClient(
+    clientConfig,
+    async () => new Response("request timed out", { status: 408 }),
+  );
+  await assert.rejects(
+    () => timeoutClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "upstream-408" &&
+      /HTTP 408/.test(error.message) &&
+      !/timed out/.test(error.message),
+  );
 });

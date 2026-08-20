@@ -2220,3 +2220,21 @@
 - `docs/canvas.md`：说明安全 HTTP 错误类别的展示边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 补齐 Agent 上游状态诊断
+
+### What was done
+- 将上游错误的最后兜底改为显示安全的 HTTP 状态码，覆盖超时、重定向或其他此前未分类的非成功状态；不回显上游响应正文。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，22 项回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：为最后的上游失败兜底提供可诊断的安全状态。
+- `tests/agent-provider.test.mjs`：覆盖 HTTP 408 不泄露上游正文。
+- `docs/canvas.md`：说明任意上游 HTTP 失败均只展示安全状态。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
