@@ -96,7 +96,10 @@ export async function POST(request: Request) {
                     ? error.message
                     : "画布 Agent 请求失败，请稍后重试。",
                 );
-          send("error", { message: known.message });
+          send("error", {
+            message: known.message,
+            ...(known.code ? { code: known.code } : {}),
+          });
         })
         .finally(() => {
           if (!signal.aborted) controller.close();

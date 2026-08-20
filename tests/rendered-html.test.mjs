@@ -132,6 +132,7 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(route, /send\("activity"/);
   assert.match(route, /AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000/);
   assert.match(route, /send\("result"/);
+  assert.match(route, /known\.code/);
   assert.match(provider, /stream: true/);
   assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
   assert.match(stream, /extractProgressSummary/);
@@ -150,6 +151,9 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(sidebar, /awaiting-foundation-approval/);
   assert.match(sidebar, /已等待/);
   assert.match(sidebar, /runAgentRequestWithTimeout/);
+  assert.match(sidebar, /mangaRecoveryHistory/);
+  assert.match(sidebar, /manga-recovery-failed/);
+  assert.match(stream, /AgentSseError/);
 });
 
 test("removes the disposable starter surface", async () => {

@@ -154,6 +154,22 @@ export type AgentWorkflowSnapshot = {
 
 export type AgentSurfaceSnapshot = AgentCanvasSnapshot | AgentWorkflowSnapshot;
 
+export type AgentResponseParseFailure =
+  | "response-envelope"
+  | "missing-workflow-state"
+  | "missing-operations"
+  | "invalid-operation";
+
+export class AgentResponseParseError extends Error {
+  readonly code: AgentResponseParseFailure;
+
+  constructor(code: AgentResponseParseFailure, message: string) {
+    super(message);
+    this.name = "AgentResponseParseError";
+    this.code = code;
+  }
+}
+
 function compactShotPlanText(plan: ShotPlan) {
   return JSON.stringify({
     shotId: plan.shotId,
@@ -238,6 +254,62 @@ export function compactMangaPlanningSnapshot(
       nodeIds.has(edge.sourceId) && nodeIds.has(edge.targetId),
     ),
   };
+}
+
+export function createMangaRecoveryInstruction(
+  snapshot: AgentSurfaceSnapshot,
+) {
+  if (snapshot.mode !== "workflow") return null;
+  const analysis = snapshot.nodes.find((node) =>
+    node.storyRole === "analysis" &&
+    node.storyboardMode === "comic" &&
+    node.mangaPlanningStage &&
+    node.mangaPlanningStage !== "complete" &&
+    Boolean(node.storyId)
+  );
+  if (!analysis?.storyId || !analysis.mangaPlanningStage) return null;
+
+  const expectedType = analysis.mangaPlanningStage === "story-beats"
+    ? "create_manga_story_beats"
+    : analysis.mangaPlanningStage === "scene-plans"
+      ? "create_manga_scene_plans"
+      : analysis.mangaPlanningStage === "shot-plans"
+        ? "create_manga_shot_batch"
+        : "create_manga_continuity_report";
+  const stageIndex = analysis.mangaPlanningStage === "story-beats"
+    ? 0
+    : analysis.mangaPlanningStage === "scene-plans"
+      ? 1
+      : analysis.mangaPlanningStage === "continuity"
+        ? 3
+        : undefined;
+  const header = `恢复模式：上一次响应未形成可校验的操作。仅返回一个严格 JSON 对象，不要解释、Markdown、代码围栏、其他操作或媒体生成。短剧 ID 必须为 ${analysis.storyId}；operations 必须恰好包含一个 ${expectedType}。`;
+  if (analysis.mangaPlanningStage !== "shot-plans") {
+    return `${header} stage_index 必须为 ${stageIndex}。`;
+  }
+
+  const shots = snapshot.nodes.filter((node) =>
+    node.storyId === analysis.storyId &&
+    node.storyRole === "shot" &&
+    node.shotPlan
+  );
+  const coveredBeatIds = new Set(shots.flatMap((node) =>
+    node.shotPlan?.beatId ? [node.shotPlan.beatId] : []
+  ));
+  const uncoveredBeatIds = snapshot.nodes.flatMap((node) =>
+    node.storyId === analysis.storyId && node.storyRole === "story-beats"
+      ? (node.storyBeats ?? [])
+        .map((beat) => beat.beatId)
+        .filter((beatId) => !coveredBeatIds.has(beatId))
+      : []
+  );
+  const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
+  const nextSequence = Math.max(
+    0,
+    ...shots.map((node) => node.shotPlan?.sequence ?? 0),
+  ) + 1;
+  const nextShotRef = `shot-${String(nextSequence).padStart(3, "0")}`;
+  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${shots.length} 镜，新镜头从 ${nextShotRef} 开始，不得重复；本批仅规划 1 至 2 镜，优先覆盖：${uncoveredBeatIds.join("、") || "无"}；只有全部节拍覆盖后才可 is_final=true。`;
 }
 
 export type AgentInspectedImage = {
@@ -1395,23 +1467,43 @@ export function parseAgentModelResponse(
       }
     }
     if (value === undefined) {
-      throw new Error("Agent 返回了无法识别的操作格式。");
+      throw new AgentResponseParseError(
+        "response-envelope",
+        "Agent 返回中未找到完整的 JSON 操作对象。",
+      );
     }
   }
-  if (!isRecord(value)) throw new Error("Agent 返回了无法识别的操作格式。");
+  if (!isRecord(value)) {
+    throw new AgentResponseParseError(
+      "response-envelope",
+      "Agent 返回中未找到完整的 JSON 操作对象。",
+    );
+  }
   const rawMessage = readString(value.message).trim();
   const workflowState = readString(
     value.workflow_state ?? value.workflowState,
   );
   if (workflowState !== "clarifying" && workflowState !== "active") {
-    throw new Error("Agent 未返回有效的工作流状态。");
+    throw new AgentResponseParseError(
+      "missing-workflow-state",
+      "Agent 响应缺少有效的 workflow_state。",
+    );
   }
-  const rawOperations = Array.isArray(value.operations) ? value.operations : [];
+  if (!Array.isArray(value.operations)) {
+    throw new AgentResponseParseError(
+      "missing-operations",
+      "Agent 响应缺少 operations 数组。",
+    );
+  }
+  const rawOperations = value.operations;
   const parsedOperations = rawOperations.map((operation) =>
     parseOperation(operation, options.mangaTempo),
   );
   if (parsedOperations.some((operation) => operation === null)) {
-    throw new Error("Agent 返回了不受支持的画布操作。");
+    throw new AgentResponseParseError(
+      "invalid-operation",
+      "Agent 返回了不受支持或字段不完整的画布操作。",
+    );
   }
   const operations = normalizeStoryWorkflowBatches(
     parsedOperations as AgentOperation[],

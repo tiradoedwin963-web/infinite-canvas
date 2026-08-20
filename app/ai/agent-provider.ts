@@ -2,6 +2,7 @@ import {
   AGENT_MODEL,
   MAX_AGENT_IMAGE_BYTES,
   MAX_AGENT_IMAGE_TOTAL_BYTES,
+  AgentResponseParseError,
   parseAgentModelResponse,
   type AgentInspectedImage,
   type AgentRequest,
@@ -22,11 +23,24 @@ type Fetcher = typeof fetch;
 
 export class CanvasAgentError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status = 502) {
+  constructor(message: string, status = 502, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+function responseFailureCode(error: unknown) {
+  if (error instanceof AgentResponseParseError) return error.code;
+  if (error instanceof Error && /阶段不一致|阶段不连续/.test(error.message)) {
+    return "stage-mismatch";
+  }
+  if (error instanceof Error && /结构校验失败|字段不完整/.test(error.message)) {
+    return "invalid-operation";
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -332,17 +346,24 @@ function validateComicStoryboardOperations(
   });
 }
 
+function extractContentText(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    if (typeof item.text === "string") return [item.text];
+    if (isRecord(item.text) && typeof item.text.value === "string") {
+      return [item.text.value];
+    }
+    return [];
+  }).join("");
+}
+
 function extractText(payload: unknown) {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) return "";
   const first = payload.choices.find(isRecord);
   const message = first && isRecord(first.message) ? first.message : undefined;
-  if (typeof message?.content === "string") return message.content;
-  if (!Array.isArray(message?.content)) return "";
-  return message.content
-    .filter(isRecord)
-    .map((item) => (typeof item.text === "string" ? item.text : ""))
-    .filter(Boolean)
-    .join("\n");
+  return extractContentText(message?.content);
 }
 
 function extractStreamText(payload: unknown): { text: string; replace: boolean } {
@@ -352,12 +373,10 @@ function extractStreamText(payload: unknown): { text: string; replace: boolean }
   const first = payload.choices.find(isRecord);
   const delta = first && isRecord(first.delta) ? first.delta : undefined;
   const message = first && isRecord(first.message) ? first.message : undefined;
-  if (typeof delta?.content === "string") {
-    return { text: delta.content, replace: false };
-  }
-  if (typeof message?.content === "string") {
-    return { text: message.content, replace: true };
-  }
+  const deltaText = extractContentText(delta?.content);
+  if (deltaText) return { text: deltaText, replace: false };
+  const messageText = extractContentText(message?.content);
+  if (messageText) return { text: messageText, replace: true };
   return { text: "", replace: false };
 }
 
@@ -838,6 +857,7 @@ export function createCanvasAgentClient(
         throw new CanvasAgentError(
           error instanceof Error ? error.message : "画布 Agent 响应无效。",
           502,
+          responseFailureCode(error),
         );
       }
     },

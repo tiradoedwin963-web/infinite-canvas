@@ -172,6 +172,66 @@ test("calls the fixed agent model and parses its JSON response", async () => {
   assert.doesNotMatch(systemMessage, /text:gpt-5\.6-sol/);
 });
 
+test("reads OpenAI-compatible text-part responses without losing the JSON envelope", async () => {
+  const raw = JSON.stringify({
+    message: "已完成当前批次。",
+    workflow_state: "active",
+    operations: [],
+  });
+  const client = createCanvasAgentClient(clientConfig, async () => Response.json({
+    choices: [{
+      message: {
+        content: [
+          { type: "text", text: raw.slice(0, 18) },
+          { type: "text", text: { value: raw.slice(18) } },
+        ],
+      },
+    }],
+  }));
+  const response = await client.respond(validateAgentRequest(request({
+    phase: "active",
+    messages: [
+      { role: "user", content: "整理画布" },
+      { role: "assistant", content: "继续" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  assert.equal(response.message, "已完成当前批次。");
+});
+
+test("reads streamed OpenAI-compatible text parts without losing the JSON envelope", async () => {
+  const raw = JSON.stringify({
+    message: "已完成当前批次。",
+    workflow_state: "active",
+    operations: [],
+  });
+  const encoder = new TextEncoder();
+  const client = createCanvasAgentClient(clientConfig, async () => new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          choices: [{ delta: { content: [{ type: "text", text: raw.slice(0, 18) }] } }],
+        })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          choices: [{ delta: { content: [{ type: "text", text: { value: raw.slice(18) } }] } }],
+        })}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  ));
+  const response = await client.respond(validateAgentRequest(request({
+    phase: "active",
+    messages: [
+      { role: "user", content: "整理画布" },
+      { role: "assistant", content: "继续" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  assert.equal(response.message, "已完成当前批次。");
+});
+
 test("reserves enough structured output tokens for two-shot manga batches", async () => {
   let body;
   const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
@@ -694,7 +754,13 @@ test("sanitizes upstream errors and invalid model output", async () => {
     clientConfig,
     async () => Response.json({ choices: [{ message: { content: "not-json" } }] }),
   );
-  await assert.rejects(() => invalidClient.respond(validateAgentRequest(request())), /无法识别/);
+  await assert.rejects(
+    () => invalidClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "response-envelope" &&
+      /JSON 操作对象/.test(error.message),
+  );
 
   const contextClient = createCanvasAgentClient(
     clientConfig,

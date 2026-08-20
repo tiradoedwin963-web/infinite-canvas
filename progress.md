@@ -2092,3 +2092,26 @@
 - `docs/canvas.md`：说明传输外壳兼容不放松工作流校验。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts tests/agent.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 稳定漫剧导演续批解析与安全恢复
+
+### What was done
+- 将上游的响应外壳、缺失工作流状态、缺失操作和非法操作区分为可识别的安全错误码；分段文本内容会先被完整拼接，再进入既有严格 JSON、阶段和字段校验。
+- 漫剧导演仅在“未找到完整 JSON 操作对象”或“缺少当前阶段操作”时，使用当前项目的紧凑快照自动恢复一次。恢复请求固定短剧 ID、阶段、批次、下一镜编号及未覆盖节拍；再次失败会停止本批，不创建半套节点。
+- 未放宽镜头、资产、阶段或工作流校验，不补空字段、不重复镜头、不循环重试，也未触发任何图片、视频或 Agent 付费请求。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，182 项自动化测试全部通过。
+- `node --test tests/agent.test.mjs tests/agent-stream.test.mjs tests/agent-provider.test.mjs`：通过，48 项定向解析、SSE 与上游兼容回归测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent.ts`：为响应解析增加分类错误，并根据实时导演快照生成单次恢复指令。
+- `app/ai/agent-provider.ts`：兼容 OpenAI 风格的分段文本内容，并向 SSE 传递可公开的格式错误码。
+- `app/ai/agent-stream.ts`、`app/api/ai/agent/route.ts`：在受控 SSE 错误事件中保留安全错误码。
+- `components/canvas-agent-sidebar.tsx`：仅对两个可恢复格式错误执行一次紧凑上下文恢复，第二次失败明确停止本批。
+- `docs/canvas.md`：说明恢复边界与不放宽结构校验的约束。
+- `tests/agent.test.mjs`、`tests/agent-provider.test.mjs`、`tests/agent-stream.test.mjs`、`tests/rendered-html.test.mjs`：覆盖恢复指令、分段文本、SSE 错误码和前端接线。
+- `progress.md`：记录本轮实现、验证和回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/ai/agent-stream.ts app/api/ai/agent/route.ts components/canvas-agent-sidebar.tsx docs/canvas.md tests/agent.test.mjs tests/agent-provider.test.mjs tests/agent-stream.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

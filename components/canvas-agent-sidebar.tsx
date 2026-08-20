@@ -18,6 +18,7 @@ import {
   MAX_AGENT_CONVERSATIONS,
   MAX_AGENT_MESSAGES,
   AgentRequestTimeoutError,
+  createMangaRecoveryInstruction,
   createAgentConversation,
   createAgentConversationTitle,
   compactMangaPlanningSnapshot,
@@ -53,7 +54,7 @@ import {
   type AgentMangaPlanningStage,
   type AgentWorkflowSnapshot,
 } from "@/app/ai/agent";
-import { readAgentSseResponse } from "@/app/ai/agent-stream";
+import { AgentSseError, readAgentSseResponse } from "@/app/ai/agent-stream";
 import { mergeStoryWorkflowChunks } from "@/app/workflow/agent";
 
 const EMPTY_CONVERSATION_STORE: AgentConversationStore = {
@@ -109,6 +110,34 @@ function isActiveMangaDirector(snapshot: AgentSurfaceSnapshot) {
 function mangaDirectorHistory(history: AgentMessage[]) {
   const scriptMessage = history.find((message) => message.role === "user");
   return scriptMessage ? [scriptMessage] : history.slice(-1);
+}
+
+function isRecoverableMangaResponseError(error: unknown) {
+  return error instanceof AgentSseError &&
+    (error.code === "response-envelope" || error.code === "missing-operations");
+}
+
+function mangaRecoveryHistory(
+  history: AgentMessage[],
+  snapshot: AgentSurfaceSnapshot,
+) {
+  const instruction = createMangaRecoveryInstruction(snapshot);
+  if (!instruction || snapshot.mode !== "workflow") return null;
+  const analysis = snapshot.nodes.find((node) =>
+    node.storyRole === "analysis" &&
+    node.storyboardMode === "comic" &&
+    node.mangaPlanningStage &&
+    node.mangaPlanningStage !== "complete"
+  );
+  const recovery: AgentMessage = {
+    id: `manga-recovery-${analysis?.mangaPlanningStage ?? "unknown"}-${Date.now()}`,
+    role: "user",
+    content: instruction,
+    createdAt: Date.now(),
+  };
+  if (analysis?.mangaPlanningStage !== "story-beats") return [recovery];
+  const scriptMessage = history.find((message) => message.role === "user");
+  return scriptMessage ? [scriptMessage, recovery] : [recovery];
 }
 
 function sortAndLimitConversations(conversations: AgentConversation[]) {
@@ -439,6 +468,7 @@ export function CanvasAgentSidebar({
     phase: AgentConversationPhase,
     inspectedImages?: AgentInspectedImage[],
     signal?: AbortSignal,
+    allowMangaRecovery = true,
   ): Promise<AgentResponse> {
     const relevantHistory = history.filter((message) => message.content.trim());
     const requestHistory = relevantHistory.length <= 20
@@ -447,27 +477,64 @@ export function CanvasAgentSidebar({
     setStreamingSummary("");
     setRequestStartedAt(Date.now());
     setRequestClock(Date.now());
-    return runAgentRequestWithTimeout(async (requestSignal, markActivity) => {
-      const response = await fetch("/api/ai/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: requestHistory
-            .map(({ role, content }) => ({ role, content })),
-          canvas: compactMangaPlanningSnapshot(getSnapshot?.() ?? snapshot),
-          phase,
-          focusedNodeId,
-          inspectedImages,
-        }),
-        signal: requestSignal,
-      });
-      if (!response.ok) throw new Error(await readApiError(response));
-      return readAgentSseResponse(
-        response,
-        setStreamingSummary,
-        markActivity,
-      );
-    }, signal);
+    try {
+      const result = await runAgentRequestWithTimeout(async (requestSignal, markActivity) => {
+        const response = await fetch("/api/ai/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: requestHistory
+              .map(({ role, content }) => ({ role, content })),
+            canvas: compactMangaPlanningSnapshot(getSnapshot?.() ?? snapshot),
+            phase,
+            focusedNodeId,
+            inspectedImages,
+          }),
+          signal: requestSignal,
+        });
+        if (!response.ok) throw new Error(await readApiError(response));
+        return readAgentSseResponse(
+          response,
+          setStreamingSummary,
+          markActivity,
+        );
+      }, signal);
+      if (
+        !inspectedImages?.length &&
+        createMangaRecoveryInstruction(getSnapshot?.() ?? snapshot) &&
+        !result.operations.length
+      ) {
+        throw new AgentSseError(
+          "Agent 未返回当前漫剧导演阶段所需的操作。",
+          "missing-operations",
+        );
+      }
+      return result;
+    } catch (error) {
+      const recoveryHistory = allowMangaRecovery && !inspectedImages?.length &&
+        isRecoverableMangaResponseError(error)
+        ? mangaRecoveryHistory(history, getSnapshot?.() ?? snapshot)
+        : null;
+      if (!recoveryHistory) throw error;
+      setStreamingSummary("上游响应未形成可校验操作，正在使用精简上下文恢复本批规划…");
+      try {
+        return await requestAgent(
+          recoveryHistory,
+          "active",
+          undefined,
+          signal,
+          false,
+        );
+      } catch (recoveryError) {
+        if (recoveryError instanceof AgentSseError) {
+          throw new AgentSseError(
+            `漫剧导演恢复续批仍未返回有效操作：${recoveryError.message} 已停止本批，未创建节点。`,
+            "manga-recovery-failed",
+          );
+        }
+        throw recoveryError;
+      }
+    }
   }
 
   async function submit(contentOverride?: string) {
@@ -509,6 +576,15 @@ export function CanvasAgentSidebar({
     };
     try {
       const initialSnapshot = getSnapshot?.() ?? snapshot;
+      if (isActiveMangaDirector(initialSnapshot) && initialSnapshot.mode === "workflow") {
+        activeMangaStoryId = initialSnapshot.nodes.find((node) =>
+          node.storyRole === "analysis" &&
+          node.storyboardMode === "comic" &&
+          node.mangaPlanningStage &&
+          node.mangaPlanningStage !== "complete" &&
+          Boolean(node.storyId)
+        )?.storyId ?? "";
+      }
       const initialHistory = isActiveMangaDirector(initialSnapshot)
         ? mangaDirectorHistory(history)
         : history;

@@ -4,7 +4,9 @@ import {
   AGENT_FIRST_RESPONSE_TIMEOUT_MESSAGE,
   AGENT_INACTIVITY_TIMEOUT_MESSAGE,
   AGENT_TOTAL_TIMEOUT_MESSAGE,
+  AgentResponseParseError,
   AgentRequestTimeoutError,
+  createMangaRecoveryInstruction,
   createAgentConversation,
   createAgentConversationTitle,
   compactMangaPlanningSnapshot,
@@ -182,12 +184,59 @@ test("parses a valid agent response after an upstream text envelope", () => {
   assert.deepEqual(response.operations, []);
 });
 
+test("builds a narrow manga recovery instruction from the live planning snapshot", () => {
+  const instruction = createMangaRecoveryInstruction({
+    mode: "workflow",
+    viewport: { x: 0, y: 0, scale: 1, width: 100, height: 100 },
+    edges: [],
+    nodes: [
+      {
+        id: "analysis",
+        storyId: "story-1",
+        storyRole: "analysis",
+        storyboardMode: "comic",
+        mangaPlanningStage: "shot-plans",
+        mangaPlanningChunkIndex: 4,
+      },
+      {
+        id: "beats",
+        storyId: "story-1",
+        storyRole: "story-beats",
+        storyBeats: [{ beatId: "beat-001" }, { beatId: "beat-002" }],
+      },
+      {
+        id: "shot-001",
+        storyId: "story-1",
+        storyRole: "shot",
+        shotPlan: { beatId: "beat-001", sequence: 1 },
+      },
+      {
+        id: "shot-002",
+        storyId: "story-1",
+        storyRole: "shot",
+        shotPlan: { beatId: "beat-001", sequence: 2 },
+      },
+    ],
+  });
+  assert.match(instruction, /create_manga_shot_batch/);
+  assert.match(instruction, /chunk_index 必须为 4/);
+  assert.match(instruction, /shot-003/);
+  assert.match(instruction, /beat-002/);
+});
+
 test("rejects unknown or malformed model operations without partial application", () => {
   assert.throws(
     () => parseAgentModelResponse('{"message":"ok","workflow_state":"active","operations":[{"type":"eval"}]}'),
     /不受支持/,
   );
-  assert.throws(() => parseAgentModelResponse("not-json"), /无法识别/);
+  assert.throws(
+    () => parseAgentModelResponse("not-json"),
+    (error) => error instanceof AgentResponseParseError && error.code === "response-envelope",
+  );
+  assert.throws(
+    () => parseAgentModelResponse('{"message":"ok","workflow_state":"active"}'),
+    (error) => error instanceof AgentResponseParseError && error.code === "missing-operations",
+  );
   assert.throws(
     () => parseAgentModelResponse('{"message":"请确认？","workflow_state":"clarifying","operations":[{"type":"move_node","node_id":"a","x":1,"y":2}]}'),
     /澄清阶段/,
