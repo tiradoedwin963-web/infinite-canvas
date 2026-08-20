@@ -872,4 +872,33 @@ test("sanitizes upstream errors and invalid model output", async () => {
       error.code === "response-format" &&
       /严格结构化输出格式/.test(error.message),
   );
+
+  const rejectedClient = createCanvasAgentClient(
+    clientConfig,
+    async () => Response.json(
+      { error: { message: "provider detail", secret: "sk-sensitive" } },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(
+    () => rejectedClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "upstream-400" &&
+      /HTTP 400/.test(error.message) &&
+      !/provider detail|sensitive/.test(error.message),
+  );
+
+  const upstreamServerClient = createCanvasAgentClient(
+    clientConfig,
+    async () => new Response("gateway failed", { status: 502 }),
+  );
+  await assert.rejects(
+    () => upstreamServerClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "upstream-502" &&
+      /HTTP 502/.test(error.message) &&
+      !/gateway failed/.test(error.message),
+  );
 });

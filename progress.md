@@ -2201,3 +2201,22 @@
 - `docs/canvas.md`：说明上游错误分类不回显敏感请求信息。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 显示安全的上游 HTTP 失败类别
+
+### What was done
+- 对未命中上下文或严格 Schema 分类的上游失败，补充安全 HTTP 类别：400/422 表示请求被上游拒绝，5xx 表示上游服务失败。
+- 错误消息继续不携带上游正文、系统提示、剧本、画布数据或密钥，前端仅能据此判断下一步应检查兼容性还是等待上游恢复。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，22 项上游 Agent 协议回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：为安全分类后的 HTTP 400/422/5xx 增加受控提示和错误码。
+- `tests/agent-provider.test.mjs`：覆盖 400 与 502 的消息不泄露上游正文。
+- `docs/canvas.md`：说明安全 HTTP 错误类别的展示边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

@@ -476,6 +476,20 @@ function upstreamFailure(response: Response, payload: unknown) {
       "response-format",
     );
   }
+  if (response.status === 400 || response.status === 422) {
+    return new CanvasAgentError(
+      `画布 Agent 请求被上游拒绝（HTTP ${response.status}），请检查模型兼容性。`,
+      502,
+      `upstream-${response.status}`,
+    );
+  }
+  if (response.status >= 500) {
+    return new CanvasAgentError(
+      `画布 Agent 上游服务返回 HTTP ${response.status}，请稍后重试。`,
+      502,
+      `upstream-${response.status}`,
+    );
+  }
   return new CanvasAgentError("画布 Agent 暂时不可用，请稍后重试。", 502);
 }
 
