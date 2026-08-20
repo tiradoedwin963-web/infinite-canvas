@@ -254,6 +254,102 @@ test("reads streamed OpenAI-compatible text parts without losing the JSON envelo
   assert.equal(response.message, "已完成当前批次。");
 });
 
+test("retries one non-stream response when a strict manga stream has no content", async () => {
+  const bodies = [];
+  const mangaCanvas = comicWorkflowCanvas();
+  mangaCanvas.nodes[0] = {
+    ...mangaCanvas.nodes[0],
+    mangaPlanningStage: "story-beats",
+    mangaStoryboardTempo: "multi-shot",
+  };
+  const result = JSON.stringify({
+    progress_summary: "已完成剧情节拍。",
+    message: "已创建剧情节拍。",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_story_beats",
+      story_id: "story-1",
+      stage_index: 0,
+      beats: [{
+        beat_id: "beat-001",
+        sequence: 1,
+        scene_id: "scene-001",
+        narrative_purpose: "建立冲突。",
+        emotional_goal: "期待。",
+        summary: "角色进入场景。",
+      }],
+    }],
+  });
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (!body.stream) {
+      return Response.json({ choices: [{ message: { content: result } }] });
+    }
+    return new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}\n\ndata: [DONE]\n\n',
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  });
+
+  const response = await client.respond(validateAgentRequest(request({
+    phase: "active",
+    canvas: mangaCanvas,
+    messages: [
+      { role: "user", content: "完整剧本" },
+      { role: "assistant", content: "开始导演规划。" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+
+  assert.equal(response.operations[0].type, "create_manga_story_beats");
+  assert.deepEqual(bodies.map((body) => body.stream), [true, false]);
+  assert.deepEqual(bodies[1].response_format, bodies[0].response_format);
+});
+
+test("does not retry an explicit upstream SSE error", async () => {
+  let calls = 0;
+  const client = createCanvasAgentClient(clientConfig, async () => {
+    calls += 1;
+    return new Response(
+      'event: error\ndata: {"error":{"message":"upstream secret"}}\n\n',
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  });
+
+  await assert.rejects(
+    () => client.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "stream-error" &&
+      /流式响应中拒绝/.test(error.message) &&
+      !/secret/.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
+
+test("reports an empty non-stream fallback without a third request", async () => {
+  let calls = 0;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    calls += 1;
+    if (JSON.parse(init.body).stream) {
+      return new Response("data: [DONE]\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return Response.json({ choices: [{ message: { content: "" } }] });
+  });
+
+  await assert.rejects(
+    () => client.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "empty-response" &&
+      /非流式降级响应未返回有效内容/.test(error.message),
+  );
+  assert.equal(calls, 2);
+});
+
 test("uses a bounded structured output budget for two-shot manga batches", async () => {
   let body;
   const client = createCanvasAgentClient(clientConfig, async (_url, init) => {

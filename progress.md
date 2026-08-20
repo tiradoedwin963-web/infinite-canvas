@@ -2313,3 +2313,23 @@
 - `tests/agent-provider.test.mjs`、`tests/agent.test.mjs`、`tests/manga-director.test.mjs`、`tests/storyboard-xlsx.test.mjs`、`tests/storyboard.test.mjs`、`tests/workflow.test.mjs`：覆盖严格 Schema、多镜头分组、片段提示词、Excel、节点持久化和未知提交保护。
 - `progress.md`：记录本轮实现、验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts app/globals.css app/server/storyboard-xlsx.ts app/workflow/graph.ts app/workflow/manga-cinematography.ts app/workflow/manga-director.ts app/workflow/storyboard-table.ts app/workflow/storyboard.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md manga-continuity-tools.md manga-director-core.md manga-shot-plan-tools.md shot-common-tools.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/manga-director.test.mjs tests/storyboard-xlsx.test.mjs tests/storyboard.test.mjs tests/workflow.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 为导演规划补齐空 SSE 响应降级
+
+### What was done
+- 当上游以 HTTP 200 返回没有正文的未知 SSE 流时，仅使用相同模型、上下文和严格 Schema 自动补发一次非流式请求，继续通过原有的阶段、结构和画布校验后才允许落图。
+- 流式明确拒绝、上游 error 事件或非流式响应仍为空时直接停止，不再把这些情况误认为可安全重试的空流，也不会形成无限重试或重复创建节点。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，27 项回归测试全部通过，覆盖空流单次降级、显式流错误不重试和降级响应为空时停止。
+- `npm run lint`：通过。
+- `npm test`：通过；Vinext 生产构建成功，201 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：识别显式流错误，并仅对无正文 SSE 执行一次非流式降级。
+- `tests/agent-provider.test.mjs`：覆盖降级边界与不重复请求行为。
+- `tests/rendered-html.test.mjs`：同步流式请求重构后的结构断言。
+- `docs/canvas.md`：说明一次性空流降级与停止边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

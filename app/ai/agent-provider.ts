@@ -396,6 +396,17 @@ function extractStreamText(payload: unknown): { text: string; replace: boolean }
   return { text: "", replace: false };
 }
 
+function hasStreamError(payload: unknown) {
+  if (!isRecord(payload)) return false;
+  if (isRecord(payload.error) || typeof payload.error === "string") return true;
+  if (!Array.isArray(payload.choices)) return false;
+  return payload.choices.some((choice) =>
+    isRecord(choice) &&
+    (typeof choice.refusal === "string" ||
+      (isRecord(choice.delta) && typeof choice.delta.refusal === "string")),
+  );
+}
+
 async function readOpenAiStream(
   response: Response,
   onProgress?: (text: string) => void,
@@ -420,6 +431,13 @@ async function readOpenAiStream(
       } catch {
         throw new CanvasAgentError("画布 Agent 返回了无法识别的流式响应。", 502);
       }
+      if (event.event === "error" || hasStreamError(payload)) {
+        throw new CanvasAgentError(
+          "画布 Agent 上游在流式响应中拒绝了请求，请检查模型兼容性。",
+          502,
+          "stream-error",
+        );
+      }
       const next = extractStreamText(payload);
       if (!next.text) continue;
       content = next.replace ? next.text : content + next.text;
@@ -443,7 +461,11 @@ async function readOpenAiStream(
     consume(splitSseEvents(`${buffer}\n\n`).events);
   }
   if (!content) {
-    throw new CanvasAgentError("画布 Agent 流式响应未返回有效内容。", 502);
+    throw new CanvasAgentError(
+      "画布 Agent 流式响应未返回有效内容。",
+      502,
+      "empty-stream",
+    );
   }
   return content;
 }
@@ -510,6 +532,24 @@ function upstreamFailure(response: Response, payload: unknown) {
     502,
     `upstream-${response.status}`,
   );
+}
+
+async function assertUpstreamSuccess(response: Response) {
+  if (response.ok) return;
+  let payload: unknown = "";
+  try {
+    const raw = await response.text();
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = raw;
+      }
+    }
+  } catch {
+    // Keep the sanitized fallback.
+  }
+  throw upstreamFailure(response, payload);
 }
 
 const FALLBACK_PROGRESS_SUMMARY = "已完成当前阶段处理，正在校验可应用结果。";
@@ -817,64 +857,83 @@ export function createCanvasAgentClient(
         });
       }
 
-      let response: Response;
-      try {
-        const mangaPlanningStage = selectedMangaPlanningStage(request.canvas);
-        const responseFormat = mangaPlanningStage && mangaPlanningStage !== "complete"
-          ? mangaPlanningStage === "shot-plans"
-            ? mangaShotResponseFormat(selectedMangaStoryboardTempo(request.canvas))
-            : MANGA_RESPONSE_FORMATS[mangaPlanningStage]
-          : undefined;
-        const maxTokens = mangaPlanningStage === "shot-plans" ? 8_192 : 16_384;
-        response = await fetcher(`${baseUrl}/v1/chat/completions`, {
+      const mangaPlanningStage = selectedMangaPlanningStage(request.canvas);
+      const responseFormat = mangaPlanningStage && mangaPlanningStage !== "complete"
+        ? mangaPlanningStage === "shot-plans"
+          ? mangaShotResponseFormat(selectedMangaStoryboardTempo(request.canvas))
+          : MANGA_RESPONSE_FORMATS[mangaPlanningStage]
+        : undefined;
+      const maxTokens = mangaPlanningStage === "shot-plans" ? 8_192 : 16_384;
+      const upstreamBody = {
+        model: AGENT_MODEL,
+        messages,
+        temperature: 0.2,
+        ...(responseFormat
+          ? {
+              max_tokens: maxTokens,
+              response_format: responseFormat,
+            }
+          : {}),
+      };
+      const requestUpstream = (stream: boolean) => fetcher(
+        `${baseUrl}/v1/chat/completions`,
+        {
           method: "POST",
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            model: AGENT_MODEL,
-            messages,
-            temperature: 0.2,
-            ...(responseFormat
-              ? {
-                  max_tokens: maxTokens,
-                  response_format: responseFormat,
-                }
-              : {}),
-            stream: true,
-          }),
+          body: JSON.stringify({ ...upstreamBody, stream }),
           signal: options.signal,
-        });
+        },
+      );
+
+      let response: Response;
+      try {
+        response = await requestUpstream(true);
       } catch {
         if (options.signal?.aborted) throw options.signal.reason;
         throw new CanvasAgentError("无法连接画布 Agent，请检查网络。", 502);
       }
-      if (!response.ok) {
-        let payload: unknown = "";
-        try {
-          const raw = await response.text();
-          if (raw) {
-            try {
-              payload = JSON.parse(raw);
-            } catch {
-              payload = raw;
-            }
-          }
-        } catch {
-          // Keep the sanitized fallback.
-        }
-        throw upstreamFailure(response, payload);
-      }
+      await assertUpstreamSuccess(response);
       options.onActivity?.();
       const contentType = response.headers.get("content-type") ?? "";
       let content = "";
       if (contentType.toLowerCase().includes("text/event-stream")) {
-        content = await readOpenAiStream(
-          response,
-          options.onProgress,
-          options.onActivity,
-        );
+        try {
+          content = await readOpenAiStream(
+            response,
+            options.onProgress,
+            options.onActivity,
+          );
+        } catch (error) {
+          if (!(error instanceof CanvasAgentError) || error.code !== "empty-stream") {
+            throw error;
+          }
+          let fallback: Response;
+          try {
+            fallback = await requestUpstream(false);
+          } catch {
+            if (options.signal?.aborted) throw options.signal.reason;
+            throw new CanvasAgentError("无法连接画布 Agent，请检查网络。", 502);
+          }
+          await assertUpstreamSuccess(fallback);
+          options.onActivity?.();
+          let payload: unknown;
+          try {
+            payload = await fallback.json();
+          } catch {
+            throw new CanvasAgentError("画布 Agent 非流式降级响应无法识别。", 502);
+          }
+          content = extractText(payload);
+          if (!content) {
+            throw new CanvasAgentError(
+              "画布 Agent 非流式降级响应未返回有效内容。",
+              502,
+              "empty-response",
+            );
+          }
+        }
       } else {
         let payload: unknown;
         try {

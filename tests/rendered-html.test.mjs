@@ -133,7 +133,8 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(route, /AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000/);
   assert.match(route, /send\("result"/);
   assert.match(route, /known\.code/);
-  assert.match(provider, /stream: true/);
+  assert.match(provider, /requestUpstream\(true\)/);
+  assert.match(provider, /requestUpstream\(false\)/);
   assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
   assert.match(stream, /extractProgressSummary/);
   assert.match(sidebar, /这是批次编号，不是镜头编号/);
