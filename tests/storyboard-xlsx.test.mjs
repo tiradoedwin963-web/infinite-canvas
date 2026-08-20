@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createStoryboardWorkbook } from "../app/server/storyboard-xlsx.ts";
+import { buildPersistedStoryboardTable } from "../app/workflow/storyboard-table.ts";
 
 function graph() {
   const storyId = "story";
@@ -56,4 +57,63 @@ test("exports a 14-column storyboard workbook with summary formulas", async () =
   assert.equal(sheet.getCell("B2").value.formula, "COUNTA(A6:A6)");
   assert.equal(sheet.getCell("E2").value.formula, "SUM(C6:C6)");
   assert.equal(sheet.getCell("A6").value, "shot-001");
+});
+
+test("exports the persisted multi-shot table and final-prompt task sheet", async () => {
+  const source = graph();
+  const plan = source.nodes.find((node) => node.id === "shot").shotPlan;
+  const videoTask = {
+    segmentId: "segment-001",
+    shotIds: [plan.shotId],
+    sceneIds: [plan.sceneId],
+    duration: plan.duration,
+    referenceNodeIds: plan.referenceNodeIds,
+    schedulerId: "final-prompt-scheduler",
+  };
+  const storyboardTable = buildPersistedStoryboardTable(source, "story", {
+    tempo: "multi-shot",
+    shotPlans: [plan],
+    videoTasks: [videoTask],
+  });
+  source.nodes.push(
+    {
+      id: "table",
+      x: 3,
+      y: 0,
+      type: "source",
+      kind: "text",
+      text: "项目级分镜表",
+      storyId: "story",
+      storyRole: "storyboard-table",
+      storyboardTable,
+    },
+    {
+      id: "final-prompt-scheduler",
+      x: 4,
+      y: 0,
+      type: "scheduler",
+      outputKind: "video",
+      model: "seedance-2.5",
+      prompt: "本片段仅生成 0 至 12 秒内的连续多镜头画面与动作。",
+      aspectRatio: "16:9",
+      resolution: "720p",
+      duration: "12",
+      outputCount: 1,
+      error: "",
+      storyId: "story",
+      storyRole: "video-scheduler",
+      videoSegment: videoTask,
+    },
+  );
+  const buffer = await createStoryboardWorkbook(source, "story");
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const shots = workbook.getWorksheet("漫剧分镜表");
+  const tasks = workbook.getWorksheet("视频任务表");
+  assert.equal(shots.getCell("J5").value, "对白 / 旁白");
+  assert.equal(tasks.getCell("A1").value, "测试项目｜视频任务表");
+  assert.equal(tasks.getCell("G5").value, "最终提示词");
+  assert.equal(tasks.getCell("A6").value, "segment-001");
+  assert.match(String(tasks.getCell("G6").value), /0 至 12 秒/);
 });

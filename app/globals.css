@@ -1156,8 +1156,30 @@ body {
   font-weight: 650;
 }
 
-.workflow-storyboard-table button:first-child {
+.workflow-storyboard-table > header > div:last-child > button:first-child {
   background: #292824;
+  color: #fff;
+}
+
+.workflow-storyboard-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.workflow-storyboard-table .workflow-storyboard-tabs button {
+  height: 29px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid rgba(108, 92, 231, 0.2);
+  background: #f7f6ff;
+  color: #6054bd;
+  font-size: 11px;
+}
+
+.workflow-storyboard-table .workflow-storyboard-tabs button.is-active {
+  border-color: #6c5ce7;
+  background: #6c5ce7;
   color: #fff;
 }
 
@@ -1201,6 +1223,15 @@ body {
 .workflow-storyboard-scroll td:nth-child(3) {
   min-width: 92px;
   text-align: center;
+}
+
+.workflow-video-task-table td:nth-child(7) {
+  min-width: 480px;
+}
+
+.workflow-video-task-prompt {
+  max-width: 720px;
+  line-height: 1.65;
 }
 
 .workflow-node {
@@ -1290,6 +1321,54 @@ body {
   line-height: 1.65;
   outline: none;
   user-select: text;
+}
+
+.workflow-storyboard-node {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  color: #413a70;
+  user-select: text;
+}
+
+.workflow-storyboard-node-kicker {
+  color: #776bbf;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.workflow-storyboard-node strong {
+  color: #302a58;
+  font-size: 15px;
+}
+
+.workflow-storyboard-node > span:not(.workflow-storyboard-node-kicker) {
+  color: #736d8e;
+  font-size: 11px;
+}
+
+.workflow-storyboard-node button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 30px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #6c5ce7;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .workflow-upload {

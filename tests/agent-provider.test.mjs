@@ -286,13 +286,22 @@ test("uses a bounded structured output budget for two-shot manga batches", async
   assert.ok(shotSchema.required.includes("transition_out"));
   assert.ok(shotSchema.required.includes("duration_reason"));
   assert.ok(shotSchema.required.includes("timeline"));
+  assert.ok(shotSchema.required.includes("character_position"));
+  assert.ok(shotSchema.required.includes("character_movement"));
+  assert.ok(shotSchema.required.includes("eyeline"));
+  assert.ok(shotSchema.required.includes("dialogue"));
+  assert.ok(shotSchema.required.includes("voiceover"));
+  assert.ok(shotSchema.required.includes("sound_effect"));
+  assert.ok(shotSchema.required.includes("music_cue"));
+  assert.ok(shotSchema.required.includes("continuity_notes"));
   assert.ok(!shotSchema.required.includes("previous_shot_id"));
   assert.ok(!shotSchema.required.includes("next_shot_id"));
-  assert.ok(!shotSchema.required.includes("dialogue"));
   assert.ok(!Object.hasOwn(shotSchema.properties, "continuity_warnings"));
-  assert.ok(!Object.hasOwn(shotSchema.properties, "dialogue"));
-  assert.ok(!Object.hasOwn(shotSchema.properties.timeline.items.properties, "performance"));
-  assert.ok(!Object.hasOwn(shotSchema.properties.timeline.items.properties, "audio"));
+  assert.ok(Object.hasOwn(shotSchema.properties, "dialogue"));
+  assert.ok(Object.hasOwn(shotSchema.properties.timeline.items.properties, "performance"));
+  assert.ok(Object.hasOwn(shotSchema.properties.timeline.items.properties, "audio"));
+  assert.ok(shotSchema.properties.timeline.items.required.includes("performance"));
+  assert.ok(shotSchema.properties.timeline.items.required.includes("audio"));
   assert.deepEqual(
     [...shotSchema.required].sort(),
     Object.keys(shotSchema.properties).sort(),
@@ -375,6 +384,33 @@ test("uses the short-cut duration schema only for a short-cut project", async ()
     .items.properties.shots.items.properties.duration;
   assert.deepEqual(duration.enum, [2, 3]);
   assert.match(body.messages[0].content, /短片剪辑；每行分镜严格为 2 或 3 秒/);
+});
+
+test("uses the multi-shot duration schema and editing guidance for new comic projects", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: '{"message":"继续","workflow_state":"active","operations":[]}' } }],
+    });
+  });
+  const mangaCanvas = comicWorkflowCanvas();
+  mangaCanvas.nodes[0].mangaPlanningStage = "shot-plans";
+  mangaCanvas.nodes[0].mangaStoryboardTempo = "multi-shot";
+  await client.respond(validateAgentRequest(request({
+    canvas: mangaCanvas,
+    phase: "active",
+    messages: [
+      { role: "user", content: "开始" },
+      { role: "assistant", content: "已进入镜头规划" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  const duration = body.response_format.json_schema.schema.properties.operations
+    .items.properties.shots.items.properties.duration;
+  assert.equal(duration.minimum, 2);
+  assert.equal(duration.maximum, 15);
+  assert.match(body.messages[0].content, /影视剪辑；每行分镜为 2 至 5 秒或 6 至 15 秒/);
 });
 
 test("uses one strict response schema for every manga director stage", async () => {

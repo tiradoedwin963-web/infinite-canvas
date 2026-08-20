@@ -7,6 +7,7 @@ import type {
   WorkflowGraph,
   WorkflowNode,
   WorkflowResultNode,
+  WorkflowStoryRole,
 } from "./graph.ts";
 
 export type StoryboardReadiness = {
@@ -38,15 +39,32 @@ function resultAvailable(node: WorkflowResultNode) {
   return node.status === "success" && Boolean(node.resultUrl || node.assetId);
 }
 
+const MANGA_DIRECTOR_ROLES = new Set<WorkflowStoryRole>([
+  "story-beats",
+  "scene-plan",
+  "shot",
+  "continuity-report",
+  "storyboard-table",
+  "storyboard-scheduler",
+  "storyboard",
+  "video-scheduler",
+  "clip",
+]);
+
+function hasStoryboardNodes(graph: WorkflowGraph, storyId: string) {
+  return graph.nodes.some((node) =>
+    node.storyId === storyId && node.storyRole !== undefined &&
+    MANGA_DIRECTOR_ROLES.has(node.storyRole),
+  );
+}
+
 export function storyStoryboardReadiness(
   graph: WorkflowGraph,
   storyId: string,
 ): StoryboardReadiness {
   const analysis = analysisNode(graph, storyId);
   const results = assetResults(graph, storyId);
-  const locked = graph.nodes.some(
-    (node) => node.storyId === storyId && node.storyRole === "shot",
-  );
+  const locked = hasStoryboardNodes(graph, storyId);
   return {
     storyId,
     mode: analysis?.storyboardMode,
@@ -67,7 +85,7 @@ export function setStoryStoryboardMode(
   graph: WorkflowGraph,
   storyId: string,
   mode: AgentStoryboardMode,
-  tempo: AgentMangaStoryboardTempo = "long-form",
+  tempo: AgentMangaStoryboardTempo = "multi-shot",
 ): WorkflowGraph {
   const state = storyStoryboardReadiness(graph, storyId);
   if (!analysisNode(graph, storyId)) throw new Error("未找到对应的剧本分析节点。");
@@ -96,6 +114,51 @@ export function setStoryStoryboardMode(
               : {}),
           }
         : node,
+    ),
+  };
+}
+
+export function resetMangaStoryboardForMultiShot(
+  graph: WorkflowGraph,
+  storyId: string,
+): WorkflowGraph {
+  const analysis = analysisNode(graph, storyId);
+  if (!analysis) throw new Error("未找到对应的剧本分析节点。");
+  const activeClip = graph.nodes.find((node) =>
+    node.storyId === storyId && node.storyRole === "clip" &&
+    node.type === "result" &&
+    (
+      node.status === "pending" ||
+      node.status === "running" ||
+      (node.status === "paused" &&
+        (Boolean(node.taskId) || node.progress === "提交状态未知"))
+    ),
+  );
+  if (activeClip) {
+    throw new Error("当前项目仍有正在提交或生成的视频任务，不能重新规划。");
+  }
+  const removedIds = new Set(graph.nodes.flatMap((node) =>
+    node.storyId === storyId && node.storyRole && MANGA_DIRECTOR_ROLES.has(node.storyRole)
+      ? [node.id]
+      : [],
+  ));
+  return {
+    ...graph,
+    nodes: graph.nodes.flatMap((node): WorkflowNode[] => {
+      if (removedIds.has(node.id)) return [];
+      if (node.id !== analysis.id) return [node];
+      return [{
+        ...node,
+        storyboardMode: "comic",
+        mangaStoryboardTempo: "multi-shot",
+        mangaPlanningStage: "story-beats",
+        mangaPlanningStatus: "planning",
+        mangaPlanningChunkIndex: 0,
+        continuityApprovedAt: undefined,
+      }];
+    }),
+    edges: graph.edges.filter((edge) =>
+      !removedIds.has(edge.sourceId) && !removedIds.has(edge.targetId),
     ),
   };
 }

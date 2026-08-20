@@ -9,6 +9,7 @@ import {
 } from "../app/workflow/agent.ts";
 import {
   acknowledgeMangaContinuity,
+  buildMangaMultiShotVideoPrompt,
   buildMangaVideoPrompt,
   buildMangaShortCutVideoPrompt,
   createMangaCinematographyComparisonGraph,
@@ -18,9 +19,13 @@ import {
   createMangaStoryBeats,
   refreshMangaVideoSchedulerPrompts,
   remapWorkflowAssetIds,
+  groupMangaMultiShotSegments,
   groupMangaShortCutSegments,
 } from "../app/workflow/manga-director.ts";
-import { validateMangaShotCinematography } from "../app/workflow/manga-cinematography.ts";
+import {
+  collectMangaCinematographyWarnings,
+  validateMangaShotCinematography,
+} from "../app/workflow/manga-cinematography.ts";
 import { parseWorkflowGraph, readWorkflowInputs } from "../app/workflow/graph.ts";
 import { setStoryStoryboardMode } from "../app/workflow/storyboard.ts";
 import { createStoryboardTable } from "../app/workflow/storyboard-table.ts";
@@ -352,6 +357,140 @@ test("merges a short scene into the adjacent segment and rejects an unmergeable 
   );
 });
 
+test("packs multi-shot rows across scenes and keeps explicit internal hard cuts", () => {
+  const shots = [
+    shortShot({
+      shotId: "shot-001",
+      sequence: 1,
+      sceneId: "scene-a",
+      transitionOut: "直接 HARD CUT 到湖畔结尾。",
+      narrativePurpose: "秘密叙事目的",
+      emotionalGoal: "秘密情绪目的",
+      negativePrompt: "秘密禁止项",
+    }),
+    shortShot({
+      shotId: "shot-002",
+      sequence: 2,
+      sceneId: "scene-b",
+      duration: 3,
+      timeline: [{
+        startSecond: 0,
+        endSecond: 3,
+        visualAction: "角色转向湖面并抬头",
+        performance: "安静观察",
+        camera: "中远景缓慢后退",
+        audio: "湖水和鸟鸣",
+      }],
+      dialogue: "看，那只小鸟。",
+      voiceover: "午后的风刚刚好。",
+      soundEffect: "轻风、湖水、鸟鸣",
+      transitionIn: "HARD CUT 从树荫下切入湖畔",
+    }),
+  ];
+  const [segment] = groupMangaMultiShotSegments(shots);
+  assert.equal(segment.duration, 5);
+  assert.deepEqual(segment.sceneIds, ["scene-a", "scene-b"]);
+  const prompt = buildMangaMultiShotVideoPrompt(segment);
+  assert.match(prompt, /第 2 秒切镜方式：直接 HARD CUT 到湖畔结尾/);
+  assert.match(prompt, /对白：看，那只小鸟/);
+  assert.match(prompt, /旁白：午后的风刚刚好/);
+  assert.match(prompt, /声音：轻风、湖水、鸟鸣/);
+  assert.doesNotMatch(prompt, /秘密叙事目的|秘密情绪目的|秘密禁止项|叙事目的|情绪目标|禁止项/);
+
+  const longThenTail = [
+    ...Array.from({ length: 10 }, (_, index) => shortShot({
+      shotId: `long-${index + 1}`,
+      sequence: index + 1,
+      sceneId: "scene-a",
+      duration: 3,
+      timeline: [{
+        startSecond: 0,
+        endSecond: 3,
+        visualAction: "角色完成一个清楚动作",
+        performance: "自然反应",
+        camera: "中景轻推",
+        audio: "环境声",
+      }],
+    })),
+    shortShot({ shotId: "tail", sequence: 11, sceneId: "scene-b" }),
+  ];
+  const tailSegments = groupMangaMultiShotSegments(longThenTail);
+  assert.deepEqual(tailSegments.map((item) => item.duration), [27, 5]);
+  assert.deepEqual(tailSegments.at(-1).sceneIds, ["scene-a", "scene-b"]);
+});
+
+test("materializes one multi-shot storyboard table and removes transient shot nodes", () => {
+  const idFactory = ids();
+  let graph = createMangaStoryBeats(readyGraph("multi-shot"), beatOperation(), idFactory);
+  graph = createMangaScenePlans(graph, sceneOperation(), idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: true,
+    shots: [
+      shortShot({
+        shotId: "draft-a",
+        sequence: 1,
+        transitionOut: "HARD CUT 到下一处完整环境。",
+        narrativePurpose: "不发送的叙事目的",
+        emotionalGoal: "不发送的情绪目的",
+        negativePrompt: "不发送的禁止项",
+      }),
+      shortShot({
+        shotId: "draft-b",
+        sequence: 2,
+        duration: 3,
+        shotSize: "中近景",
+        timeline: [{
+          startSecond: 0,
+          endSecond: 3,
+          visualAction: "主角转头看向道具",
+          performance: "短促惊讶",
+          camera: "中近景轻推",
+          audio: "衣料轻响",
+        }],
+      }),
+    ],
+  }, idFactory);
+  const completed = createMangaContinuityReport(graph, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [] },
+  }, idFactory);
+  const table = completed.nodes.find((node) => node.storyRole === "storyboard-table");
+  const scheduler = completed.nodes.find((node) => node.storyRole === "video-scheduler");
+  assert.equal(completed.nodes.some((node) => node.storyRole === "shot"), false);
+  assert.equal(table.storyboardTable.shotPlans.length, 2);
+  assert.equal(table.storyboardTable.videoTasks.length, 1);
+  assert.equal(scheduler.model, "seedance-2.5");
+  assert.equal(scheduler.duration, "5");
+  assert.equal(scheduler.mangaStoryboardTempo, "multi-shot");
+  assert.match(scheduler.label, /^最终提示词调度/);
+  assert.match(scheduler.prompt, /第 2 秒切镜方式：HARD CUT 到下一处完整环境/);
+  assert.doesNotMatch(scheduler.prompt, /不发送的叙事目的|不发送的情绪目的|不发送的禁止项/);
+  assert.equal(
+    completed.edges.some((edge) => edge.sourceId === table.id && edge.targetId === scheduler.id),
+    true,
+  );
+  assert.equal(parseWorkflowGraph(JSON.stringify(completed)).nodes.length, completed.nodes.length);
+});
+
+test("treats multi-shot cinematography patterns as non-blocking suggestions", () => {
+  const shots = Array.from({ length: 4 }, (_, index) => shortShot({
+    shotId: `close-${index + 1}`,
+    sequence: index + 1,
+    shotSize: "特写",
+    endFrame: index === 0 ? "第2秒HARD CUT到下一镜的角色眼睛特写" : "角色停在当前特写构图中",
+  }));
+  assert.equal(validateMangaShotCinematography(shots, { allowCreativeDirections: true }), null);
+  assert.equal(
+    collectMangaCinematographyWarnings(shots).some((warning) => warning.code === "close-shot-run"),
+    true,
+  );
+});
+
 test("keeps planning after a premature final batch and orders a later missing beat", () => {
   const idFactory = ids();
   const beats = [1, 2, 3].map((sequence) => ({
@@ -584,9 +723,10 @@ test("rejects invalid second timelines, short shots without reasons, and continu
 
   const crossShot = structuredClone(snake);
   crossShot.end_frame = "切入下一镜的角色眼睛特写";
-  assert.throws(
-    () => parseAgentModelResponse(response(crossShot)),
-    /包含跨镜头场记/,
+  assert.equal(
+    parseAgentModelResponse(response(crossShot), { mangaTempo: "multi-shot" })
+      .operations[0].shots[0].endFrame,
+    "切入下一镜的角色眼睛特写",
   );
 
   const duplicate = structuredClone(snake);

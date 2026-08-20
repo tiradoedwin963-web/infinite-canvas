@@ -67,6 +67,7 @@ export type WorkflowStoryRole =
   | "story-beats"
   | "scene-plan"
   | "shot"
+  | "storyboard-table"
   | "continuity-report"
   | "storyboard-scheduler"
   | "storyboard"
@@ -87,6 +88,37 @@ export type WorkflowAssetPlanningStatus =
   | "stopped"
   | "failed"
   | "complete";
+
+export type WorkflowStoryboardTableRow = {
+  shotId: string;
+  timecode: string;
+  duration: number;
+  referenceAssets: string;
+  sceneTime: string;
+  shotSizeLens: string;
+  camera: string;
+  composition: string;
+  performance: string;
+  voiceover: string;
+  sound: string;
+  transition: string;
+  continuity: string;
+  lightingTexture: string;
+};
+
+export type WorkflowStoryboardVideoTask = MangaVideoSegment & {
+  schedulerId: string;
+};
+
+export type WorkflowStoryboardTable = {
+  version: 1;
+  tempo: AgentMangaStoryboardTempo;
+  shotPlans: ShotPlan[];
+  rows: WorkflowStoryboardTableRow[];
+  videoTasks: WorkflowStoryboardVideoTask[];
+  totalDuration: number;
+  validation: "通过" | "需检查";
+};
 
 type WorkflowNodeBase = {
   id: string;
@@ -121,6 +153,7 @@ type WorkflowNodeBase = {
   shotPlan?: ShotPlan;
   continuityReport?: ContinuityReport;
   videoSegment?: MangaVideoSegment;
+  storyboardTable?: WorkflowStoryboardTable;
 };
 
 export type WorkflowSourceNode = WorkflowNodeBase & {
@@ -214,6 +247,62 @@ export function emptyWorkflowGraph(): WorkflowGraph {
   return { version: WORKFLOW_VERSION, nodes: [], edges: [] };
 }
 
+function isPersistedVideoSegment(value: unknown): value is MangaVideoSegment {
+  if (!value || typeof value !== "object") return false;
+  const segment = value as Partial<MangaVideoSegment>;
+  return typeof segment.segmentId === "string" &&
+    Array.isArray(segment.shotIds) &&
+    segment.shotIds.every((id) => typeof id === "string") &&
+    Array.isArray(segment.sceneIds) &&
+    segment.sceneIds.every((id) => typeof id === "string") &&
+    typeof segment.duration === "number" &&
+    Number.isInteger(segment.duration) &&
+    segment.duration >= 4 &&
+    segment.duration <= 30 &&
+    Array.isArray(segment.referenceNodeIds) &&
+    segment.referenceNodeIds.every((id) => typeof id === "string");
+}
+
+function isWorkflowStoryboardTableRow(value: unknown): value is WorkflowStoryboardTableRow {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Partial<WorkflowStoryboardTableRow>;
+  return typeof row.shotId === "string" &&
+    typeof row.timecode === "string" &&
+    typeof row.duration === "number" &&
+    Number.isInteger(row.duration) &&
+    row.duration > 0 &&
+    typeof row.referenceAssets === "string" &&
+    typeof row.sceneTime === "string" &&
+    typeof row.shotSizeLens === "string" &&
+    typeof row.camera === "string" &&
+    typeof row.composition === "string" &&
+    typeof row.performance === "string" &&
+    typeof row.voiceover === "string" &&
+    typeof row.sound === "string" &&
+    typeof row.transition === "string" &&
+    typeof row.continuity === "string" &&
+    typeof row.lightingTexture === "string";
+}
+
+function isWorkflowStoryboardTable(value: unknown): value is WorkflowStoryboardTable {
+  if (!value || typeof value !== "object") return false;
+  const table = value as Partial<WorkflowStoryboardTable>;
+  return table.version === 1 &&
+    (table.tempo === "long-form" || table.tempo === "short-cut" || table.tempo === "multi-shot") &&
+    Array.isArray(table.shotPlans) &&
+    table.shotPlans.every(isPersistedShotPlan) &&
+    Array.isArray(table.rows) &&
+    table.rows.every(isWorkflowStoryboardTableRow) &&
+    Array.isArray(table.videoTasks) &&
+    table.videoTasks.every((task) =>
+      isPersistedVideoSegment(task) && typeof task.schedulerId === "string"
+    ) &&
+    typeof table.totalDuration === "number" &&
+    Number.isInteger(table.totalDuration) &&
+    table.totalDuration >= 0 &&
+    (table.validation === "通过" || table.validation === "需检查");
+}
+
 function validBase(node: Partial<WorkflowNode>) {
   return (
     typeof node.id === "string" &&
@@ -241,6 +330,7 @@ function validBase(node: Partial<WorkflowNode>) {
         "story-beats",
         "scene-plan",
         "shot",
+        "storyboard-table",
         "continuity-report",
         "storyboard-scheduler",
         "storyboard",
@@ -264,7 +354,8 @@ function validBase(node: Partial<WorkflowNode>) {
       node.storyboardMode === "tvc") &&
     (node.mangaStoryboardTempo === undefined ||
       node.mangaStoryboardTempo === "long-form" ||
-      node.mangaStoryboardTempo === "short-cut") &&
+      node.mangaStoryboardTempo === "short-cut" ||
+      node.mangaStoryboardTempo === "multi-shot") &&
     (node.storyVisualStyle === undefined ||
       typeof node.storyVisualStyle === "string") &&
     (node.planningStage === undefined ||
@@ -307,17 +398,8 @@ function validBase(node: Partial<WorkflowNode>) {
     && (node.shotPlan === undefined || isPersistedShotPlan(node.shotPlan))
     && (node.continuityReport === undefined ||
       isPersistedContinuityReport(node.continuityReport))
-    && (node.videoSegment === undefined ||
-      typeof node.videoSegment.segmentId === "string" &&
-      Array.isArray(node.videoSegment.shotIds) &&
-      node.videoSegment.shotIds.every((id) => typeof id === "string") &&
-      Array.isArray(node.videoSegment.sceneIds) &&
-      node.videoSegment.sceneIds.every((id) => typeof id === "string") &&
-      Number.isInteger(node.videoSegment.duration) &&
-      node.videoSegment.duration >= 4 &&
-      node.videoSegment.duration <= 30 &&
-      Array.isArray(node.videoSegment.referenceNodeIds) &&
-      node.videoSegment.referenceNodeIds.every((id) => typeof id === "string"))
+    && (node.videoSegment === undefined || isPersistedVideoSegment(node.videoSegment))
+    && (node.storyboardTable === undefined || isWorkflowStoryboardTable(node.storyboardTable))
   );
 }
 
@@ -991,7 +1073,9 @@ export function buildWorkflowGenerationPrompt(
       ? [
           "参考素材顺序：",
           ...references,
-          "以图1为镜头起始画面和构图基础；同时严格保持后续人物资产的外观、服装和身份，以及场景资产的空间、陈设、光线与时间特征。",
+          scheduler.mangaStoryboardTempo === "multi-shot"
+            ? "全部图片仅作为本视频片段的资产参考；按图号保持人物、服装、道具、场景的外观、数量、空间、陈设、光线与时间特征，不将任意单张图片指定为起始画面或构图基础。"
+            : "以图1为镜头起始画面和构图基础；同时严格保持后续人物资产的外观、服装和身份，以及场景资产的空间、陈设、光线与时间特征。",
         ].join("\n")
       : "";
     return [guide, scheduler.prompt.trim()].filter(Boolean).join("\n\n");

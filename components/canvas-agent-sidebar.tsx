@@ -182,6 +182,7 @@ type CanvasAgentSidebarProps = {
     mode: AgentStoryboardMode,
     tempo?: AgentMangaStoryboardTempo,
   ) => void;
+  onResetMangaStoryboard?: (storyId: string) => void;
   onApproveContinuity?: (storyId: string) => void;
   onConfirmOperation: (
     operation: AgentDangerousOperation,
@@ -220,6 +221,7 @@ export function CanvasAgentSidebar({
   onPlanningInterrupted,
   onApproveFoundation,
   onSelectStoryboardMode,
+  onResetMangaStoryboard,
   onApproveContinuity,
   onConfirmOperation,
   onReadImages,
@@ -1568,6 +1570,7 @@ export function CanvasAgentSidebar({
                     <p className="mt-0 mb-2">先选择漫剧的项目级镜头节奏；创建首个镜头后不能切换。</p>
                     <div className="grid grid-cols-2 gap-2">
                       {([
+                        ["multi-shot", "影视剪辑"],
                         ["long-form", "长镜直出"],
                         ["short-cut", "短片剪辑"],
                       ] as const).map(([tempo, label]) => (
@@ -1575,7 +1578,7 @@ export function CanvasAgentSidebar({
                           key={tempo}
                           aria-label={`选择${label}`}
                           className={`inline-flex h-8 items-center justify-center rounded-full border px-3 text-xs font-medium ${
-                            (mangaTempoByStory[control.storyId] ?? "long-form") === tempo
+                            (mangaTempoByStory[control.storyId] ?? "multi-shot") === tempo
                               ? "border-zinc-900 bg-zinc-900 text-white"
                               : "border-violet-200 bg-white text-violet-950"
                           }`}
@@ -1598,14 +1601,18 @@ export function CanvasAgentSidebar({
                       onClick={() => onSelectStoryboardMode?.(
                         control.storyId,
                         "comic",
-                        mangaTempoByStory[control.storyId] ?? "long-form",
+                        mangaTempoByStory[control.storyId] ?? "multi-shot",
                       )}
                     >
                       确认漫剧节奏并开始规划
                     </button>
                   </>
                 ) : (
-                  <p className="mt-0 mb-2">当前制作规则：{control.mangaStoryboardTempo === "short-cut" ? "短片剪辑（每行2–3秒，按场景合并视频片段）" : "长镜直出（普通镜头10–15秒）"}。</p>
+                  <p className="mt-0 mb-2">当前制作规则：{control.mangaStoryboardTempo === "multi-shot"
+                    ? "影视剪辑（每行2–5秒或6–15秒，按顺序合并为4–30秒视频片段）"
+                    : control.mangaStoryboardTempo === "short-cut"
+                      ? "短片剪辑（每行2–3秒，按场景合并视频片段）"
+                      : "长镜直出（普通镜头10–15秒）"}。</p>
                 )}
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
@@ -1646,6 +1653,22 @@ export function CanvasAgentSidebar({
                     onClick={() => onApproveContinuity?.(control.storyId)}
                   >
                     确认警告并允许生成
+                  </button>
+                ) : null}
+                {control.mode === "comic" && control.locked && onResetMangaStoryboard ? (
+                  <button
+                    aria-label="按影视剪辑重新规划"
+                    className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full border border-violet-300 bg-white px-3 text-xs font-medium text-violet-950 disabled:opacity-60"
+                    disabled={isSending || isConfirmationBusy}
+                    type="button"
+                    onClick={() => {
+                      onResetMangaStoryboard(control.storyId);
+                      void submit(
+                        "请启动当前短剧的漫剧导演流程。从剧情与情绪节拍阶段开始，按影视剪辑规则完成规划；不得运行图片或视频生成。",
+                      );
+                    }}
+                  >
+                    保留资产，按影视剪辑重新规划
                   </button>
                 ) : null}
               </div>

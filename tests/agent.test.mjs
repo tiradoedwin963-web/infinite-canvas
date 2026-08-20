@@ -209,6 +209,70 @@ test("normalizes legacy continuity errors into approval-gated warnings", () => {
   assert.equal(response.operations[0].report.issues[0].severity, "warning");
 });
 
+test("parses multi-shot dialogue, sound, and an explicit hard cut without creative rejection", () => {
+  const response = parseAgentModelResponse(JSON.stringify({
+    message: "已规划影视剪辑镜头。",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_shot_batch",
+      story_id: "story-1",
+      chunk_index: 0,
+      is_final: false,
+      shots: [{
+        shot_id: "shot-001",
+        sequence: 1,
+        scene_id: "lake-afternoon",
+        beat_id: "beat-001",
+        duration: 2,
+        duration_reason: "喜剧反应短镜",
+        narrative_purpose: "建立角色的反应节拍",
+        emotional_goal: "轻松惊讶",
+        shot_size: "特写",
+        lens: "标准焦段",
+        perspective: "正侧面",
+        camera_angle: "眼平",
+        camera_movement: "固定机位",
+        composition: "点构图",
+        blocking: "角色停在冰淇淋机旁",
+        character_ids: ["character-lead"],
+        character_position: "画面右侧",
+        character_movement: "抬眼后停顿",
+        eyeline: "看向画外左侧",
+        prop_ids: ["prop-ice-cream"],
+        action: "小虹宝抱住冰淇淋后抬眼",
+        dialogue: "无",
+        voiceover: "树荫下，小虹宝笑得真开心。",
+        sound_effect: "轻风和一次柔软的啵声",
+        music_cue: "无 BGM",
+        lighting: "午后柔光",
+        color_tone: "明亮暖色",
+        texture: "原创手绘质感",
+        start_frame: "小虹宝在冰淇淋机旁抱住冰淇淋，抬眼看向画外左侧。",
+        end_frame: "小虹宝保持冰淇淋稳定，在画面右侧安静停顿。",
+        transition_in: "无",
+        transition_out: "第 2 秒直接 HARD CUT 到湖畔结尾。",
+        image_prompt: "冰淇淋机旁的角色静态画面",
+        negative_prompt: "无",
+        continuity_notes: "冰淇淋造型与资产图一致",
+        timeline: [{
+          start_second: 0,
+          end_second: 2,
+          visual_action: "小虹宝抱住冰淇淋后抬眼",
+          performance: "停顿半秒后轻轻眨眼",
+          camera: "固定机位保持特写",
+          audio: "轻风和一次柔软的啵声",
+        }],
+        reference_node_ids: ["asset-character", "asset-ice-cream"],
+      }],
+    }],
+  }), { mangaTempo: "multi-shot" });
+  const shot = response.operations[0].shots[0];
+  assert.equal(shot.duration, 2);
+  assert.equal(shot.transitionOut, "第 2 秒直接 HARD CUT 到湖畔结尾。");
+  assert.equal(shot.voiceover, "树荫下，小虹宝笑得真开心。");
+  assert.equal(shot.timeline[0].audio, "轻风和一次柔软的啵声");
+});
+
 test("builds a narrow manga recovery instruction from the live planning snapshot", () => {
   const instruction = createMangaRecoveryInstruction({
     mode: "workflow",

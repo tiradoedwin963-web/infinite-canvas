@@ -1,5 +1,4 @@
 import type { ComposerMode } from "./models.ts";
-import { validateMangaShotCinematography } from "../workflow/manga-cinematography.ts";
 
 export const AGENT_MODEL = "gpt-5.6-sol";
 export const AGENT_CHAT_STORAGE_KEY = "canvas-agent-chat-v1";
@@ -41,7 +40,10 @@ export class AgentRequestTimeoutError extends Error {
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
 export type AgentWorkflowState = "clarifying" | "active";
-export type AgentMangaStoryboardTempo = "long-form" | "short-cut";
+export type AgentMangaStoryboardTempo =
+  | "long-form"
+  | "short-cut"
+  | "multi-shot";
 
 export type AgentStoredAction = {
   label: string;
@@ -927,17 +929,17 @@ function parseShotTimeline(value: unknown, duration: number) {
 
 function validMangaShotDuration(
   duration: number,
-  durationReason: string,
+  _durationReason: string,
   tempo: AgentMangaStoryboardTempo,
 ) {
   if (tempo === "short-cut") return duration === 2 || duration === 3;
-  return duration >= 5 && duration <= 15 && (duration >= 10 || Boolean(durationReason));
+  if (tempo === "multi-shot") return duration >= 2 && duration <= 15;
+  return duration >= 5 && duration <= 15 && (duration >= 10 || Boolean(_durationReason));
 }
 
 function parseMangaShots(
   value: unknown,
   tempo: AgentMangaStoryboardTempo = "long-form",
-  skipCinematography = false,
 ): ShotPlan[] | null {
   if (!Array.isArray(value) || !value.length || value.length > 8) return null;
   const shots = value.map((item) => {
@@ -1030,9 +1032,7 @@ function parseMangaShots(
   const parsed = shots as ShotPlan[];
   if (new Set(parsed.map((shot) => shot.shotId)).size !== parsed.length) return null;
   if (new Set(parsed.map((shot) => shot.sequence)).size !== parsed.length) return null;
-  return !skipCinematography && validateMangaShotCinematography(parsed)
-    ? null
-    : parsed;
+  return parsed;
 }
 
 function describeInvalidMangaShots(
@@ -1068,7 +1068,9 @@ function describeInvalidMangaShots(
     )) {
       return tempo === "short-cut"
         ? `${shotId} 的 duration 必须为 2 或 3 秒`
-        : `${shotId} 的 duration 必须为 5 至 15 的整数；5 至 9 秒必须填写 duration_reason`;
+        : tempo === "multi-shot"
+          ? `${shotId} 的 duration 必须为 2 至 5 秒或 6 至 15 秒的整数`
+          : `${shotId} 的 duration 必须为 5 至 15 的整数；5 至 9 秒必须填写 duration_reason`;
     }
     if (!parseShotTimeline(item.timeline, duration)) {
       return `${shotId} 的 timeline 必须从 0 秒连续覆盖到 ${duration} 秒`;
@@ -1098,10 +1100,6 @@ function describeInvalidMangaShots(
   );
   if (duplicateSequence !== undefined) {
     return `sequence ${duplicateSequence} 在同一批次重复`;
-  }
-  const parsed = parseMangaShots(value, tempo, true);
-  if (parsed) {
-    return validateMangaShotCinematography(parsed) ?? "镜头字段类型或数量不符合协议";
   }
   return "镜头字段类型或数量不符合协议";
 }
@@ -1144,7 +1142,8 @@ export function isPersistedScenePlan(value: unknown): value is ScenePlan {
 
 export function isPersistedShotPlan(value: unknown): value is ShotPlan {
   return parseMangaShots([value], "long-form") !== null ||
-    parseMangaShots([value], "short-cut") !== null;
+    parseMangaShots([value], "short-cut") !== null ||
+    parseMangaShots([value], "multi-shot") !== null;
 }
 
 export function isPersistedContinuityReport(

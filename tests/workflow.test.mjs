@@ -252,6 +252,26 @@ test("reads direct upstream text, image and video in edge order without recursio
   }
 });
 
+test("uses all multi-shot image assets as references without assigning a single start frame", () => {
+  const inputs = {
+    text: [],
+    images: [
+      { ...source("lead", "image"), label: "主角", assetKind: "character" },
+      { ...source("scene", "image"), label: "湖畔", assetKind: "scene" },
+    ],
+    videos: [],
+  };
+  const prompt = buildWorkflowGenerationPrompt(inputs, {
+    ...scheduler("multi-shot"),
+    ...schedulerDefaults("video"),
+    storyRole: "video-scheduler",
+    mangaStoryboardTempo: "multi-shot",
+  });
+  assert.match(prompt, /图1：人物资产 · 主角[\s\S]*图2：场景资产 · 湖畔/);
+  assert.match(prompt, /全部图片仅作为本视频片段的资产参考/);
+  assert.doesNotMatch(prompt, /以图1为镜头起始画面/);
+});
+
 test("places scheduler input rows inside the card by persisted connection order and media kind", () => {
   const target = { ...scheduler(), width: 300 };
   const graph = {

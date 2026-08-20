@@ -106,7 +106,10 @@ import {
   markStoryAssetPlanning,
   syncStoryFoundationStatuses,
 } from "@/app/workflow/story-assets";
-import { setStoryStoryboardMode } from "@/app/workflow/storyboard";
+import {
+  resetMangaStoryboardForMultiShot,
+  setStoryStoryboardMode,
+} from "@/app/workflow/storyboard";
 import {
   createStoryboardTable,
   STORYBOARD_TABLE_HEADERS,
@@ -316,6 +319,7 @@ export function WorkflowCanvas() {
   const [projectCloneBusy, setProjectCloneBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
   const [storyboardTableStoryId, setStoryboardTableStoryId] = useState<string | null>(null);
+  const [storyboardTableView, setStoryboardTableView] = useState<"shots" | "tasks">("shots");
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
   >("idle");
@@ -1611,9 +1615,22 @@ export function WorkflowCanvas() {
   function selectStoryboardMode(
     storyId: string,
     mode: AgentStoryboardMode,
-    tempo: AgentMangaStoryboardTempo = "long-form",
+    tempo: AgentMangaStoryboardTempo = "multi-shot",
   ) {
     commitGraph((current) => setStoryStoryboardMode(current, storyId, mode, tempo));
+  }
+
+  function resetMangaStoryboard(storyId: string) {
+    try {
+      const next = resetMangaStoryboardForMultiShot(graphRef.current, storyId);
+      graphRef.current = next;
+      setGraph(next);
+      setBatchRun(null);
+      setSelectedIds([]);
+      setAgentContextNodeId(null);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法重新规划当前漫剧。");
+    }
   }
 
   function approveContinuity(storyId: string) {
@@ -2049,13 +2066,15 @@ export function WorkflowCanvas() {
   function openStoryboardTable() {
     const storyId = graphRef.current.nodes.find((node) =>
       node.storyRole === "analysis" && node.storyId && graphRef.current.nodes.some((candidate) =>
-        candidate.storyId === node.storyId && candidate.storyRole === "shot",
+        candidate.storyId === node.storyId &&
+        (candidate.storyRole === "storyboard-table" || candidate.storyRole === "shot"),
       ),
     )?.storyId;
     if (!storyId) {
       window.alert("当前项目尚未创建漫剧镜头，暂时没有可查看的分镜表。");
       return;
     }
+    setStoryboardTableView("shots");
     setStoryboardTableStoryId(storyId);
   }
 
@@ -2335,29 +2354,61 @@ export function WorkflowCanvas() {
               <div>
                 <h2>{storyboardTable.title}｜分镜表</h2>
                 <p>{storyboardTable.rows.length} 镜 · {storyboardTable.totalDuration} 秒 · 校验{storyboardTable.validation} · {storyboardTable.productionRule}</p>
+                <div className="workflow-storyboard-tabs" role="tablist" aria-label="分镜表视图">
+                  <button
+                    aria-selected={storyboardTableView === "shots"}
+                    className={storyboardTableView === "shots" ? "is-active" : ""}
+                    role="tab"
+                    type="button"
+                    onClick={() => setStoryboardTableView("shots")}
+                  >镜头分镜表（{storyboardTable.rows.length}）</button>
+                  <button
+                    aria-selected={storyboardTableView === "tasks"}
+                    className={storyboardTableView === "tasks" ? "is-active" : ""}
+                    role="tab"
+                    type="button"
+                    onClick={() => setStoryboardTableView("tasks")}
+                  >视频任务与最终提示词（{storyboardTable.videoTasks.length}）</button>
+                </div>
               </div>
               <div>
                 <button type="button" onClick={() => void exportStoryboardTable(storyboardTable.storyId)}>
                   <Download size={15} /> 导出 Excel
                 </button>
-                <button aria-label="关闭分镜表" type="button" onClick={() => setStoryboardTableStoryId(null)}>
+                <button aria-label="关闭分镜表" type="button" onClick={() => {
+                  setStoryboardTableStoryId(null);
+                  setStoryboardTableView("shots");
+                }}>
                   <X size={18} />
                 </button>
               </div>
             </header>
             <div className="workflow-storyboard-scroll">
-              <table>
-                <thead><tr>{STORYBOARD_TABLE_HEADERS.map((header) => <th key={header}>{header}</th>)}</tr></thead>
-                <tbody>{storyboardTable.rows.map((row) => (
-                  <tr key={row.shotId}>
-                    <td>{row.shotId}</td><td>{row.timecode}</td><td>{row.duration}</td>
-                    <td>{row.referenceAssets}</td><td>{row.sceneTime}</td><td>{row.shotSizeLens}</td>
-                    <td>{row.camera}</td><td>{row.composition}</td><td>{row.performance}</td>
-                    <td>{row.voiceover}</td><td>{row.sound}</td><td>{row.transition}</td>
-                    <td>{row.continuity}</td><td>{row.lightingTexture}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
+              {storyboardTableView === "shots" ? (
+                <table>
+                  <thead><tr>{STORYBOARD_TABLE_HEADERS.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+                  <tbody>{storyboardTable.rows.map((row) => (
+                    <tr key={row.shotId}>
+                      <td>{row.shotId}</td><td>{row.timecode}</td><td>{row.duration}</td>
+                      <td>{row.referenceAssets}</td><td>{row.sceneTime}</td><td>{row.shotSizeLens}</td>
+                      <td>{row.camera}</td><td>{row.composition}</td><td>{row.performance}</td>
+                      <td>{row.voiceover}</td><td>{row.sound}</td><td>{row.transition}</td>
+                      <td>{row.continuity}</td><td>{row.lightingTexture}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : (
+                <table className="workflow-video-task-table">
+                  <thead><tr>{["任务编号", "时间码", "时长（秒）", "包含镜头", "场景", "参考资产", "最终提示词", "状态"].map((header) => <th key={header}>{header}</th>)}</tr></thead>
+                  <tbody>{storyboardTable.videoTasks.map((task) => (
+                    <tr key={task.segmentId}>
+                      <td>{task.segmentId}</td><td>{task.timecode}</td><td>{task.duration}</td>
+                      <td>{task.shotIds}</td><td>{task.sceneIds}</td><td>{task.referenceAssets}</td>
+                      <td className="workflow-video-task-prompt">{task.finalPrompt}</td><td>{task.status}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
             </div>
           </section>
         </div>
@@ -2501,6 +2552,11 @@ export function WorkflowCanvas() {
             running={node.type === "scheduler" && runningSchedulers.has(node.id)}
             onDelete={() => deleteNode(node)}
             onOpen={() => setDetailId(node.id)}
+            onOpenStoryboard={() => {
+              if (!node.storyId || node.storyRole !== "storyboard-table") return;
+              setStoryboardTableView("shots");
+              setStoryboardTableStoryId(node.storyId);
+            }}
             onChange={(update) => setGraph((current) => updateWorkflowNode(current, node.id, update))}
             onUpload={(file) => node.type === "source" && void uploadSource(node, file)}
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
@@ -2607,6 +2663,7 @@ export function WorkflowCanvas() {
         onPlanningInterrupted={updateAssetPlanningStatus}
         onApproveFoundation={approveFoundation}
         onSelectStoryboardMode={selectStoryboardMode}
+        onResetMangaStoryboard={resetMangaStoryboard}
         onApproveContinuity={approveContinuity}
         onConfirmOperation={confirmAgentOperation}
         onReadImages={readAgentImages}
@@ -2646,6 +2703,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   running,
   onDelete,
   onOpen,
+  onOpenStoryboard,
   onChange,
   onUpload,
   onKindChange,
@@ -2668,6 +2726,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   running: boolean;
   onDelete: () => void;
   onOpen: () => void;
+  onOpenStoryboard: () => void;
   onChange: (update: Partial<WorkflowNode>) => void;
   onUpload: (file?: File) => void;
   onKindChange: (kind: ComposerMode) => void;
@@ -2682,7 +2741,16 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
 }) {
   const size = getWorkflowNodeSize(node);
   const kind = node.type === "scheduler" ? node.outputKind : node.kind;
-  const Icon = kind === "image" ? ImageIcon : kind === "video" ? Video : FileText;
+  const isStoryboardTable =
+    node.type === "source" && node.storyRole === "storyboard-table" &&
+    Boolean(node.storyboardTable);
+  const Icon = isStoryboardTable
+    ? Table2
+    : kind === "image"
+      ? ImageIcon
+      : kind === "video"
+        ? Video
+        : FileText;
   const title = node.label || (node.type === "scheduler"
     ? "通用调度"
     : node.type === "result"
@@ -2703,7 +2771,8 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
       onDoubleClick={(event) => {
         if ((event.target as HTMLElement).closest("[data-workflow-control]")) return;
         event.stopPropagation();
-        if (node.type === "result" || (node.type === "source" && node.kind !== "text")) onOpen();
+        if (isStoryboardTable) onOpenStoryboard();
+        else if (node.type === "result" || (node.type === "source" && node.kind !== "text")) onOpen();
       }}
     >
       <header className="canvas-node-header">
@@ -2720,7 +2789,9 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
 
       {node.type === "source" ? (
         <div className={`workflow-source-body${node.kind === "image" && assetUrl && !assetError ? " workflow-source-body-media" : ""}`}>
-          {node.kind === "text" ? (
+          {isStoryboardTable ? (
+            <StoryboardTableNodeBody node={node} onOpen={onOpenStoryboard} />
+          ) : node.kind === "text" ? (
             <textarea
               aria-label="文本素材内容"
               data-workflow-control
@@ -2794,6 +2865,30 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   sameWorkflowInputPorts(previous.inputPorts, next.inputPorts) &&
   previous.running === next.running,
 );
+
+function StoryboardTableNodeBody({
+  node,
+  onOpen,
+}: {
+  node: WorkflowSourceNode;
+  onOpen: () => void;
+}) {
+  const table = node.storyboardTable!;
+  return (
+    <div
+      className="workflow-storyboard-node"
+      data-workflow-control
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <span className="workflow-storyboard-node-kicker">项目级分镜表</span>
+      <strong>{table.rows.length} 镜 · {table.totalDuration} 秒</strong>
+      <span>{table.videoTasks.length} 个视频任务 · {table.validation}</span>
+      <button type="button" onClick={onOpen}>
+        <Table2 size={14} /> 查看分镜表与最终提示词
+      </button>
+    </div>
+  );
+}
 
 function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChange, onKindChange, onModelChange, onRun }: {
   node: WorkflowSchedulerNode;

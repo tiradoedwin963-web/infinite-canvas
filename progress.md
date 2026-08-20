@@ -2281,3 +2281,35 @@
 - `tests/manga-director.test.mjs`：覆盖端到端落图与未知镜头引用拒绝。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts manga-continuity-tools.md manga-director-core.md docs/canvas.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/manga-director.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 漫剧项目级分镜表与多镜头视频工作流
+
+### What was done
+- 新漫剧和重新规划默认采用“影视剪辑”节奏：分镜行使用 2–5 秒短镜或 6–15 秒长镜，连续镜头按顺序（允许跨场景）合并为 4–30 秒的 Seedance 2.5 视频任务。
+- 最终工作流改为项目级分镜表连接“最终提示词调度器”与视频占位；多镜头完成后移除临时逐镜文本节点，资产图按首次出现顺序作为每个片段最多 5 张参考图。
+- 最终视频提示词保留片段内逐秒画面、HARD CUT/动作接切等切点、对白、旁白、声音与正向一致性要求；不发送叙事目的、情绪目的或禁止项。摄影景别、静态画面和运镜复杂度改为建议性警告，镜头 ID、资产、时长、时间轴与编号仍严格校验。
+- 新增“镜头分镜表 / 视频任务与最终提示词”双视图及 Excel 第二工作表。已规划项目可选择“保留资产，按影视剪辑重新规划”；提交中、生成中或提交状态未知的视频不会被删除，避免重复计费。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过；Vinext 生产构建成功，198 项自动化测试全部通过。
+- `node --test tests/storyboard.test.mjs tests/manga-director.test.mjs tests/storyboard-xlsx.test.mjs tests/workflow.test.mjs`：通过，50 项分镜表、片段、提示词、资产引用和重规划安全回归测试全部通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未作为通过项；仓库现有 TypeScript 配置和历史类型错误（含 `.ts` 扩展配置）仍会使该独立命令失败，生产构建不受影响。本轮新增的 `storyboard.ts` 窄化错误已修正。
+
+### Notes
+- `app/ai/agent-provider.ts`：为影视剪辑镜头请求提供严格 Schema、2–15 秒范围与完整对白/声音字段。
+- `app/ai/agent.ts`：解析多镜头导演输出、保留创作切点并继续严格校验结构字段。
+- `app/globals.css`：增加项目级分镜表节点、标签页和视频任务表样式。
+- `app/server/storyboard-xlsx.ts`：导出 14 列镜头表及“视频任务表”第二工作表。
+- `app/workflow/graph.ts`：持久化 `multi-shot` 节奏、分镜表节点数据与多镜头资产参考提示。
+- `app/workflow/manga-cinematography.ts`：将景别、静态镜头和复杂摄影规则改为非阻断建议。
+- `app/workflow/manga-director.ts`：创建跨场景多镜头片段、最终提示词调度器、分镜表与视频占位。
+- `app/workflow/storyboard-table.ts`：投影镜头时间码、资产、切点和视频任务为可持久化分镜表。
+- `app/workflow/storyboard.ts`：默认影视剪辑，并安全清除旧导演/视频节点后重新进入节拍阶段。
+- `components/canvas-agent-sidebar.tsx`：提供影视剪辑选择、制作规则说明和保留资产重规划入口。
+- `components/workflow/workflow-canvas.tsx`：展示项目级分镜表双视图，清空本地批量队列并触发重新规划。
+- `docs/canvas.md`、`manga-continuity-tools.md`、`manga-director-core.md`、`manga-shot-plan-tools.md`、`shot-common-tools.md`：同步影视剪辑、创作切点、提示词边界和连续性建议规则。
+- `tests/agent-provider.test.mjs`、`tests/agent.test.mjs`、`tests/manga-director.test.mjs`、`tests/storyboard-xlsx.test.mjs`、`tests/storyboard.test.mjs`、`tests/workflow.test.mjs`：覆盖严格 Schema、多镜头分组、片段提示词、Excel、节点持久化和未知提交保护。
+- `progress.md`：记录本轮实现、验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts app/globals.css app/server/storyboard-xlsx.ts app/workflow/graph.ts app/workflow/manga-cinematography.ts app/workflow/manga-director.ts app/workflow/storyboard-table.ts app/workflow/storyboard.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md manga-continuity-tools.md manga-director-core.md manga-shot-plan-tools.md shot-common-tools.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/manga-director.test.mjs tests/storyboard-xlsx.test.mjs tests/storyboard.test.mjs tests/workflow.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

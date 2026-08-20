@@ -152,7 +152,7 @@ function systemPrompt(
   canvasMode: AgentRequest["canvas"]["mode"],
   storyboardMode?: AgentStoryboardMode,
   mangaPlanningStage?: AgentMangaPlanningStage,
-  mangaStoryboardTempo: AgentMangaStoryboardTempo = "long-form",
+  mangaStoryboardTempo: AgentMangaStoryboardTempo = "multi-shot",
 ) {
   const models = JSON.stringify(
     ALL_MODELS.map((model) => ({ mode: model.mode, model: model.value })),
@@ -201,19 +201,24 @@ ${comicStoryboardManual.trim()}
 ${cinematographyManual}
 ${stageManual}`
     : "";
+  const mangaTempoInstruction = mangaStoryboardTempo === "short-cut"
+    ? "短片剪辑；每行分镜严格为 2 或 3 秒，视频会按场景合并为最长 30 秒片段。"
+    : mangaStoryboardTempo === "multi-shot"
+      ? "影视剪辑；每行分镜为 2 至 5 秒或 6 至 15 秒，连续镜头可跨场景合并为 4 至 30 秒的 Seedance 2.5 视频片段。"
+      : "长镜直出；普通镜头为 10 至 15 秒，5 至 9 秒必须说明原因。";
   if (mangaPlanningStage) {
     return `${instructions.trim()}
 
 当前会话阶段：${phase}。
 当前画布类型：${canvasMode}。
-当前漫剧镜头节奏：${mangaStoryboardTempo === "short-cut" ? "短片剪辑；每行分镜严格为 2 或 3 秒，视频会按场景合并为最长 30 秒片段。" : "长镜直出；普通镜头为 10 至 15 秒，5 至 9 秒必须说明原因。"}。
+当前漫剧镜头节奏：${mangaTempoInstruction}。
 ${storyboardManual}`;
   }
   return `${instructions.trim()}
 
 当前会话阶段：${phase}。
 当前画布类型：${canvasMode}。
-当前漫剧镜头节奏：${mangaStoryboardTempo === "short-cut" ? "短片剪辑；每行分镜严格为 2 或 3 秒，视频会按场景合并为最长 30 秒片段。" : "长镜直出；普通镜头为 10 至 15 秒，5 至 9 秒必须说明原因。"}。
+当前漫剧镜头节奏：${mangaTempoInstruction}。
 可用于 generate_content 的 mode/model 组合：${models}。model 字段只能填写 model 值，不得添加 mode 前缀。
 
 图片生成 Tool 手册：
@@ -251,10 +256,13 @@ function selectedMangaPlanningStage(canvas: AgentSurfaceSnapshot) {
 }
 
 function selectedMangaStoryboardTempo(canvas: AgentSurfaceSnapshot) {
-  if (canvas.mode !== "workflow") return "long-form" as const;
-  return canvas.nodes.find((node) =>
+  if (canvas.mode !== "workflow") return "multi-shot" as const;
+  const analysis = canvas.nodes.find((node) =>
     node.storyRole === "analysis" && node.storyboardMode === "comic"
-  )?.mangaStoryboardTempo ?? "long-form";
+  );
+  return analysis
+    ? analysis.mangaStoryboardTempo ?? "long-form"
+    : "multi-shot";
 }
 
 function validateMangaDirectorOperations(
@@ -622,27 +630,10 @@ const MANGA_SHOT_STRING_FIELDS = [
   "character_movement", "eyeline", "action", "dialogue", "voiceover",
   "sound_effect", "music_cue", "lighting", "color_tone", "texture",
   "start_frame", "end_frame", "transition_in", "transition_out",
-  "image_prompt", "negative_prompt", "previous_shot_id", "next_shot_id",
-  "continuity_notes",
+  "image_prompt", "negative_prompt", "continuity_notes",
 ] as const;
 
-const MANGA_SHOT_OPTIONAL_STRING_FIELDS = new Set([
-  "character_position",
-  "character_movement",
-  "eyeline",
-  "dialogue",
-  "voiceover",
-  "sound_effect",
-  "music_cue",
-  "previous_shot_id",
-  "next_shot_id",
-  "continuity_notes",
-]);
-
 function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
-  const requiredStringFields = MANGA_SHOT_STRING_FIELDS.filter((field) =>
-    !MANGA_SHOT_OPTIONAL_STRING_FIELDS.has(field)
-  );
   return mangaDirectorResponseFormat(
   "manga_shot_batch",
   ["type", "story_id", "chunk_index", "is_final", "shots"],
@@ -659,18 +650,20 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
         type: "object",
         additionalProperties: false,
         required: [
-          ...requiredStringFields,
+          ...MANGA_SHOT_STRING_FIELDS,
           "sequence", "duration", "character_ids", "prop_ids", "timeline",
           "reference_node_ids",
         ],
         properties: {
           ...Object.fromEntries(
-            requiredStringFields.map((field) => [field, { type: "string" }]),
+            MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
           ),
           sequence: { type: "integer" },
           duration: tempo === "short-cut"
             ? { type: "integer", enum: [2, 3] }
-            : { type: "integer", minimum: 5, maximum: 15 },
+            : tempo === "multi-shot"
+              ? { type: "integer", minimum: 2, maximum: 15 }
+              : { type: "integer", minimum: 5, maximum: 15 },
           character_ids: { type: "array", items: { type: "string" } },
           prop_ids: { type: "array", items: { type: "string" } },
           reference_node_ids: { type: "array", items: { type: "string" } },
@@ -681,13 +674,16 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
               type: "object",
               additionalProperties: false,
               required: [
-                "start_second", "end_second", "visual_action", "camera",
+                "start_second", "end_second", "visual_action", "performance",
+                "camera", "audio",
               ],
               properties: {
                 start_second: { type: "integer" },
                 end_second: { type: "integer" },
                 visual_action: { type: "string" },
+                performance: { type: "string" },
                 camera: { type: "string" },
+                audio: { type: "string" },
               },
             },
           },

@@ -3,6 +3,7 @@ import test from "node:test";
 import { applyWorkflowAgentOperations } from "../app/workflow/agent.ts";
 import { parseWorkflowGraph } from "../app/workflow/graph.ts";
 import {
+  resetMangaStoryboardForMultiShot,
   setStoryStoryboardMode,
   storyStoryboardReadiness,
 } from "../app/workflow/storyboard.ts";
@@ -132,6 +133,126 @@ test("starts the staged manga director and rejects the legacy image workflow", (
   assert.throws(
     () => applyWorkflowAgentOperations(selected, [storyboardOperation()]),
     /分阶段导演操作/,
+  );
+});
+
+test("resets only director and video nodes before replanning as multi-shot", () => {
+  const graph = readyAssetGraph();
+  graph.nodes.push(
+    {
+      id: "beat",
+      x: 300,
+      y: 0,
+      type: "source",
+      kind: "text",
+      text: "剧情节拍",
+      storyId: "asset-story",
+      storyRole: "story-beats",
+    },
+    {
+      id: "shot",
+      x: 600,
+      y: 0,
+      type: "source",
+      kind: "text",
+      text: "旧分镜",
+      storyId: "asset-story",
+      storyRole: "shot",
+    },
+    {
+      id: "scheduler",
+      x: 900,
+      y: 0,
+      type: "scheduler",
+      outputKind: "video",
+      model: "seedance-2.5",
+      prompt: "旧视频提示词",
+      aspectRatio: "16:9",
+      resolution: "720p",
+      duration: "10",
+      outputCount: 1,
+      error: "",
+      storyId: "asset-story",
+      storyRole: "video-scheduler",
+    },
+    {
+      id: "clip",
+      x: 1200,
+      y: 0,
+      type: "result",
+      kind: "video",
+      schedulerId: "scheduler",
+      text: "旧视频",
+      model: "seedance-2.5",
+      status: "ready",
+      progress: "待生成",
+      error: "",
+      storyId: "asset-story",
+      storyRole: "clip",
+    },
+  );
+  graph.edges.push(
+    { id: "asset-shot", sourceId: "lead-result", targetId: "shot" },
+    { id: "shot-scheduler", sourceId: "shot", targetId: "scheduler" },
+    { id: "scheduler-clip", sourceId: "scheduler", targetId: "clip" },
+  );
+
+  const reset = resetMangaStoryboardForMultiShot(graph, "asset-story");
+  const analysis = reset.nodes.find((node) => node.id === "analysis");
+
+  assert.equal(analysis.mangaStoryboardTempo, "multi-shot");
+  assert.equal(analysis.mangaPlanningStage, "story-beats");
+  assert.equal(analysis.mangaPlanningStatus, "planning");
+  assert.equal(reset.nodes.filter((node) => node.assetRole === "result").length, 3);
+  assert.equal(reset.nodes.some((node) => node.storyRole === "shot"), false);
+  assert.equal(reset.nodes.some((node) => node.storyRole === "video-scheduler"), false);
+  assert.equal(reset.edges.length, 0);
+});
+
+test("does not discard an uncertain remote video task during replanning", () => {
+  const graph = readyAssetGraph();
+  graph.nodes.push({
+    id: "clip",
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: "scheduler",
+    text: "视频",
+    model: "seedance-2.5",
+    status: "paused",
+    progress: "提交状态未知",
+    error: "",
+    taskId: "remote-task",
+    storyId: "asset-story",
+    storyRole: "clip",
+  });
+  assert.throws(
+    () => resetMangaStoryboardForMultiShot(graph, "asset-story"),
+    /正在提交或生成的视频任务/,
+  );
+});
+
+test("does not discard a video request before its task ID is saved", () => {
+  const graph = readyAssetGraph();
+  graph.nodes.push({
+    id: "clip",
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: "scheduler",
+    text: "视频",
+    model: "seedance-2.5",
+    status: "pending",
+    progress: "正在提交",
+    error: "",
+    storyId: "asset-story",
+    storyRole: "clip",
+  });
+  assert.throws(
+    () => resetMangaStoryboardForMultiShot(graph, "asset-story"),
+    /正在提交或生成的视频任务/,
   );
 });
 
