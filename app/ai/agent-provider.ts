@@ -455,6 +455,13 @@ function upstreamFailure(response: Response, payload: unknown) {
   if (response.status === 429) {
     return new CanvasAgentError("画布 Agent 请求过于频繁，请稍后重试。", 429);
   }
+  if (response.status === 402) {
+    return new CanvasAgentError(
+      "LingkeAI 账户余额不足，充值或更换有可用额度的密钥后再继续导演规划。",
+      402,
+      "balance",
+    );
+  }
   const serialized = serializedProviderError(payload);
   if (
     response.status === 413 ||

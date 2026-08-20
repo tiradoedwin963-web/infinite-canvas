@@ -858,6 +858,19 @@ test("sanitizes upstream errors and invalid model output", async () => {
     /超过上游模型上下文限制/,
   );
 
+  const balanceClient = createCanvasAgentClient(
+    clientConfig,
+    async () => new Response("payment required", { status: 402 }),
+  );
+  await assert.rejects(
+    () => balanceClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "balance" &&
+      /余额不足/.test(error.message) &&
+      !/payment required/.test(error.message),
+  );
+
   const responseFormatClient = createCanvasAgentClient(
     clientConfig,
     async () => new Response(

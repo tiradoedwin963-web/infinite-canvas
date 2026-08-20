@@ -2238,3 +2238,21 @@
 - `docs/canvas.md`：说明任意上游 HTTP 失败均只展示安全状态。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 明确 Agent 余额不足状态
+
+### What was done
+- 将 LingkeAI 的 HTTP 402 明确映射为余额不足提示，避免在导演规划中被误导为网络或画布问题。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，22 项回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：为 Agent 上游的余额不足状态提供可执行的安全提示。
+- `tests/agent-provider.test.mjs`：覆盖 HTTP 402 且确保不回显上游正文。
+- `docs/canvas.md`：说明余额不足同样采用安全分类。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
