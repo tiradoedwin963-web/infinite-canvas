@@ -1111,12 +1111,12 @@ function parseContinuityReport(value: unknown): ContinuityReport | null {
   const issues = value.issues.map((item) => {
     if (!isRecord(item)) return null;
     const severity = item.severity === "error" || item.severity === "warning"
-      ? item.severity
+      ? "warning"
       : null;
     const autoFixable = item.auto_fixable ?? item.autoFixable;
     const issue: ContinuityIssue = {
       code: readString(item.code).trim(),
-      severity: severity ?? "error",
+      severity: severity ?? "warning",
       shotId: readString(item.shot_id ?? item.shotId).trim(),
       ...(readString(item.related_shot_id ?? item.relatedShotId).trim()
         ? { relatedShotId: readString(item.related_shot_id ?? item.relatedShotId).trim() }

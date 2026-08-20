@@ -477,6 +477,41 @@ test("keeps continuity warnings visible and blocks generation until approval", (
   }).schedulerIds.length, 1);
 });
 
+test("keeps legacy model continuity errors approval-gated without loosening report references", () => {
+  const { graph: planned, idFactory } = plannedGraph();
+  const operation = parseAgentModelResponse(JSON.stringify({
+    message: "连续性检查完成。",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_continuity_report",
+      story_id: "story",
+      stage_index: 3,
+      report: { issues: [{
+        code: "asset-coverage",
+        severity: "error",
+        shot_id: "shot-001",
+        related_shot_id: "",
+        reason: "角色资产覆盖需要人工检查。",
+        suggestion: "确认现有资产是否足以表现该镜头。",
+        auto_fixable: false,
+      }] },
+    }],
+  })).operations[0];
+  const completed = createMangaContinuityReport(planned, operation, idFactory);
+  assert.equal(
+    completed.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStatus,
+    "awaiting-continuity-approval",
+  );
+  assert.equal(completed.nodes.filter((node) => node.storyRole === "video-scheduler").length, 1);
+
+  const invalidReference = structuredClone(operation);
+  invalidReference.report.issues[0].shotId = "shot-404";
+  assert.throws(
+    () => createMangaContinuityReport(planned, invalidReference, idFactory),
+    /引用了不存在的镜头 ID/,
+  );
+});
+
 test("rejects invalid second timelines, short shots without reasons, and continuity errors", () => {
   const response = (shot) => JSON.stringify({
     message: "镜头规划",

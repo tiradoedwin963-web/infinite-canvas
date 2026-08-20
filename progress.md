@@ -2256,3 +2256,28 @@
 - `docs/canvas.md`：说明余额不足同样采用安全分类。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 稳定连续性检查的语义警告落图
+
+### What was done
+- 将连续性模型的严格输出限定为 `warning`，避免把资产覆盖、人物数量、服装道具或叙事连续性建议误判为结构错误而阻断视频工作流。
+- 对兼容旧上游响应的解析结果也统一归一为警告；真实镜头方案结构校验和报告引用的镜头 ID 校验继续保留。
+- 补充模型旧 `error` 输出仍能进入免费人工确认门禁、未知镜头引用仍会被拒绝的回归覆盖。
+
+### Testing
+- `node --test tests/agent.test.mjs tests/agent-provider.test.mjs tests/manga-director.test.mjs`：通过，63 项针对性回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，188 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：连续性严格 Schema 仅允许警告级报告。
+- `app/ai/agent.ts`：兼容旧模型的连续性 `error` 输出归一为警告。
+- `manga-continuity-tools.md`：明确模型报告与系统结构校验的边界。
+- `manga-director-core.md`：明确连续性模型只产生需人工确认的语义警告。
+- `docs/canvas.md`：说明结构校验与人工连续性确认的分工。
+- `tests/agent-provider.test.mjs`：覆盖连续性 Schema 只允许警告。
+- `tests/agent.test.mjs`：覆盖旧连续性严重级别的安全归一化。
+- `tests/manga-director.test.mjs`：覆盖端到端落图与未知镜头引用拒绝。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts manga-continuity-tools.md manga-director-core.md docs/canvas.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/manga-director.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

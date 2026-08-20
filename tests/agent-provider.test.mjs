@@ -303,6 +303,30 @@ test("uses a bounded structured output budget for two-shot manga batches", async
   );
 });
 
+test("requests continuity findings as warnings because structural checks run before the report", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: '{"message":"继续","workflow_state":"active","operations":[]}' } }],
+    });
+  });
+  const mangaCanvas = comicWorkflowCanvas();
+  mangaCanvas.nodes[0].mangaPlanningStage = "continuity";
+  await client.respond(validateAgentRequest(request({
+    canvas: mangaCanvas,
+    phase: "active",
+    messages: [
+      { role: "user", content: "开始" },
+      { role: "assistant", content: "继续" },
+      { role: "user", content: "继续" },
+    ],
+  })));
+  const severity = body.response_format.json_schema.schema.properties.operations
+    .items.properties.report.properties.issues.items.properties.severity;
+  assert.deepEqual(severity.enum, ["warning"]);
+});
+
 test("keeps every manga strict schema object fully required", async () => {
   let body;
   const client = createCanvasAgentClient(clientConfig, async (_url, init) => {

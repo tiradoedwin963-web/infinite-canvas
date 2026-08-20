@@ -726,7 +726,7 @@ const MANGA_CONTINUITY_RESPONSE_FORMAT = mangaDirectorResponseFormat(
             ],
             properties: {
               code: { type: "string" },
-              severity: { type: "string", enum: ["error", "warning"] },
+              severity: { type: "string", enum: ["warning"] },
               shot_id: { type: "string" },
               related_shot_id: { type: "string" },
               reason: { type: "string" },

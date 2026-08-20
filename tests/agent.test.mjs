@@ -185,6 +185,30 @@ test("parses a valid agent response after an upstream text envelope", () => {
   assert.deepEqual(response.operations, []);
 });
 
+test("normalizes legacy continuity errors into approval-gated warnings", () => {
+  const response = parseAgentModelResponse(JSON.stringify({
+    message: "连续性检查完成。",
+    workflow_state: "active",
+    operations: [{
+      type: "create_manga_continuity_report",
+      story_id: "story-1",
+      stage_index: 3,
+      report: {
+        issues: [{
+          code: "asset-coverage",
+          severity: "error",
+          shot_id: "shot-001",
+          related_shot_id: "",
+          reason: "配角资产覆盖需要人工检查。",
+          suggestion: "确认现有资产是否足以表现该镜头。",
+          auto_fixable: false,
+        }],
+      },
+    }],
+  }));
+  assert.equal(response.operations[0].report.issues[0].severity, "warning");
+});
+
 test("builds a narrow manga recovery instruction from the live planning snapshot", () => {
   const instruction = createMangaRecoveryInstruction({
     mode: "workflow",
