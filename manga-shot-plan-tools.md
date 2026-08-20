@@ -1,6 +1,6 @@
 # 漫剧镜头规划阶段
 
-只返回 `create_manga_shot_batch`，每批 1 至 2 镜，`chunk_index` 从分析节点指定值开始；只有覆盖全部剧情节拍的最后一批 `is_final=true`。协议仍兼容最多 8 镜，但当前运行时使用严格 JSON Schema 固定唯一操作、蛇形字段名、类型与必填项，并配合 16384 Token 输出预算将单批控制在 2 镜内。
+只返回 `create_manga_shot_batch`，每批 1 至 2 镜，`chunk_index` 从分析节点指定值开始；只有覆盖全部剧情节拍的最后一批 `is_final=true`。协议仍兼容最多 8 镜，但当前运行时使用严格 JSON Schema 固定唯一操作、蛇形字段名、类型与核心必填项，并配合 16384 Token 输出预算将单批控制在 2 镜内。续批指令会给出本批唯一允许的 `shot_id / sequence` 对：一镜只能使用第一对，两镜必须按给定顺序使用两对，不得复用、跳号或改写既有镜头。
 
 - 当前项目的节奏由分析节点锁定，不得自行混用：`长镜直出`中普通镜头选择 10 至 15 的整数秒，短反应、插入、转场或瞬时动作可用 5 至 9 秒并填写 `duration_reason`；`短片剪辑`中每行分镜严格选择 2 或 3 秒，`duration_reason` 填“无”。
 - 短片剪辑的每行只定义剪辑时间码和镜内内容；连续场景的多行会由系统合并为 4 至 30 秒的 Seedance 2.5 视频片段。每个短镜仍必须写完整的首尾状态、时间轴、切点和资产引用。
@@ -16,6 +16,6 @@
 - `image_prompt` 与 `start_frame` 只记录静态画面设计，不创建图片生成任务。`video_prompt` 由系统根据结构化字段生成，无需返回。
 - `transition_in`、`transition_out` 只记录相似形状、动作承接、眼神承接、遮挡或声音撞击等导演切点。`start_frame`、`end_frame` 和 `timeline` 只能描述本镜 0 至 `duration` 秒内实际可见的画面、动作和声音，不得写“切入下一镜”“匹配镜头”或镜号。
 
-每个 shot 必须完整返回：`shot_id`、`sequence`、`scene_id`、`beat_id`、`duration`、`duration_reason`、`narrative_purpose`、`emotional_goal`、`shot_size`、`lens`、`perspective`、`camera_angle`、`camera_movement`、`composition`、`blocking`、`character_ids`、`character_position`、`character_movement`、`eyeline`、`prop_ids`、`action`、`dialogue`、`voiceover`、`sound_effect`、`music_cue`、`lighting`、`color_tone`、`texture`、`start_frame`、`end_frame`、`transition_in`、`transition_out`、`image_prompt`、`negative_prompt`、`previous_shot_id`、`next_shot_id`、`continuity_notes`、`timeline`、`reference_node_ids`、`continuity_warnings`。
+每个 shot 必须返回核心字段：`shot_id`、`sequence`、`scene_id`、`beat_id`、`duration`、`narrative_purpose`、`emotional_goal`、`shot_size`、`lens`、`perspective`、`camera_angle`、`camera_movement`、`composition`、`blocking`、`character_ids`、`prop_ids`、`action`、`lighting`、`color_tone`、`texture`、`start_frame`、`end_frame`、`transition_in`、`transition_out`、`image_prompt`、`negative_prompt`、`timeline`、`reference_node_ids`。不要输出 `video_prompt` 或 Schema 外字段。
 
-`timeline` 每项包含 `start_second`、`end_second`、`visual_action`、`performance`、`camera`、`audio`。无对白或声音时必须明确填写“无”，不得留空。
+`duration_reason`、`character_position`、`character_movement`、`eyeline`、`dialogue`、`voiceover`、`sound_effect`、`music_cue`、`previous_shot_id`、`next_shot_id`、`continuity_notes` 和 `continuity_warnings` 可在没有实际内容时省略，系统会填入安全默认值；5 至 9 秒的长镜直出仍必须返回非空 `duration_reason`。`timeline` 每项必须返回 `start_second`、`end_second`、`visual_action`、`camera`；无表演或声音时可省略 `performance`、`audio`，系统填“无”。

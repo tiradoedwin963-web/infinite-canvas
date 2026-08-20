@@ -401,6 +401,56 @@ test("keeps planning after a premature final batch and orders a later missing be
   assert.equal(graph.nodes.find((node) => node.storyRole === "analysis").mangaPlanningStage, "continuity");
 });
 
+test("continues a legacy manga project from its greatest existing sequence", () => {
+  const idFactory = ids();
+  const beats = [1, 2, 3].map((sequence) => ({
+    beatId: `beat-${String(sequence).padStart(3, "0")}`,
+    sequence,
+    sceneId: "scene",
+    narrativePurpose: `推进第 ${sequence} 个节拍`,
+    emotionalGoal: "连续推进",
+    summary: `节拍 ${sequence}`,
+  }));
+  let graph = createMangaStoryBeats(readyGraph(), {
+    type: "create_manga_story_beats",
+    storyId: "story",
+    stageIndex: 0,
+    beats,
+  }, idFactory);
+  graph = createMangaScenePlans(graph, {
+    ...sceneOperation(),
+    plans: [{ ...sceneOperation().plans[0], beatIds: beats.map((beat) => beat.beatId) }],
+  }, idFactory);
+  graph = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 0,
+    isFinal: false,
+    shots: [shotPlan({ shotId: "shot-006", sequence: 1, beatId: "beat-001" })],
+  }, idFactory);
+  graph = {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.storyRole === "shot" && node.shotPlan
+        ? { ...node, shotPlan: { ...node.shotPlan, sequence: 6 } }
+        : node,
+    ),
+  };
+  const continued = createMangaShotBatch(graph, {
+    type: "create_manga_shot_batch",
+    storyId: "story",
+    chunkIndex: 1,
+    isFinal: false,
+    shots: [shotPlan({ shotId: "shot-007", sequence: 7, beatId: "beat-002" })],
+  }, idFactory);
+  assert.deepEqual(
+    continued.nodes
+      .filter((node) => node.storyRole === "shot")
+      .map((node) => node.shotPlan.sequence),
+    [6, 7],
+  );
+});
+
 test("keeps continuity warnings visible and blocks generation until approval", () => {
   const { graph: planned, idFactory } = plannedGraph();
   const warned = createMangaContinuityReport(planned, {
@@ -499,7 +549,38 @@ test("rejects invalid second timelines, short shots without reasons, and continu
 
   const crossShot = structuredClone(snake);
   crossShot.end_frame = "切入下一镜的角色眼睛特写";
-  assert.throws(() => parseAgentModelResponse(response(crossShot)), /镜头/);
+  assert.throws(
+    () => parseAgentModelResponse(response(crossShot)),
+    /包含跨镜头场记/,
+  );
+
+  const duplicate = structuredClone(snake);
+  assert.throws(
+    () => parseAgentModelResponse(JSON.stringify({
+      message: "镜头规划",
+      workflow_state: "active",
+      operations: [{
+        type: "create_manga_shot_batch",
+        story_id: "story",
+        chunk_index: 0,
+        is_final: false,
+        shots: [snake, duplicate],
+      }],
+    })),
+    /shot_id shot-001 在同一批次重复/,
+  );
+
+  const optional = structuredClone(snake);
+  [
+    "durationReason", "characterPosition", "characterMovement", "eyeline",
+    "dialogue", "voiceover", "soundEffect", "musicCue", "previousShotId",
+    "nextShotId", "continuityNotes", "continuityWarnings",
+  ].forEach((key) => delete optional[key]);
+  optional.timeline.forEach((segment) => {
+    delete segment.performance;
+    delete segment.audio;
+  });
+  assert.doesNotThrow(() => parseAgentModelResponse(response(optional)));
 
   const { graph: planned, idFactory } = plannedGraph();
   assert.throws(() => createMangaContinuityReport(planned, {

@@ -7,6 +7,7 @@ import {
   AgentResponseParseError,
   AgentRequestTimeoutError,
   createMangaRecoveryInstruction,
+  getMangaShotPlanningContext,
   createAgentConversation,
   createAgentConversationTitle,
   compactMangaPlanningSnapshot,
@@ -221,7 +222,40 @@ test("builds a narrow manga recovery instruction from the live planning snapshot
   assert.match(instruction, /create_manga_shot_batch/);
   assert.match(instruction, /chunk_index 必须为 4/);
   assert.match(instruction, /shot-003/);
+  assert.match(instruction, /sequence=3/);
   assert.match(instruction, /beat-002/);
+});
+
+test("derives the next manga shot pair from the greatest existing sequence", () => {
+  const context = getMangaShotPlanningContext({
+    mode: "workflow",
+    viewport: { x: 0, y: 0, scale: 1, width: 100, height: 100 },
+    edges: [],
+    nodes: [
+      {
+        id: "beats",
+        storyId: "story-1",
+        storyRole: "story-beats",
+        storyBeats: [{ beatId: "beat-001" }, { beatId: "beat-002" }],
+      },
+      {
+        id: "legacy-a",
+        storyId: "story-1",
+        storyRole: "shot",
+        shotPlan: { shotId: "shot-004", sequence: 4, beatId: "beat-001" },
+      },
+      {
+        id: "legacy-b",
+        storyId: "story-1",
+        storyRole: "shot",
+        shotPlan: { shotId: "shot-009", sequence: 7, beatId: "beat-001" },
+      },
+    ],
+  }, "story-1");
+  assert.equal(context.nextSequence, 8);
+  assert.equal(context.nextShotRef, "shot-010");
+  assert.equal(context.followingShotRef, "shot-011");
+  assert.deepEqual(context.uncoveredBeatIds, ["beat-002"]);
 });
 
 test("rejects unknown or malformed model operations without partial application", () => {

@@ -583,6 +583,20 @@ const MANGA_SHOT_STRING_FIELDS = [
   "continuity_notes",
 ] as const;
 
+const MANGA_SHOT_OPTIONAL_STRING_FIELDS = new Set([
+  "duration_reason",
+  "character_position",
+  "character_movement",
+  "eyeline",
+  "dialogue",
+  "voiceover",
+  "sound_effect",
+  "music_cue",
+  "previous_shot_id",
+  "next_shot_id",
+  "continuity_notes",
+]);
+
 function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
   return mangaDirectorResponseFormat(
   "manga_shot_batch",
@@ -600,9 +614,11 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
         type: "object",
         additionalProperties: false,
         required: [
-          ...MANGA_SHOT_STRING_FIELDS,
+          ...MANGA_SHOT_STRING_FIELDS.filter((field) =>
+            !MANGA_SHOT_OPTIONAL_STRING_FIELDS.has(field)
+          ),
           "sequence", "duration", "character_ids", "prop_ids", "timeline",
-          "reference_node_ids", "continuity_warnings",
+          "reference_node_ids",
         ],
         properties: {
           ...Object.fromEntries(
@@ -623,8 +639,7 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
               type: "object",
               additionalProperties: false,
               required: [
-                "start_second", "end_second", "visual_action",
-                "performance", "camera", "audio",
+                "start_second", "end_second", "visual_action", "camera",
               ],
               properties: {
                 start_second: { type: "integer" },

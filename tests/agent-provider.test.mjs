@@ -258,7 +258,17 @@ test("reserves enough structured output tokens for two-shot manga batches", asyn
     .items.properties.shots.items;
   assert.equal(shotSchema.additionalProperties, false);
   assert.ok(shotSchema.required.includes("camera_movement"));
+  assert.ok(shotSchema.required.includes("character_ids"));
+  assert.ok(shotSchema.required.includes("prop_ids"));
+  assert.ok(shotSchema.required.includes("transition_in"));
+  assert.ok(shotSchema.required.includes("transition_out"));
   assert.ok(shotSchema.required.includes("timeline"));
+  assert.ok(!shotSchema.required.includes("previous_shot_id"));
+  assert.ok(!shotSchema.required.includes("next_shot_id"));
+  assert.ok(!shotSchema.required.includes("dialogue"));
+  assert.ok(!shotSchema.required.includes("continuity_warnings"));
+  assert.ok(!shotSchema.properties.timeline.items.required.includes("performance"));
+  assert.ok(!shotSchema.properties.timeline.items.required.includes("audio"));
 });
 
 test("uses the short-cut duration schema only for a short-cut project", async () => {

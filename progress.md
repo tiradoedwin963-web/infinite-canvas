@@ -2115,3 +2115,26 @@
 - `tests/agent.test.mjs`、`tests/agent-provider.test.mjs`、`tests/agent-stream.test.mjs`、`tests/rendered-html.test.mjs`：覆盖恢复指令、分段文本、SSE 错误码和前端接线。
 - `progress.md`：记录本轮实现、验证和回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/ai/agent-stream.ts app/api/ai/agent/route.ts components/canvas-agent-sidebar.tsx docs/canvas.md tests/agent.test.mjs tests/agent-provider.test.mjs tests/agent-stream.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 修复漫剧镜头续批编号与结构诊断
+
+### What was done
+- 将续批编号从镜头数量推测改为当前项目最大镜头序号，并在每次请求中明确规定一镜或两镜可使用的唯一 `shot_id / sequence` 组合，避免旧项目或重排后的编号碰撞。
+- 拆分镜头解析与落图错误：同批 ID/序号重复、既有 ID 冲突、缺失节拍/场面调度和摄影规则失败都会返回具体原因，不再误报为“未识别字段”。
+- 保持资产、节拍、时长、时间轴、构图和禁止项为严格必填；仅把系统可安全推导的前后链接、空对白/声音、连续性备注及时间轴空表演/声音改为可省略默认值，减少模型无意义字段负担。
+
+### Testing
+- `node --test tests/agent.test.mjs tests/agent-provider.test.mjs tests/manga-director.test.mjs`：通过，59 项定向回归覆盖续批编号、重复 ID、跨镜头场记、可推导字段与旧项目续批。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，184 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent.ts`：统一计算续批上下文，提供具体镜头解析失败原因并填充可推导字段默认值。
+- `app/ai/agent-provider.ts`：保留严格 Schema，同时移除系统可推导字段的强制输出要求。
+- `app/workflow/manga-director.ts`：按最大既有序号续批，并将落图冲突拆成具体报错。
+- `components/canvas-agent-sidebar.tsx`：将唯一镜头编号/序号组合写入每个镜头续批请求。
+- `manga-director-core.md`、`manga-shot-plan-tools.md`、`docs/canvas.md`：同步镜头核心字段、可推导字段和续批规则。
+- `tests/agent.test.mjs`、`tests/agent-provider.test.mjs`、`tests/manga-director.test.mjs`、`tests/rendered-html.test.mjs`：覆盖编号、Schema、诊断与前端续批提示。
+- `progress.md`：记录本轮实现与验证。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/workflow/manga-director.ts components/canvas-agent-sidebar.tsx manga-director-core.md manga-shot-plan-tools.md docs/canvas.md tests/agent.test.mjs tests/agent-provider.test.mjs tests/manga-director.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。

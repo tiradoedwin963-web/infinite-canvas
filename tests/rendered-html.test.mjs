@@ -137,6 +137,8 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.doesNotMatch(provider, /slice\(0, 12_000\)/);
   assert.match(stream, /extractProgressSummary/);
   assert.match(sidebar, /这是批次编号，不是镜头编号/);
+  assert.match(sidebar, /shot_id=\$\{shotContext\.nextShotRef\}/);
+  assert.match(sidebar, /不得重复、跳号或改写既有镜头/);
   assert.match(sidebar, /当前尚未覆盖的剧情节拍为/);
   assert.match(sidebar, /不得用已覆盖节拍替代/);
   assert.match(stream, /item\.event === "result"/);

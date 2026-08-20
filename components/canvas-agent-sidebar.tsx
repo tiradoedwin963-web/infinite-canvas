@@ -19,6 +19,7 @@ import {
   MAX_AGENT_MESSAGES,
   AgentRequestTimeoutError,
   createMangaRecoveryInstruction,
+  getMangaShotPlanningContext,
   createAgentConversation,
   createAgentConversationTitle,
   compactMangaPlanningSnapshot,
@@ -829,21 +830,14 @@ export function CanvasAgentSidebar({
           if (analysis.mangaPlanningStage === "complete") break;
           const stage = analysis.mangaPlanningStage;
           const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
-          const shotCount = liveSnapshot.nodes.filter((node) =>
-            node.storyId === mangaStoryId && node.storyRole === "shot"
-          ).length;
-          const coveredBeatIds = new Set(liveSnapshot.nodes.flatMap((node) =>
-            node.storyId === mangaStoryId && node.shotPlan
-              ? [node.shotPlan.beatId]
-              : []
-          ));
-          const uncoveredBeatIds = liveSnapshot.nodes.flatMap((node) =>
-            node.storyId === mangaStoryId && node.storyRole === "story-beats"
-              ? (node.storyBeats ?? [])
-                .map((beat) => beat.beatId)
-                .filter((beatId) => !coveredBeatIds.has(beatId))
-              : []
+          const shotContext = getMangaShotPlanningContext(
+            liveSnapshot,
+            mangaStoryId,
           );
+          if (!shotContext) {
+            throw new Error("无法读取当前漫剧镜头续批状态。");
+          }
+          const shotCount = shotContext.shotCount;
           setPlanningProgress({
             batch: chunkIndex,
             count: shotCount,
@@ -860,7 +854,7 @@ export function CanvasAgentSidebar({
             id: `manga-director-user-${stage}-${chunkIndex}`,
             role: "user",
             content: stage === "shot-plans"
-              ? `继续短剧 ${mangaStoryId} 的镜头规划，只返回 ${expectedType}。操作字段 chunk_index 必须严格等于 ${chunkIndex}，这是批次编号，不是镜头编号；已有 ${shotCount} 镜，新镜头 ref 从 shot-${String(shotCount + 1).padStart(3, "0")} 开始，不得重复。当前尚未覆盖的剧情节拍为：${uncoveredBeatIds.join("、") || "无"}；本批必须优先覆盖这些节拍，不得用已覆盖节拍替代。每批1至2镜；每镜必须包含阶段手册列出的全部字段，无内容时填写“无”，不得省略字段。${analysis.mangaStoryboardTempo === "short-cut" ? "当前为短片剪辑：每镜严格为2或3秒，时间轴用连续整数秒区间；视频将按场景合并为最长30秒片段。" : "当前为长镜直出：普通镜头10至15秒，5至9秒必须说明原因，时间轴用连续整数秒区间。"}只有尚未覆盖列表在本批后变为空时 is_final=true。`
+              ? `继续短剧 ${mangaStoryId} 的镜头规划，只返回 ${expectedType}。操作字段 chunk_index 必须严格等于 ${chunkIndex}，这是批次编号，不是镜头编号；已有 ${shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${shotContext.nextShotRef}、sequence=${shotContext.nextSequence}；若返回 2 镜，必须依次为 ${shotContext.nextShotRef}/${shotContext.nextSequence} 和 ${shotContext.followingShotRef}/${shotContext.nextSequence + 1}，不得重复、跳号或改写既有镜头。当前尚未覆盖的剧情节拍为：${shotContext.uncoveredBeatIds.join("、") || "无"}；本批必须优先覆盖这些节拍，不得用已覆盖节拍替代。核心摄影、资产、时长、时间轴和禁止项字段必须完整；无对白、旁白或声音等可推导字段可省略，由系统填“无”。仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段。${analysis.mangaStoryboardTempo === "short-cut" ? "当前为短片剪辑：每镜严格为2或3秒，时间轴用连续整数秒区间；视频将按场景合并为最长30秒片段。" : "当前为长镜直出：普通镜头10至15秒，5至9秒必须说明原因，时间轴用连续整数秒区间。"}只有尚未覆盖列表在本批后变为空时 is_final=true。`
               : `继续短剧 ${mangaStoryId} 的 ${MANGA_STAGE_LABEL[stage]} 阶段，只返回 ${expectedType}，不得返回其他操作或运行生成。`,
             createdAt: Date.now(),
           };

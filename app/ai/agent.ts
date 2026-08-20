@@ -256,6 +256,56 @@ export function compactMangaPlanningSnapshot(
   };
 }
 
+export type MangaShotPlanningContext = {
+  shotCount: number;
+  nextSequence: number;
+  nextShotRef: string;
+  followingShotRef: string;
+  uncoveredBeatIds: string[];
+};
+
+export function getMangaShotPlanningContext(
+  snapshot: AgentSurfaceSnapshot,
+  storyId: string,
+): MangaShotPlanningContext | null {
+  if (snapshot.mode !== "workflow") return null;
+  const shots = snapshot.nodes.flatMap((node) =>
+    node.storyId === storyId && node.storyRole === "shot" && node.shotPlan
+      ? [node.shotPlan]
+      : [],
+  );
+  const coveredBeatIds = new Set(shots.map((shot) => shot.beatId));
+  const uncoveredBeatIds = snapshot.nodes.flatMap((node) =>
+    node.storyId === storyId && node.storyRole === "story-beats"
+      ? (node.storyBeats ?? [])
+        .map((beat) => beat.beatId)
+        .filter((beatId) => !coveredBeatIds.has(beatId))
+      : [],
+  );
+  const nextSequence = Math.max(
+    0,
+    ...shots.map((shot) =>
+      Number.isInteger(shot.sequence) ? shot.sequence : 0
+    ),
+  ) + 1;
+  const nextShotNumber = Math.max(
+    nextSequence,
+    ...shots.flatMap((shot) => {
+      const match = /^shot-(\d+)$/i.exec(shot.shotId);
+      return match ? [Number(match[1]) + 1] : [];
+    }),
+  );
+  const formatShotRef = (value: number) =>
+    `shot-${String(value).padStart(3, "0")}`;
+  return {
+    shotCount: shots.length,
+    nextSequence,
+    nextShotRef: formatShotRef(nextShotNumber),
+    followingShotRef: formatShotRef(nextShotNumber + 1),
+    uncoveredBeatIds,
+  };
+}
+
 export function createMangaRecoveryInstruction(
   snapshot: AgentSurfaceSnapshot,
 ) {
@@ -288,28 +338,10 @@ export function createMangaRecoveryInstruction(
     return `${header} stage_index 必须为 ${stageIndex}。`;
   }
 
-  const shots = snapshot.nodes.filter((node) =>
-    node.storyId === analysis.storyId &&
-    node.storyRole === "shot" &&
-    node.shotPlan
-  );
-  const coveredBeatIds = new Set(shots.flatMap((node) =>
-    node.shotPlan?.beatId ? [node.shotPlan.beatId] : []
-  ));
-  const uncoveredBeatIds = snapshot.nodes.flatMap((node) =>
-    node.storyId === analysis.storyId && node.storyRole === "story-beats"
-      ? (node.storyBeats ?? [])
-        .map((beat) => beat.beatId)
-        .filter((beatId) => !coveredBeatIds.has(beatId))
-      : []
-  );
+  const context = getMangaShotPlanningContext(snapshot, analysis.storyId);
+  if (!context) return null;
   const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
-  const nextSequence = Math.max(
-    0,
-    ...shots.map((node) => node.shotPlan?.sequence ?? 0),
-  ) + 1;
-  const nextShotRef = `shot-${String(nextSequence).padStart(3, "0")}`;
-  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${shots.length} 镜，新镜头从 ${nextShotRef} 开始，不得重复；本批仅规划 1 至 2 镜，优先覆盖：${uncoveredBeatIds.join("、") || "无"}；只有全部节拍覆盖后才可 is_final=true。`;
+  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${context.shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${context.nextShotRef}、sequence=${context.nextSequence}；若返回 2 镜，必须依次为 ${context.nextShotRef}/${context.nextSequence} 和 ${context.followingShotRef}/${context.nextSequence + 1}，不得重复、跳号或改写既有镜头。优先覆盖：${context.uncoveredBeatIds.join("、") || "无"}；仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段；只有全部节拍覆盖后才可 is_final=true。`;
 }
 
 export type AgentInspectedImage = {
@@ -905,6 +937,7 @@ function validMangaShotDuration(
 function parseMangaShots(
   value: unknown,
   tempo: AgentMangaStoryboardTempo = "long-form",
+  skipCinematography = false,
 ): ShotPlan[] | null {
   if (!Array.isArray(value) || !value.length || value.length > 8) return null;
   const shots = value.map((item) => {
@@ -956,8 +989,8 @@ function parseMangaShots(
       texture: readString(item.texture).trim(),
       startFrame: readString(item.start_frame ?? item.startFrame).trim(),
       endFrame: readString(item.end_frame ?? item.endFrame).trim(),
-      transitionIn: readString(item.transition_in ?? item.transitionIn).trim(),
-      transitionOut: readString(item.transition_out ?? item.transitionOut).trim(),
+      transitionIn: readString(item.transition_in ?? item.transitionIn).trim() || "无",
+      transitionOut: readString(item.transition_out ?? item.transitionOut).trim() || "无",
       imagePrompt: readString(item.image_prompt ?? item.imagePrompt).trim(),
       videoPrompt: "",
       negativePrompt: readString(
@@ -981,11 +1014,9 @@ function parseMangaShots(
       shot.shotId, shot.sceneId, shot.beatId, shot.narrativePurpose,
       shot.emotionalGoal, shot.shotSize, shot.lens, shot.perspective,
       shot.cameraAngle, shot.cameraMovement, shot.composition, shot.blocking,
-      shot.characterPosition, shot.characterMovement, shot.eyeline, shot.action,
-      shot.dialogue, shot.voiceover, shot.soundEffect, shot.musicCue,
+      shot.action,
       shot.lighting, shot.colorTone, shot.texture, shot.startFrame,
-      shot.endFrame, shot.transitionIn, shot.transitionOut, shot.imagePrompt,
-      shot.negativePrompt, shot.continuityNotes,
+      shot.endFrame, shot.imagePrompt, shot.negativePrompt,
     ];
     return Number.isInteger(shot.sequence) && shot.sequence >= 1 &&
         Number.isInteger(duration) && validMangaShotDuration(duration, durationReason, tempo) && timeline &&
@@ -998,7 +1029,10 @@ function parseMangaShots(
   if (shots.some((shot) => shot === null)) return null;
   const parsed = shots as ShotPlan[];
   if (new Set(parsed.map((shot) => shot.shotId)).size !== parsed.length) return null;
-  return validateMangaShotCinematography(parsed) ? null : parsed;
+  if (new Set(parsed.map((shot) => shot.sequence)).size !== parsed.length) return null;
+  return !skipCinematography && validateMangaShotCinematography(parsed)
+    ? null
+    : parsed;
 }
 
 function describeInvalidMangaShots(
@@ -1011,11 +1045,8 @@ function describeInvalidMangaShots(
   const requiredStrings = [
     "shot_id", "scene_id", "beat_id", "narrative_purpose", "emotional_goal",
     "shot_size", "lens", "perspective", "camera_angle", "camera_movement",
-    "composition", "blocking", "character_position", "character_movement",
-    "eyeline", "action", "dialogue", "voiceover", "sound_effect", "music_cue",
-    "lighting", "color_tone", "texture", "start_frame", "end_frame",
-    "transition_in", "transition_out", "image_prompt", "negative_prompt",
-    "continuity_notes",
+    "composition", "blocking", "action", "lighting", "color_tone", "texture",
+    "start_frame", "end_frame", "image_prompt", "negative_prompt",
   ];
   for (const [index, item] of value.entries()) {
     if (!isRecord(item)) return `第 ${index + 1} 镜不是对象`;
@@ -1052,7 +1083,27 @@ function describeInvalidMangaShots(
       return `${shotId} 必须引用 1 至 5 个不重复的成功资产节点`;
     }
   }
-  return "镜头 ID 重复或存在未识别的字段约束";
+  const shotIds = value.map((item) =>
+    isRecord(item) ? readString(item.shot_id ?? item.shotId).trim() : ""
+  );
+  const duplicateShotId = shotIds.find((shotId, index) =>
+    shotId && shotIds.indexOf(shotId) !== index
+  );
+  if (duplicateShotId) return `shot_id ${duplicateShotId} 在同一批次重复`;
+  const sequences = value.map((item) =>
+    isRecord(item) ? Number(item.sequence) : Number.NaN
+  );
+  const duplicateSequence = sequences.find((sequence, index) =>
+    Number.isInteger(sequence) && sequences.indexOf(sequence) !== index
+  );
+  if (duplicateSequence !== undefined) {
+    return `sequence ${duplicateSequence} 在同一批次重复`;
+  }
+  const parsed = parseMangaShots(value, tempo, true);
+  if (parsed) {
+    return validateMangaShotCinematography(parsed) ?? "镜头字段类型或数量不符合协议";
+  }
+  return "镜头字段类型或数量不符合协议";
 }
 
 function parseContinuityReport(value: unknown): ContinuityReport | null {

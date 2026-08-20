@@ -366,10 +366,20 @@ export function createMangaShotBatch(
     node.storyId === operation.storyId && node.shotPlan ? [node.shotPlan] : []
   );
   const existingIds = new Set(existing.map((shot) => shot.shotId));
-  if (operation.shots.some((shot) =>
-    existingIds.has(shot.shotId) || !beatIds.has(shot.beatId) || !sceneIds.has(shot.sceneId)
-  )) {
-    throw new Error("镜头批次包含重复镜头或不存在的剧情节拍、场景 ID。");
+  const duplicateShot = operation.shots.find((shot, index) =>
+    existingIds.has(shot.shotId) ||
+    operation.shots.findIndex((candidate) => candidate.shotId === shot.shotId) !== index
+  );
+  if (duplicateShot) {
+    throw new Error(`镜头 ${duplicateShot.shotId} 与当前批次或已有镜头 ID 重复。`);
+  }
+  const missingBeatShot = operation.shots.find((shot) => !beatIds.has(shot.beatId));
+  if (missingBeatShot) {
+    throw new Error(`镜头 ${missingBeatShot.shotId} 引用了不存在的剧情节拍 ${missingBeatShot.beatId}。`);
+  }
+  const missingSceneShot = operation.shots.find((shot) => !sceneIds.has(shot.sceneId));
+  if (missingSceneShot) {
+    throw new Error(`镜头 ${missingSceneShot.shotId} 引用了不存在的场面调度 ${missingSceneShot.sceneId}。`);
   }
   if (operation.shots.some((shot) => tempo === "short-cut"
     ? shot.duration !== 2 && shot.duration !== 3
@@ -382,9 +392,14 @@ export function createMangaShotBatch(
         : "长镜直出模式的普通镜头必须为 10 至 15 秒；5 至 9 秒必须说明原因。",
     );
   }
+  const nextSequence = Math.max(
+    0,
+    ...existing.map((shot) => Number.isInteger(shot.sequence) ? shot.sequence : 0),
+  ) + 1;
   const normalizedShots = operation.shots.map((shot, index) => {
-    if (shot.sequence !== existing.length + index + 1) {
-      throw new Error(`镜头 ${shot.shotId} 的 sequence 不连续。`);
+    const expectedSequence = nextSequence + index;
+    if (shot.sequence !== expectedSequence) {
+      throw new Error(`镜头 ${shot.shotId} 的 sequence 必须为 ${expectedSequence}。`);
     }
     return {
       ...shot,
