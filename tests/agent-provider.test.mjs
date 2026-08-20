@@ -88,6 +88,28 @@ function upstreamSseResponse(content) {
   }), { headers: { "content-type": "text/event-stream" } });
 }
 
+function assertStrictSchemaRequiresEveryProperty(schema, path = "schema") {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return;
+  if (schema.type === "object" && schema.additionalProperties === false && schema.properties) {
+    assert.deepEqual(
+      [...(schema.required ?? [])].sort(),
+      Object.keys(schema.properties).sort(),
+      `${path} 的严格对象字段必须全部 required`,
+    );
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "required" || key === "enum") continue;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => assertStrictSchemaRequiresEveryProperty(
+        item,
+        `${path}.${key}[${index}]`,
+      ));
+    } else {
+      assertStrictSchemaRequiresEveryProperty(value, `${path}.${key}`);
+    }
+  }
+}
+
 test("validates agent history and requires a final user message", () => {
   assert.equal(validateAgentRequest(request()).messages[0].content, "整理画布");
   assert.equal(validateAgentRequest(request({ phase: "active" })).phase, "intake");
@@ -262,13 +284,47 @@ test("reserves enough structured output tokens for two-shot manga batches", asyn
   assert.ok(shotSchema.required.includes("prop_ids"));
   assert.ok(shotSchema.required.includes("transition_in"));
   assert.ok(shotSchema.required.includes("transition_out"));
+  assert.ok(shotSchema.required.includes("duration_reason"));
   assert.ok(shotSchema.required.includes("timeline"));
   assert.ok(!shotSchema.required.includes("previous_shot_id"));
   assert.ok(!shotSchema.required.includes("next_shot_id"));
   assert.ok(!shotSchema.required.includes("dialogue"));
-  assert.ok(!shotSchema.required.includes("continuity_warnings"));
-  assert.ok(!shotSchema.properties.timeline.items.required.includes("performance"));
-  assert.ok(!shotSchema.properties.timeline.items.required.includes("audio"));
+  assert.ok(!Object.hasOwn(shotSchema.properties, "continuity_warnings"));
+  assert.ok(!Object.hasOwn(shotSchema.properties, "dialogue"));
+  assert.ok(!Object.hasOwn(shotSchema.properties.timeline.items.properties, "performance"));
+  assert.ok(!Object.hasOwn(shotSchema.properties.timeline.items.properties, "audio"));
+  assert.deepEqual(
+    [...shotSchema.required].sort(),
+    Object.keys(shotSchema.properties).sort(),
+  );
+  assert.deepEqual(
+    [...shotSchema.properties.timeline.items.required].sort(),
+    Object.keys(shotSchema.properties.timeline.items.properties).sort(),
+  );
+});
+
+test("keeps every manga strict schema object fully required", async () => {
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return Response.json({
+      choices: [{ message: { content: '{"message":"继续","workflow_state":"active","operations":[]}' } }],
+    });
+  });
+  for (const stage of ["story-beats", "scene-plans", "shot-plans", "continuity"]) {
+    const mangaCanvas = comicWorkflowCanvas();
+    mangaCanvas.nodes[0].mangaPlanningStage = stage;
+    await client.respond(validateAgentRequest(request({
+      canvas: mangaCanvas,
+      phase: "active",
+      messages: [
+        { role: "user", content: "开始" },
+        { role: "assistant", content: "继续" },
+        { role: "user", content: "继续" },
+      ],
+    })));
+    assertStrictSchemaRequiresEveryProperty(body.response_format.json_schema.schema);
+  }
 });
 
 test("uses the short-cut duration schema only for a short-cut project", async () => {

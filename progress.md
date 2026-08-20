@@ -2138,3 +2138,26 @@
 - `tests/agent.test.mjs`、`tests/agent-provider.test.mjs`、`tests/manga-director.test.mjs`、`tests/rendered-html.test.mjs`：覆盖编号、Schema、诊断与前端续批提示。
 - `progress.md`：记录本轮实现与验证。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/workflow/manga-director.ts components/canvas-agent-sidebar.tsx manga-director-core.md manga-shot-plan-tools.md docs/canvas.md tests/agent.test.mjs tests/agent-provider.test.mjs tests/manga-director.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 修复严格 Schema 拒绝漫剧导演请求
+
+### What was done
+- 修复镜头规划与连续性检查的严格 JSON Schema：系统可推导的镜头字段不再同时留在 `properties` 中，避免上游因“声明但未 required”的字段在请求开始前拒绝整批导演规划。
+- 保持时长理由为镜头协议中的明确字段：10 秒及以上填写“无”，5 至 9 秒仍必须说明短镜头原因；连续性问题没有关联镜头时使用空字符串。
+- 增加递归回归检查，确保四个导演阶段的每一个严格对象都将全部声明字段列入 `required`，防止同类兼容性回归。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，22 项上游 Agent 协议回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：使镜头与连续性严格 Schema 满足上游的字段声明要求。
+- `tests/agent-provider.test.mjs`：覆盖四个导演阶段严格 Schema 的递归字段完整性。
+- `manga-shot-plan-tools.md`：同步镜头阶段的实际严格输出字段和安全默认值。
+- `manga-director-core.md`：说明可推导字段不进入模型输出 Schema。
+- `manga-continuity-tools.md`：明确无关联镜头时的稳定输出值。
+- `docs/canvas.md`：记录严格 Schema 与系统默认值的边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs manga-shot-plan-tools.md manga-director-core.md manga-continuity-tools.md docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

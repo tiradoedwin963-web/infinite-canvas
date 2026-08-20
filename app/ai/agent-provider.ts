@@ -584,7 +584,6 @@ const MANGA_SHOT_STRING_FIELDS = [
 ] as const;
 
 const MANGA_SHOT_OPTIONAL_STRING_FIELDS = new Set([
-  "duration_reason",
   "character_position",
   "character_movement",
   "eyeline",
@@ -598,6 +597,9 @@ const MANGA_SHOT_OPTIONAL_STRING_FIELDS = new Set([
 ]);
 
 function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
+  const requiredStringFields = MANGA_SHOT_STRING_FIELDS.filter((field) =>
+    !MANGA_SHOT_OPTIONAL_STRING_FIELDS.has(field)
+  );
   return mangaDirectorResponseFormat(
   "manga_shot_batch",
   ["type", "story_id", "chunk_index", "is_final", "shots"],
@@ -614,15 +616,13 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
         type: "object",
         additionalProperties: false,
         required: [
-          ...MANGA_SHOT_STRING_FIELDS.filter((field) =>
-            !MANGA_SHOT_OPTIONAL_STRING_FIELDS.has(field)
-          ),
+          ...requiredStringFields,
           "sequence", "duration", "character_ids", "prop_ids", "timeline",
           "reference_node_ids",
         ],
         properties: {
           ...Object.fromEntries(
-            MANGA_SHOT_STRING_FIELDS.map((field) => [field, { type: "string" }]),
+            requiredStringFields.map((field) => [field, { type: "string" }]),
           ),
           sequence: { type: "integer" },
           duration: tempo === "short-cut"
@@ -631,7 +631,6 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
           character_ids: { type: "array", items: { type: "string" } },
           prop_ids: { type: "array", items: { type: "string" } },
           reference_node_ids: { type: "array", items: { type: "string" } },
-          continuity_warnings: { type: "array", items: { type: "string" } },
           timeline: {
             type: "array",
             minItems: 1,
@@ -645,9 +644,7 @@ function mangaShotResponseFormat(tempo: AgentMangaStoryboardTempo) {
                 start_second: { type: "integer" },
                 end_second: { type: "integer" },
                 visual_action: { type: "string" },
-                performance: { type: "string" },
                 camera: { type: "string" },
-                audio: { type: "string" },
               },
             },
           },
@@ -679,6 +676,7 @@ const MANGA_CONTINUITY_RESPONSE_FORMAT = mangaDirectorResponseFormat(
               "code",
               "severity",
               "shot_id",
+              "related_shot_id",
               "reason",
               "suggestion",
               "auto_fixable",
