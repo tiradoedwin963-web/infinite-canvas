@@ -2161,3 +2161,24 @@
 - `docs/canvas.md`：记录严格 Schema 与系统默认值的边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs manga-shot-plan-tools.md manga-director-core.md manga-continuity-tools.md docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 压缩漫剧导演续批上下文
+
+### What was done
+- 漫剧导演阶段改为只加载基础安全指令、导演核心、漫剧专项、当前阶段手册；镜头阶段额外加载公共摄影语言，不再重复发送图片工具、旧工作流和资产规划手册。
+- 剧情节拍完成后，不再把完整剧本重复附带给场面调度、镜头规划和连续性检查；这些阶段只使用已保存的分析、节拍、场面调度、可用资产和紧凑导演快照。
+- 每批镜头已固定为 1 至 2 镜，因此将镜头阶段结构化输出预算从 16384 收敛到 8192 Token；字段、严格 Schema、节点校验和媒体生成门禁均未放宽。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：为导演阶段构建精简系统提示，并收敛镜头阶段输出额度。
+- `components/canvas-agent-sidebar.tsx`：在节拍完成后只传递最新导演指令和紧凑项目快照。
+- `tests/agent-provider.test.mjs`：覆盖导演手册裁剪与 8192 Token 镜头预算。
+- `tests/rendered-html.test.mjs`：覆盖后续导演阶段不再携带完整剧本的前端接线。
+- `docs/canvas.md`：说明导演阶段的上下文和输出预算边界。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts components/canvas-agent-sidebar.tsx tests/agent-provider.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

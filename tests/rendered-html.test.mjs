@@ -155,6 +155,7 @@ test("streams sanitized agent progress and keeps operations behind the final res
   assert.match(sidebar, /runAgentRequestWithTimeout/);
   assert.match(sidebar, /mangaRecoveryHistory/);
   assert.match(sidebar, /manga-recovery-failed/);
+  assert.match(sidebar, /stage && stage !== "story-beats"/);
   assert.match(stream, /AgentSseError/);
 });
 

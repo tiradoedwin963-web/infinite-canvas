@@ -108,7 +108,19 @@ function isActiveMangaDirector(snapshot: AgentSurfaceSnapshot) {
   );
 }
 
-function mangaDirectorHistory(history: AgentMessage[]) {
+function mangaDirectorHistory(
+  history: AgentMessage[],
+  snapshot: AgentSurfaceSnapshot,
+) {
+  const stage = snapshot.mode === "workflow"
+    ? snapshot.nodes.find((node) =>
+      node.storyRole === "analysis" &&
+      node.storyboardMode === "comic" &&
+      node.mangaPlanningStage &&
+      node.mangaPlanningStage !== "complete"
+    )?.mangaPlanningStage
+    : undefined;
+  if (stage && stage !== "story-beats") return history.slice(-1);
   const scriptMessage = history.find((message) => message.role === "user");
   return scriptMessage ? [scriptMessage] : history.slice(-1);
 }
@@ -587,7 +599,7 @@ export function CanvasAgentSidebar({
         )?.storyId ?? "";
       }
       const initialHistory = isActiveMangaDirector(initialSnapshot)
-        ? mangaDirectorHistory(history)
+        ? mangaDirectorHistory(history, initialSnapshot)
         : history;
       let response = await requestAgent(
         initialHistory,
@@ -817,7 +829,10 @@ export function CanvasAgentSidebar({
         const mangaStoryId = mangaOperation.storyId;
         activeMangaStoryId = mangaStoryId;
         planningDetails.push(...onApplyOperations([mangaOperation]));
-        const mangaHistory = mangaDirectorHistory(history);
+        const mangaHistory = mangaDirectorHistory(
+          history,
+          requireWorkflowSnapshot(getSnapshot?.() ?? snapshot),
+        );
 
         while (true) {
           const liveSnapshot = requireWorkflowSnapshot(getSnapshot?.() ?? snapshot);

@@ -201,6 +201,14 @@ ${comicStoryboardManual.trim()}
 ${cinematographyManual}
 ${stageManual}`
     : "";
+  if (mangaPlanningStage) {
+    return `${instructions.trim()}
+
+当前会话阶段：${phase}。
+当前画布类型：${canvasMode}。
+当前漫剧镜头节奏：${mangaStoryboardTempo === "short-cut" ? "短片剪辑；每行分镜严格为 2 或 3 秒，视频会按场景合并为最长 30 秒片段。" : "长镜直出；普通镜头为 10 至 15 秒，5 至 9 秒必须说明原因。"}。
+${storyboardManual}`;
+  }
   return `${instructions.trim()}
 
 当前会话阶段：${phase}。
@@ -786,6 +794,7 @@ export function createCanvasAgentClient(
             ? mangaShotResponseFormat(selectedMangaStoryboardTempo(request.canvas))
             : MANGA_RESPONSE_FORMATS[mangaPlanningStage]
           : undefined;
+        const maxTokens = mangaPlanningStage === "shot-plans" ? 8_192 : 16_384;
         response = await fetcher(`${baseUrl}/v1/chat/completions`, {
           method: "POST",
           headers: {
@@ -798,7 +807,7 @@ export function createCanvasAgentClient(
             temperature: 0.2,
             ...(responseFormat
               ? {
-                  max_tokens: 16_384,
+                  max_tokens: maxTokens,
                   response_format: responseFormat,
                 }
               : {}),

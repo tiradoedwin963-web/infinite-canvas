@@ -254,7 +254,7 @@ test("reads streamed OpenAI-compatible text parts without losing the JSON envelo
   assert.equal(response.message, "已完成当前批次。");
 });
 
-test("reserves enough structured output tokens for two-shot manga batches", async () => {
+test("uses a bounded structured output budget for two-shot manga batches", async () => {
   let body;
   const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
     body = JSON.parse(init.body);
@@ -273,7 +273,7 @@ test("reserves enough structured output tokens for two-shot manga batches", asyn
       { role: "user", content: "继续" },
     ],
   })));
-  assert.equal(body.max_tokens, 16_384);
+  assert.equal(body.max_tokens, 8_192);
   assert.equal(body.response_format.type, "json_schema");
   assert.equal(body.response_format.json_schema.strict, true);
   const shotSchema = body.response_format.json_schema.schema.properties.operations
@@ -386,7 +386,7 @@ test("uses one strict response schema for every manga director stage", async () 
     })));
     const schema = body.response_format.json_schema.schema;
     const operation = schema.properties.operations;
-    assert.equal(body.max_tokens, 16_384);
+    assert.equal(body.max_tokens, stage === "shot-plans" ? 8_192 : 16_384);
     assert.equal(body.response_format.json_schema.strict, true);
     assert.equal(operation.minItems, 1);
     assert.equal(operation.maxItems, 1);
@@ -503,6 +503,9 @@ test("loads comic stage rules without the detailed cinematography manual before 
   assert.match(systemMessage, /RUNTIME_COMIC_STORYBOARD_MANUAL_MARKER/);
   assert.match(systemMessage, /RUNTIME_MANGA_DIRECTOR_CORE_MARKER/);
   assert.match(systemMessage, /RUNTIME_MANGA_STORY_BEATS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_IMAGE_TOOL_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER/);
   assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_SCENE_PLANS_MARKER/);
   assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_SHOT_PLANS_MARKER/);
   assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_CONTINUITY_MARKER/);
@@ -527,6 +530,9 @@ test("loads the detailed cinematography manual only during manga shot planning",
   const systemMessage = body.messages[0].content;
   assert.match(systemMessage, /RUNTIME_COMMON_SHOT_MANUAL_MARKER/);
   assert.match(systemMessage, /RUNTIME_MANGA_SHOT_PLANS_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_IMAGE_TOOL_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_WORKFLOW_TOOL_MANUAL_MARKER/);
+  assert.doesNotMatch(systemMessage, /RUNTIME_STORY_ASSET_TOOL_MANUAL_MARKER/);
   assert.doesNotMatch(systemMessage, /RUNTIME_MANGA_CONTINUITY_MARKER/);
 });
 
