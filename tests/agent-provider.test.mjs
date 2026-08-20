@@ -857,4 +857,19 @@ test("sanitizes upstream errors and invalid model output", async () => {
     () => bodyClient.respond(validateAgentRequest(request())),
     /超过上游模型上下文限制/,
   );
+
+  const responseFormatClient = createCanvasAgentClient(
+    clientConfig,
+    async () => new Response(
+      "Invalid schema for response_format: strict schema requires every property.",
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(
+    () => responseFormatClient.respond(validateAgentRequest(request())),
+    (error) =>
+      error instanceof CanvasAgentError &&
+      error.code === "response-format" &&
+      /严格结构化输出格式/.test(error.message),
+  );
 });

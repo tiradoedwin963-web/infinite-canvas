@@ -2182,3 +2182,22 @@
 - `docs/canvas.md`：说明导演阶段的上下文和输出预算边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts components/canvas-agent-sidebar.tsx tests/agent-provider.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-20 - Task: 分类上游导演请求拒绝
+
+### What was done
+- 上游失败响应改为先安全读取正文再分类：上下文超限和严格结构化输出格式拒绝会分别返回可执行提示，其他上游正文仍不会回显。
+- 保持现有鉴权、频率限制和通用失败处理，不记录或向浏览器暴露密钥、系统提示、剧本或完整上游错误。
+
+### Testing
+- `node --test tests/agent-provider.test.mjs`：通过，22 项上游 Agent 协议回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；生产构建成功，185 项自动化测试全部通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent-provider.ts`：安全分类 JSON 与纯文本上游错误，标记严格输出格式不兼容。
+- `tests/agent-provider.test.mjs`：覆盖纯文本严格 Schema 拒绝的受控错误。
+- `docs/canvas.md`：说明上游错误分类不回显敏感请求信息。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts tests/agent-provider.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

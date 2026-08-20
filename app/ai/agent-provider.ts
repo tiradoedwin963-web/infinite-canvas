@@ -466,6 +466,16 @@ function upstreamFailure(response: Response, payload: unknown) {
       413,
     );
   }
+  if (
+    (response.status === 400 || response.status === 422) &&
+    /response_format|json[ _-]?schema|strict|additionalproperties|必须.*required/.test(serialized)
+  ) {
+    return new CanvasAgentError(
+      "画布 Agent 上游不接受当前严格结构化输出格式，请检查模型兼容性。",
+      502,
+      "response-format",
+    );
+  }
   return new CanvasAgentError("画布 Agent 暂时不可用，请稍后重试。", 502);
 }
 
@@ -822,7 +832,14 @@ export function createCanvasAgentClient(
       if (!response.ok) {
         let payload: unknown = "";
         try {
-          payload = await response.json();
+          const raw = await response.text();
+          if (raw) {
+            try {
+              payload = JSON.parse(raw);
+            } catch {
+              payload = raw;
+            }
+          }
         } catch {
           // Keep the sanitized fallback.
         }
