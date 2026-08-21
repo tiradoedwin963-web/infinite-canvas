@@ -421,10 +421,31 @@ test("dry-run never opens a transaction, and apply validates all assets before u
         storyRole: "story-beats",
         storyBeats: [],
       }),
+      scheduler("image-scheduler", {
+        outputKind: "image",
+        model: "gpt-image-2",
+        duration: "",
+      }),
+      result("image-result", "image-scheduler", {
+        kind: "image",
+        model: "gpt-image-2",
+        status: "success",
+        progress: "",
+        assetId: "image-asset",
+      }),
     ]),
     batch: null,
   };
-  const dryRun = fakeDatabase({ projects: [project], assets: [] });
+  const dryRun = fakeDatabase({
+    projects: [project],
+    assets: [{
+      id: "image-asset",
+      project_id: "project-run",
+      node_id: "image-result",
+      mime_type: "image/png",
+      status: "ready",
+    }],
+  });
   const report = await runRollbackMigration({
     databaseUrl: "postgres://test",
     apply: false,
