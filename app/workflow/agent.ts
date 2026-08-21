@@ -25,13 +25,6 @@ import {
   resetStoryFoundationApproval,
   runnableAssetSchedulers,
 } from "./story-assets.ts";
-import { assertComicStoryboardOperation } from "./storyboard.ts";
-import {
-  createMangaContinuityReport,
-  createMangaScenePlans,
-  createMangaShotBatch,
-  createMangaStoryBeats,
-} from "./manga-director.ts";
 
 export const WORKFLOW_BATCH_STORAGE_KEY = "lingke-workflow-batch-v1";
 
@@ -43,39 +36,8 @@ export type WorkflowBatchRun = {
   target?: "story" | "assets";
   assetRefs?: string[];
   schedulerIds: string[];
-  submissionUnknownSchedulerIds?: string[];
-  blockedSchedulerIds?: string[];
   status: "running" | "completed" | "partial-failure";
 };
-
-function schedulerContainsShot(
-  scheduler: WorkflowSchedulerNode,
-  shotRef: string,
-) {
-  return scheduler.videoSegment?.shotIds.includes(shotRef) || scheduler.shotRef === shotRef;
-}
-
-function schedulerHasSubmissionUnknownResult(
-  graph: WorkflowGraph,
-  schedulerId: string,
-) {
-  return graph.nodes.some(
-    (node) =>
-      node.type === "result" &&
-      node.schedulerId === schedulerId &&
-      node.status === "submission-unknown",
-  );
-}
-
-function schedulerHasSubmissionUnknownInput(
-  graph: WorkflowGraph,
-  schedulerId: string,
-) {
-  const inputs = readWorkflowInputs(graph, schedulerId);
-  return [...inputs.images, ...inputs.videos].some(
-    (node) => node.type === "result" && node.status === "submission-unknown",
-  );
-}
 
 export function createWorkflowAgentSnapshot(
   graph: WorkflowGraph,
@@ -121,10 +83,6 @@ export function createWorkflowAgentSnapshot(
         ...(node.foundationApprovedAt !== undefined
           ? { foundationApprovedAt: node.foundationApprovedAt }
           : {}),
-        ...(node.storyboardMode ? { storyboardMode: node.storyboardMode } : {}),
-        ...(node.mangaStoryboardTempo
-          ? { mangaStoryboardTempo: node.mangaStoryboardTempo }
-          : {}),
         ...(node.storyVisualStyle
           ? { storyVisualStyle: node.storyVisualStyle }
           : {}),
@@ -138,25 +96,6 @@ export function createWorkflowAgentSnapshot(
           ? { projectAspectRatio: node.projectAspectRatio }
           : {}),
         ...(node.storyImageModel ? { storyImageModel: node.storyImageModel } : {}),
-        ...(node.mangaPlanningStage
-          ? { mangaPlanningStage: node.mangaPlanningStage }
-          : {}),
-        ...(node.mangaPlanningStatus
-          ? { mangaPlanningStatus: node.mangaPlanningStatus }
-          : {}),
-        ...(node.mangaPlanningChunkIndex !== undefined
-          ? { mangaPlanningChunkIndex: node.mangaPlanningChunkIndex }
-          : {}),
-        ...(node.continuityApprovedAt !== undefined
-          ? { continuityApprovedAt: node.continuityApprovedAt }
-          : {}),
-        ...(node.storyBeats ? { storyBeats: node.storyBeats } : {}),
-        ...(node.scenePlan ? { scenePlan: node.scenePlan } : {}),
-        ...(node.shotPlan ? { shotPlan: node.shotPlan } : {}),
-        ...(node.continuityReport
-          ? { continuityReport: node.continuityReport }
-          : {}),
-        ...(node.videoSegment ? { videoSegment: node.videoSegment } : {}),
         ...(node.type === "source" && node.assetName
           ? { assetName: node.assetName }
           : {}),
@@ -178,26 +117,25 @@ export function createWorkflowAgentSnapshot(
 
 export function mergeStoryWorkflowChunks(
   chunks: AgentCreateStoryWorkflowOperation[],
-  requireFinal = true,
 ): AgentCreateStoryWorkflowOperation {
   if (!chunks.length) throw new Error("Agent 未返回短剧工作流方案。");
   const first = chunks[0];
   const shots = [] as AgentCreateStoryWorkflowOperation["shots"];
   const refs = new Set<string>();
   chunks.forEach((chunk, index) => {
-    if (chunk.chunkIndex !== index) {
-      throw new Error(
-        `短剧工作流批次编号不连续：期望 ${index}，收到 ${chunk.chunkIndex}。未创建节点。`,
-      );
-    }
-    if (chunk.ref !== first.ref) {
-      throw new Error("短剧工作流批次引用的短剧不一致，未创建节点。");
-    }
-    if (chunk.shots.length < 1 || chunk.shots.length > 8) {
-      throw new Error("短剧工作流单个逻辑批次必须包含 1 至 8 个分镜，未创建节点。");
-    }
-    if (chunk.isFinal && index !== chunks.length - 1) {
-      throw new Error("短剧工作流结束标记出现在非末批，未创建节点。");
+    if (
+      chunk.chunkIndex !== index ||
+      chunk.ref !== first.ref ||
+      chunk.title !== first.title ||
+      chunk.globalContext !== first.globalContext ||
+      chunk.imageModel !== first.imageModel ||
+      chunk.videoModel !== first.videoModel ||
+      chunk.aspectRatio !== first.aspectRatio ||
+      chunk.imageResolution !== first.imageResolution ||
+      chunk.videoResolution !== first.videoResolution ||
+      chunk.isFinal !== (index === chunks.length - 1)
+    ) {
+      throw new Error("短剧工作流分批内容不连续，未创建节点。");
     }
     chunk.shots.forEach((shot) => {
       if (refs.has(shot.ref)) throw new Error(`短剧分镜 ${shot.ref} 重复。`);
@@ -205,13 +143,11 @@ export function mergeStoryWorkflowChunks(
       shots.push(shot);
     });
   });
-  if (requireFinal && !chunks.at(-1)?.isFinal) {
-    throw new Error("短剧工作流方案尚未完成。");
-  }
+  if (!chunks.at(-1)?.isFinal) throw new Error("短剧工作流方案尚未完成。");
   return {
     ...first,
     chunkIndex: 0,
-    isFinal: Boolean(chunks.at(-1)?.isFinal),
+    isFinal: true,
     shots,
     adjustments: [...new Set(chunks.flatMap((chunk) => chunk.adjustments ?? []))],
   };
@@ -242,37 +178,11 @@ export function applyWorkflowAgentOperations(
       );
       return;
     }
-    if (operation.type === "create_manga_story_beats") {
-      next = createMangaStoryBeats(next, operation);
-      messages.push(`已创建 ${operation.beats.length} 个剧情与情绪节拍。`);
-      return;
-    }
-    if (operation.type === "create_manga_scene_plans") {
-      next = createMangaScenePlans(next, operation);
-      messages.push(`已创建 ${operation.plans.length} 个场面调度方案。`);
-      return;
-    }
-    if (operation.type === "create_manga_shot_batch") {
-      next = createMangaShotBatch(next, operation);
-      messages.push(`已创建漫剧镜头第 ${operation.chunkIndex + 1} 批，共 ${operation.shots.length} 镜。`);
-      return;
-    }
-    if (operation.type === "create_manga_continuity_report") {
-      next = createMangaContinuityReport(next, operation);
-      const warnings = operation.report.issues.filter((issue) => issue.severity === "warning").length;
-      messages.push(
-        warnings
-          ? `已完成连续性检查并创建视频工作流，仍有 ${warnings} 个警告等待确认。`
-          : "连续性检查通过，已创建秒级视频工作流。",
-      );
-      return;
-    }
     if (operation.type !== "create_story_workflow") {
       messages.push("当前工作流画布不支持此普通操作。");
       return;
     }
-    const assetStoryId = assertComicStoryboardOperation(next, operation);
-    const created = createStoryWorkflow(next, operation, undefined, assetStoryId);
+    const created = createStoryWorkflow(next, operation);
     next = created.graph;
     messages.push(
       `已创建短剧“${operation.title}”：${operation.shots.length} 个分镜、${operation.shots.length * 5 + 1} 个节点。短剧 ID：${created.storyId}。`,
@@ -287,17 +197,6 @@ export function createWorkflowBatchRun(
   operation: Extract<AgentDangerousOperation, { type: "run_story_workflow" }>,
   idFactory = () => crypto.randomUUID(),
 ): WorkflowBatchRun {
-  const directorAnalysis = graph.nodes.find((node) =>
-    node.storyId === operation.storyId && node.storyRole === "analysis" &&
-    Boolean(node.mangaPlanningStage)
-  );
-  if (
-    directorAnalysis &&
-    (directorAnalysis.mangaPlanningStatus !== "complete" ||
-      !directorAnalysis.continuityApprovedAt)
-  ) {
-    throw new Error("连续性警告尚未确认，不能提交视频生成。");
-  }
   const selected = new Set(operation.shotRefs);
   const storySchedulers = graph.nodes.filter(
     (node): node is WorkflowSchedulerNode =>
@@ -310,43 +209,21 @@ export function createWorkflowBatchRun(
   if (
     selected.size &&
     [...selected].some(
-      (shotRef) => !storySchedulers.some((node) => schedulerContainsShot(node, shotRef)),
+      (shotRef) => !storySchedulers.some((node) => node.shotRef === shotRef),
     )
   ) {
     throw new Error("部分指定分镜已不存在，请重新提出批量生成要求。");
   }
   const schedulers = storySchedulers.filter(
-    (node) => !selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef)),
+    (node) => !selected.size || Boolean(node.shotRef && selected.has(node.shotRef)),
   );
-  const submissionUnknownSchedulerIds = schedulers
-    .filter((node) => schedulerHasSubmissionUnknownResult(graph, node.id))
-    .map((node) => node.id);
-  const blockedSchedulerIds = schedulers
-    .filter(
-      (node) =>
-        !submissionUnknownSchedulerIds.includes(node.id) &&
-        schedulerHasSubmissionUnknownInput(graph, node.id),
-    )
-    .map((node) => node.id);
-  const runnableSchedulers = schedulers.filter(
-    (node) =>
-      !submissionUnknownSchedulerIds.includes(node.id) &&
-      !blockedSchedulerIds.includes(node.id),
-  );
-  if (!runnableSchedulers.length) {
-    throw new Error(
-      "没有可批量提交的任务：所选任务均为提交状态未知，或依赖提交状态未知的上游任务。",
-    );
-  }
   return {
     version: 1,
     id: idFactory(),
     storyId: operation.storyId,
     shotRefs: [...selected],
     target: "story",
-    schedulerIds: runnableSchedulers.map((node) => node.id),
-    ...(submissionUnknownSchedulerIds.length ? { submissionUnknownSchedulerIds } : {}),
-    ...(blockedSchedulerIds.length ? { blockedSchedulerIds } : {}),
+    schedulerIds: schedulers.map((node) => node.id),
     status: "running",
   };
 }
@@ -397,12 +274,6 @@ export function parseWorkflowBatchRun(raw: string | null): WorkflowBatchRun | nu
       value.shotRefs.every((item) => typeof item === "string") &&
       Array.isArray(value.schedulerIds) &&
       value.schedulerIds.every((item) => typeof item === "string") &&
-      (value.submissionUnknownSchedulerIds === undefined ||
-        (Array.isArray(value.submissionUnknownSchedulerIds) &&
-          value.submissionUnknownSchedulerIds.every((item) => typeof item === "string"))) &&
-      (value.blockedSchedulerIds === undefined ||
-        (Array.isArray(value.blockedSchedulerIds) &&
-          value.blockedSchedulerIds.every((item) => typeof item === "string"))) &&
       (value.target === undefined || value.target === "story" || value.target === "assets") &&
       (value.assetRefs === undefined ||
         (Array.isArray(value.assetRefs) && value.assetRefs.every((item) => typeof item === "string"))) &&
@@ -438,22 +309,6 @@ export function advanceWorkflowBatch(
   }
   let next = graph;
   const readySchedulerIds: string[] = [];
-  (batch.blockedSchedulerIds ?? []).forEach((schedulerId) => {
-    const scheduler = next.nodes.find(
-      (node): node is WorkflowSchedulerNode =>
-        node.id === schedulerId && node.type === "scheduler",
-    );
-    const result = resultForScheduler(next, schedulerId);
-    if (!scheduler || !result || result.status !== "ready") return;
-    next = updateWorkflowNode(next, schedulerId, {
-      error: "上游分镜提交状态未知，已停止当前分支。",
-    });
-    next = updateWorkflowResult(next, result.id, {
-      status: "failed",
-      progress: "",
-      error: "上游分镜提交状态未知，未提交当前任务。",
-    });
-  });
   batch.schedulerIds.forEach((schedulerId) => {
     const scheduler = next.nodes.find(
       (node): node is WorkflowSchedulerNode =>
@@ -465,25 +320,16 @@ export function advanceWorkflowBatch(
     const failedUpstream = [...inputs.images, ...inputs.videos].find(
       (node) =>
         node.type === "result" &&
-        (node.status === "failed" ||
-          node.status === "paused" ||
-          node.status === "submission-unknown"),
+        (node.status === "failed" || node.status === "paused"),
     );
     if (failedUpstream) {
-      const unknownSubmission =
-        failedUpstream.type === "result" &&
-        failedUpstream.status === "submission-unknown";
       next = updateWorkflowNode(next, schedulerId, {
-        error: unknownSubmission
-          ? "上游分镜提交状态未知，已停止当前分支。"
-          : "上游分镜生成失败，已停止当前分支。",
+        error: "上游分镜生成失败，已停止当前分支。",
       });
       next = updateWorkflowResult(next, result.id, {
         status: "failed",
         progress: "",
-        error: unknownSubmission
-          ? "上游分镜提交状态未知，未提交当前任务。"
-          : "上游分镜生成失败，未提交当前任务。",
+        error: "上游分镜生成失败，未提交当前任务。",
       });
       return;
     }
@@ -498,23 +344,16 @@ export function advanceWorkflowBatch(
   const finished =
     results.length === batch.schedulerIds.length &&
     results.every((node) =>
-      ["success", "failed", "paused", "submission-unknown"].includes(node.status),
+      ["success", "failed", "paused"].includes(node.status),
     );
   const failed = results.some(
-    (node) =>
-      node.status === "failed" ||
-      node.status === "paused" ||
-      node.status === "submission-unknown",
+    (node) => node.status === "failed" || node.status === "paused",
   );
-  const partial =
-    failed ||
-    Boolean(batch.submissionUnknownSchedulerIds?.length) ||
-    Boolean(batch.blockedSchedulerIds?.length);
   return {
     graph: next,
     readySchedulerIds,
     batch: finished
-      ? { ...batch, status: partial ? "partial-failure" : "completed" }
+      ? { ...batch, status: failed ? "partial-failure" : "completed" }
       : batch,
   };
 }
@@ -523,63 +362,16 @@ export function describeWorkflowRun(
   graph: WorkflowGraph,
   operation: Extract<AgentDangerousOperation, { type: "run_story_workflow" }>,
 ) {
-  const directorAnalysis = graph.nodes.find((node) =>
-    node.storyId === operation.storyId && node.storyRole === "analysis" &&
-    Boolean(node.mangaPlanningStage)
-  );
-  if (
-    directorAnalysis &&
-    (directorAnalysis.mangaPlanningStatus !== "complete" ||
-      !directorAnalysis.continuityApprovedAt)
-  ) {
-    throw new Error("连续性警告尚未确认，不能提交视频生成。");
-  }
   const selected = new Set(operation.shotRefs);
   const schedulers = graph.nodes.filter(
     (node): node is WorkflowSchedulerNode =>
       node.type === "scheduler" &&
       node.storyId === operation.storyId &&
-      (node.storyRole === "storyboard-scheduler" || node.storyRole === "video-scheduler") &&
-      (!selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef))),
+      (!selected.size || Boolean(node.shotRef && selected.has(node.shotRef))),
   );
-  const submissionUnknownSchedulerIds = new Set(
-    schedulers
-      .filter((node) => schedulerHasSubmissionUnknownResult(graph, node.id))
-      .map((node) => node.id),
-  );
-  const blockedSchedulerIds = new Set(
-    schedulers
-      .filter(
-        (node) =>
-          !submissionUnknownSchedulerIds.has(node.id) &&
-          schedulerHasSubmissionUnknownInput(graph, node.id),
-      )
-      .map((node) => node.id),
-  );
-  const runnableSchedulers = schedulers.filter(
-    (node) =>
-      !submissionUnknownSchedulerIds.has(node.id) &&
-      !blockedSchedulerIds.has(node.id),
-  );
-  if (!runnableSchedulers.length) {
-    throw new Error(
-      "没有可批量提交的任务：所选任务均为提交状态未知，或依赖提交状态未知的上游任务。",
-    );
-  }
-  const images = runnableSchedulers.filter((node) => node.outputKind === "image").length;
-  const videos = runnableSchedulers.filter((node) => node.outputKind === "video").length;
-  const skipped = [
-    submissionUnknownSchedulerIds.size
-      ? `已跳过 ${submissionUnknownSchedulerIds.size} 个提交状态未知任务`
-      : "",
-    blockedSchedulerIds.size
-      ? `${blockedSchedulerIds.size} 个下游任务因上游未知状态不会提交`
-      : "",
-  ].filter(Boolean).join("；");
-  if (!images) {
-    return `批量生成 ${videos} 个视频片段；依赖就绪的镜头将同层并行，可能产生 ${videos} 笔模型费用${skipped ? `；${skipped}` : ""}`;
-  }
-  return `批量生成 ${images} 个分镜图片和 ${videos} 个视频片段；依赖就绪的同层任务将全部并行，可能产生 ${images + videos} 笔模型费用${skipped ? `；${skipped}` : ""}`;
+  const images = schedulers.filter((node) => node.outputKind === "image").length;
+  const videos = schedulers.filter((node) => node.outputKind === "video").length;
+  return `批量生成 ${images} 个分镜图片和 ${videos} 个视频片段；依赖就绪的同层任务将全部并行，可能产生 ${images + videos} 笔模型费用`;
 }
 
 export { describeStoryAssetRun };

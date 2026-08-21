@@ -16,27 +16,13 @@ export type LingkeClientConfig = {
   apiKey: string;
 };
 
-export type LingkeRequestErrorCode = "submission-unknown";
-
 export class LingkeRequestError extends Error {
   readonly status: number;
-  readonly code?: LingkeRequestErrorCode;
 
-  constructor(
-    message: string,
-    status = 502,
-    code?: LingkeRequestErrorCode,
-  ) {
+  constructor(message: string, status = 502) {
     super(message);
     this.status = status;
-    this.code = code;
   }
-}
-
-export function toSafeRequestErrorPayload(error: LingkeRequestError) {
-  return error.code
-    ? { error: error.message, code: error.code }
-    : { error: error.message };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,9 +81,8 @@ async function readJson(response: Response): Promise<unknown> {
 function validateImages(
   images: GenerateReferenceImage[],
   maxReferenceImages: number,
-  mode: GenerateRequest["mode"],
 ): GenerateReferenceImage[] {
-  if (images.length > maxReferenceImages) {
+  if (images.length > 5 || images.length > maxReferenceImages) {
     throw new LingkeRequestError(
       `当前模型最多支持 ${maxReferenceImages} 张参考图。`,
       400,
@@ -106,11 +91,10 @@ function validateImages(
 
   let totalBytes = 0;
   for (const image of images) {
-    if (mode === "video" && image.assetId && !image.dataUrl) continue;
     if (!image.mimeType.startsWith("image/")) {
       throw new LingkeRequestError("仅支持图片类型的参考文件。", 400);
     }
-    if (!image.dataUrl?.startsWith(`data:${image.mimeType};base64,`)) {
+    if (!image.dataUrl.startsWith(`data:${image.mimeType};base64,`)) {
       throw new LingkeRequestError("参考图数据格式无效。", 400);
     }
     const encoded = image.dataUrl.slice(image.dataUrl.indexOf(",") + 1);
@@ -118,7 +102,7 @@ function validateImages(
     const decodedBytes = Math.floor((encoded.length * 3) / 4) - padding;
     if (
       !Number.isFinite(image.size) ||
-      Number(image.size) <= 0 ||
+      image.size <= 0 ||
       decodedBytes <= 0 ||
       decodedBytes > MAX_IMAGE_BYTES
     ) {
@@ -158,10 +142,9 @@ export function validateGenerateRequest(value: unknown): GenerateRequest {
       mimeType: readString(image.mimeType),
       dataUrl: readString(image.dataUrl),
       size: Number(image.size),
-      assetId: readString(image.assetId) || undefined,
     };
   });
-  validateImages(images, config.maxReferenceImages, value.mode);
+  validateImages(images, config.maxReferenceImages);
 
   const aspectRatio = readString(value.aspectRatio);
   if (
@@ -235,8 +218,7 @@ function normalizeText(protocol: string, payload: unknown): string {
 }
 
 function base64Data(image: GenerateReferenceImage): string {
-  const dataUrl = image.dataUrl ?? "";
-  return dataUrl.slice(dataUrl.indexOf(",") + 1);
+  return image.dataUrl.slice(image.dataUrl.indexOf(",") + 1);
 }
 
 function createTextMessages(request: GenerateRequest, protocol: string) {
@@ -327,13 +309,11 @@ function imageSizeForRatio(aspectRatio: string, resolution: string): string {
 
 function createMediaParams(request: GenerateRequest): Record<string, unknown> {
   const config = getModelConfig(request.mode, request.model)!;
-  const images = (request.images ?? [])
-    .map((image) => image.dataUrl)
-    .filter((value): value is string => Boolean(value));
+  const images = (request.images ?? []).map((image) => image.dataUrl);
 
   if (request.mode === "image") {
     const mapping = config.imageRequest!;
-    const aspectRatio = request.aspectRatio ?? "16:9";
+    const aspectRatio = request.aspectRatio ?? "1:1";
     const resolution = request.resolution ?? config.defaultResolution ?? "1K";
     const params: Record<string, unknown> = {};
     if (mapping.aspectRatioFormat === "pixels") {

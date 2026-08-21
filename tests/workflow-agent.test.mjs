@@ -26,7 +26,7 @@ function chunk(chunkIndex, isFinal, shotRefs) {
     title: "夜班电梯",
     globalContext: "固定角色、电梯场景和冷色光线。",
     imageModel: "gemini-3-pro-image-preview",
-    videoModel: "seedance-2.0",
+    videoModel: "doubao-seedance-1-5-pro-251215",
     aspectRatio: "9:16",
     imageResolution: "1K",
     videoResolution: "720p",
@@ -60,29 +60,16 @@ test("merges continuous planning chunks and rejects every atomic-failure case", 
   assert.equal(merged.chunkIndex, 0);
   assert.equal(merged.isFinal, true);
   assert.deepEqual(merged.shots.map((shot) => shot.ref), ["shot-01", "shot-02"]);
-  const partial = mergeStoryWorkflowChunks([
-    chunk(0, false, ["shot-01"]),
-    chunk(1, false, ["shot-02"]),
-  ], false);
-  assert.equal(partial.isFinal, false);
-  assert.deepEqual(partial.shots.map((shot) => shot.ref), ["shot-01", "shot-02"]);
   assert.throws(
     () => mergeStoryWorkflowChunks([chunk(0, false, ["shot-01"])]),
-    /尚未完成/,
+    /不连续|尚未完成/,
   );
   assert.throws(
     () => mergeStoryWorkflowChunks([
       chunk(0, false, ["shot-01"]),
       chunk(2, true, ["shot-02"]),
     ]),
-    /批次编号不连续.*期望 1.*收到 2/,
-  );
-  assert.throws(
-    () => mergeStoryWorkflowChunks([
-      chunk(0, false, ["shot-01"]),
-      { ...chunk(1, true, ["shot-02"]), ref: "another-story" },
-    ]),
-    /短剧不一致/,
+    /不连续/,
   );
   assert.throws(
     () => mergeStoryWorkflowChunks([
@@ -91,40 +78,6 @@ test("merges continuous planning chunks and rejects every atomic-failure case", 
     ]),
     /重复/,
   );
-  assert.throws(
-    () => mergeStoryWorkflowChunks([
-      chunk(0, true, Array.from({ length: 9 }, (_, index) => `shot-${index}`)),
-    ]),
-    /1 至 8/,
-  );
-  assert.throws(
-    () => mergeStoryWorkflowChunks([
-      chunk(0, true, ["shot-01"]),
-      chunk(1, true, ["shot-02"]),
-    ]),
-    /结束标记出现在非末批/,
-  );
-});
-
-test("uses the first batch configuration while merging 32 ordered shots", () => {
-  const chunks = Array.from({ length: 4 }, (_, chunkIndex) => ({
-    ...chunk(
-      chunkIndex,
-      chunkIndex === 3,
-      Array.from(
-        { length: 8 },
-        (_, shotIndex) => `shot-${chunkIndex * 8 + shotIndex}`,
-      ),
-    ),
-    title: chunkIndex ? `后续标题 ${chunkIndex}` : "权威标题",
-    globalContext: chunkIndex ? `后续设定 ${chunkIndex}` : "权威设定",
-    imageModel: chunkIndex ? `later-image-model-${chunkIndex}` : "first-image-model",
-  }));
-  const merged = mergeStoryWorkflowChunks(chunks);
-  assert.equal(merged.shots.length, 32);
-  assert.equal(merged.title, "权威标题");
-  assert.equal(merged.globalContext, "权威设定");
-  assert.equal(merged.imageModel, "first-image-model");
 });
 
 test("exposes workflow metadata and keeps workflow conversation context separate", () => {
@@ -230,80 +183,6 @@ test("runs ready image layers in parallel then releases only their matching vide
   assert.equal(readyVideo.shotRef, "shot-02");
 });
 
-test("treats submission-unknown results as terminal partial batch work without requeueing them", () => {
-  const created = storyGraph();
-  const operation = {
-    type: "run_story_workflow",
-    storyId: created.storyId,
-    shotRefs: [],
-  };
-  const imageResults = created.graph.nodes.filter((node) => node.storyRole === "storyboard");
-  const firstImage = imageResults.find((node) => node.shotRef === "shot-01");
-  const secondImage = imageResults.find((node) => node.shotRef === "shot-02");
-  let graph = updateWorkflowResult(created.graph, firstImage.id, {
-    status: "submission-unknown",
-    progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-  });
-  const batch = createWorkflowBatchRun(graph, operation, () => "batch-unknown");
-  const unknownSchedulerId = created.graph.nodes.find((node) =>
-    node.type === "scheduler" && node.shotRef === "shot-01" && node.storyRole === "storyboard-scheduler"
-  ).id;
-  const blockedSchedulerId = created.graph.nodes.find((node) =>
-    node.type === "scheduler" && node.shotRef === "shot-01" && node.storyRole === "video-scheduler"
-  ).id;
-  assert.ok(!batch.schedulerIds.includes(unknownSchedulerId));
-  assert.ok(!batch.schedulerIds.includes(blockedSchedulerId));
-  assert.deepEqual(batch.submissionUnknownSchedulerIds, [unknownSchedulerId]);
-  assert.deepEqual(batch.blockedSchedulerIds, [blockedSchedulerId]);
-  assert.deepEqual(parseWorkflowBatchRun(JSON.stringify(batch)), batch);
-  assert.match(
-    describeWorkflowRun(graph, operation),
-    /1 个分镜图片和 1 个视频片段[\s\S]*2 笔模型费用[\s\S]*已跳过 1 个提交状态未知任务[\s\S]*1 个下游任务因上游未知状态不会提交/,
-  );
-  assert.throws(
-    () => createWorkflowBatchRun(graph, {
-      ...operation,
-      shotRefs: ["shot-01"],
-    }),
-    /没有可批量提交的任务/,
-  );
-
-  const initial = advanceWorkflowBatch(graph, batch);
-  assert.ok(!initial.readySchedulerIds.includes(unknownSchedulerId));
-  assert.equal(initial.batch.status, "running");
-  const blockedClip = initial.graph.nodes.find(
-    (node) => node.type === "result" && node.storyRole === "clip" && node.shotRef === "shot-01",
-  );
-  assert.equal(blockedClip.status, "failed");
-  assert.match(blockedClip.error, /提交状态未知/);
-
-  graph = updateWorkflowResult(initial.graph, secondImage.id, {
-    status: "success",
-    resultUrl: "https://example.com/shot-02.png",
-  });
-  const released = advanceWorkflowBatch(graph, batch);
-  const readyVideo = released.readySchedulerIds.find((schedulerId) =>
-    released.graph.nodes.find((node) => node.id === schedulerId)?.storyRole === "video-scheduler"
-  );
-  assert.ok(readyVideo);
-
-  const completedGraph = updateWorkflowResult(
-    released.graph,
-    released.graph.nodes.find(
-      (node) => node.type === "result" && node.storyRole === "clip" && node.shotRef === "shot-02",
-    ).id,
-    { status: "success", resultUrl: "https://example.com/shot-02.mp4" },
-  );
-  const completed = advanceWorkflowBatch(completedGraph, batch);
-  assert.equal(completed.batch.status, "partial-failure");
-  assert.deepEqual(completed.readySchedulerIds, []);
-  assert.equal(
-    completed.graph.nodes.find((node) => node.id === firstImage.id).status,
-    "submission-unknown",
-  );
-});
-
 test("validates selected shots and rejects malformed persisted queues", () => {
   const created = storyGraph();
   const selected = createWorkflowBatchRun(created.graph, {
@@ -319,8 +198,4 @@ test("validates selected shots and rejects malformed persisted queues", () => {
   }), /不存在/);
   assert.equal(parseWorkflowBatchRun('{"version":2}'), null);
   assert.equal(parseWorkflowBatchRun("not-json"), null);
-  assert.equal(
-    parseWorkflowBatchRun(JSON.stringify({ ...selected, submissionUnknownSchedulerIds: [1] })),
-    null,
-  );
 });

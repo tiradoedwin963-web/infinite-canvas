@@ -229,12 +229,8 @@ export function migrateActiveWorkflowAssetLayout(
   return true;
 }
 
-export function projectAssetIds(graph: WorkflowGraph) {
+export function projectSourceAssetIds(graph: WorkflowGraph) {
   return new Set(graph.nodes.flatMap((node) =>
-    (node.type === "source" || node.type === "result") && node.assetId
-      ? [node.assetId]
-      : []
+    node.type === "source" && node.assetId ? [node.assetId] : []
   ));
 }
-
-export const projectSourceAssetIds = projectAssetIds;

@@ -3,13 +3,8 @@ import test from "node:test";
 import {
   createLingkeClient,
   LingkeRequestError,
-  toSafeRequestErrorPayload,
   validateGenerateRequest,
 } from "../app/ai/provider.ts";
-import {
-  createTrxVideoClient,
-  TRX_TASK_PREFIX,
-} from "../app/ai/trx-video-provider.ts";
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -27,7 +22,7 @@ test("rejects unknown models and invalid reference images", () => {
     () =>
       validateGenerateRequest({
         mode: "video",
-        model: "seedance-2.0",
+        model: "doubao-seedance-1-5-pro-251215",
         prompt: "x",
         aspectRatio: "16:9",
         duration: "5",
@@ -94,11 +89,11 @@ test("requires a supported resolution for every media request", () => {
     () =>
       validateGenerateRequest({
         mode: "video",
-        model: "seedance-2.0-fast",
+        model: "viduq3",
         prompt: "cat",
         aspectRatio: "16:9",
         duration: "5",
-        resolution: "1080p",
+        resolution: "4K",
       }),
     /请选择当前模型支持的分辨率/,
   );
@@ -254,6 +249,7 @@ test("creates media tasks and normalizes completed results", async () => {
       model: "gpt-image-2",
       prompt: "cat",
       images: [],
+      aspectRatio: "16:9",
       resolution: "1K",
     }),
     { kind: "task", taskId: "42" },
@@ -378,119 +374,37 @@ test("maps every GPT Image 2 ratio and resolution pair to pixels", async () => {
   );
 });
 
-test("submits ordered video references and normalizes TRX tasks", async () => {
+test("maps selectable video resolutions to the provider contract", async () => {
   const calls = [];
-  const client = createTrxVideoClient(
+  const client = createLingkeClient(
     { baseUrl: "https://example.test", apiKey: "secret" },
-    async (url, init) => {
-      if (init?.method !== "POST") {
-        return jsonResponse({
-          task_id: "task-1",
-          status: "completed",
-          result_url: "https://cdn.test/video.mp4",
-        });
-      }
-      calls.push({ url, body: JSON.parse(init.body) });
-      return jsonResponse({ task_id: "task-1", status: "pending" });
+    async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return jsonResponse({ task_id: calls.length });
     },
   );
 
-  const submitted = await client.generate({
+  await client.generate({
     mode: "video",
-    model: "seedance-2.0",
+    model: "doubao-seedance-1-5-pro-251215",
     prompt: "cat",
     aspectRatio: "16:9",
     duration: "5",
     resolution: "1080p",
-  }, ["https://cdn.test/first.png", "https://cdn.test/character.png"]);
-
-  assert.deepEqual(submitted, { kind: "task", taskId: `${TRX_TASK_PREFIX}task-1` });
-  assert.equal(calls[0].url, "https://example.test/v1/video/generate");
-  assert.deepEqual(calls[0].body, {
-    model: "seedance-2.0",
-    prompt: "cat",
-    mode: "reference",
-    duration: 5,
-    aspect_ratio: "16:9",
-    resolution: "1080p",
-    images: ["https://cdn.test/first.png", "https://cdn.test/character.png"],
   });
-  assert.deepEqual(await client.status(`${TRX_TASK_PREFIX}task-1`), {
-    taskId: `${TRX_TASK_PREFIX}task-1`,
-    state: "success",
-    isFinal: true,
-    progress: "",
-    results: [{ url: "https://cdn.test/video.mp4", kind: "video" }],
-    error: "",
+  await client.generate({
+    mode: "video",
+    model: "viduq3",
+    prompt: "cat",
+    aspectRatio: "9:16",
+    duration: "10",
+    resolution: "540p",
   });
-});
 
-test("marks ambiguous TRX video submissions without exposing provider details", async () => {
-  const request = {
-    mode: "video",
-    model: "seedance-2.0",
-    prompt: "cat",
-    aspectRatio: "16:9",
-    duration: "5",
-    resolution: "1080p",
-  };
-  const cases = [
-    async () => {
-      throw new TypeError("Failed to fetch https://provider.test/Bearer secret");
-    },
-    async () => jsonResponse({}, 200),
-    async () => new Response("not-json", { status: 200 }),
-    async () => jsonResponse({ detail: "Bearer secret" }, 503),
-  ];
-
-  for (const fetcher of cases) {
-    const client = createTrxVideoClient(
-      { baseUrl: "https://example.test", apiKey: "secret" },
-      fetcher,
-    );
-    await assert.rejects(client.generate(request, []), (error) => {
-      assert.ok(error instanceof LingkeRequestError);
-      assert.equal(error.code, "submission-unknown");
-      assert.equal(error.status, 502);
-      assert.doesNotMatch(error.message, /secret|provider\.test/i);
-      assert.deepEqual(toSafeRequestErrorPayload(error), {
-        error: error.message,
-        code: "submission-unknown",
-      });
-      return true;
-    });
-  }
-});
-
-test("keeps explicit TRX request rejections out of submission-unknown", async () => {
-  const request = {
-    mode: "video",
-    model: "seedance-2.0",
-    prompt: "cat",
-    aspectRatio: "16:9",
-    duration: "5",
-    resolution: "1080p",
-  };
-  const cases = [
-    { status: 400, payload: { detail: "视频参数无效" }, expectedStatus: 400 },
-    { status: 401, payload: { detail: "invalid" }, expectedStatus: 502 },
-    { status: 402, payload: { detail: "balance" }, expectedStatus: 402 },
-    { status: 429, payload: { detail: "slow down" }, expectedStatus: 429 },
-  ];
-
-  for (const { status, payload, expectedStatus } of cases) {
-    const client = createTrxVideoClient(
-      { baseUrl: "https://example.test", apiKey: "secret" },
-      async () => jsonResponse(payload, status),
-    );
-    await assert.rejects(client.generate(request, []), (error) => {
-      assert.ok(error instanceof LingkeRequestError);
-      assert.equal(error.code, undefined);
-      assert.equal(error.status, expectedStatus);
-      assert.deepEqual(toSafeRequestErrorPayload(error), { error: error.message });
-      return true;
-    });
-  }
+  assert.deepEqual(calls.map((call) => call.params), [
+    { aspect_ratio: "16:9", duration: "5", resolution: "1080p" },
+    { aspect_ratio: "9:16", duration: "10", resolution: "540p" },
+  ]);
 });
 
 test("normalizes nested media task states and task result images", async () => {

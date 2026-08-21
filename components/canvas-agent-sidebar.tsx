@@ -18,11 +18,8 @@ import {
   MAX_AGENT_CONVERSATIONS,
   MAX_AGENT_MESSAGES,
   AgentRequestTimeoutError,
-  createMangaRecoveryInstruction,
-  getMangaShotPlanningContext,
   createAgentConversation,
   createAgentConversationTitle,
-  compactMangaPlanningSnapshot,
   describeDangerousOperation,
   expireIncompleteAgentConfirmations,
   getPendingAgentConfirmations,
@@ -36,10 +33,6 @@ import {
   type AgentCreateStoryWorkflowOperation,
   type AgentCreateStoryAnalysisOperation,
   type AgentCreateStoryAssetBatchOperation,
-  type AgentCreateMangaContinuityReportOperation,
-  type AgentCreateMangaScenePlansOperation,
-  type AgentCreateMangaShotBatchOperation,
-  type AgentCreateMangaStoryBeatsOperation,
   type AgentConversation,
   type AgentConversationPhase,
   type AgentConversationStore,
@@ -50,12 +43,8 @@ import {
   type AgentResponse,
   type AgentSurfaceSnapshot,
   type AgentStoryAssetKind,
-  type AgentStoryboardMode,
-  type AgentMangaStoryboardTempo,
-  type AgentMangaPlanningStage,
-  type AgentWorkflowSnapshot,
 } from "@/app/ai/agent";
-import { AgentSseError, readAgentSseResponse } from "@/app/ai/agent-stream";
+import { readAgentSseResponse } from "@/app/ai/agent-stream";
 import { mergeStoryWorkflowChunks } from "@/app/workflow/agent";
 
 const EMPTY_CONVERSATION_STORE: AgentConversationStore = {
@@ -69,90 +58,6 @@ const ASSET_STAGE_LABEL: Record<AgentStoryAssetKind, string> = {
   scene: "场景资产",
   prop: "道具资产",
 };
-
-const MANGA_STAGE_LABEL: Record<Exclude<AgentMangaPlanningStage, "complete">, string> = {
-  "story-beats": "剧情与情绪节拍",
-  "scene-plans": "场面调度",
-  "shot-plans": "镜头规划",
-  continuity: "连续性检查",
-};
-
-type MangaPlanningOperation =
-  | AgentCreateMangaStoryBeatsOperation
-  | AgentCreateMangaScenePlansOperation
-  | AgentCreateMangaShotBatchOperation
-  | AgentCreateMangaContinuityReportOperation;
-
-function isMangaPlanningOperation(
-  operation: AgentOperation,
-): operation is MangaPlanningOperation {
-  return operation.type === "create_manga_story_beats" ||
-    operation.type === "create_manga_scene_plans" ||
-    operation.type === "create_manga_shot_batch" ||
-    operation.type === "create_manga_continuity_report";
-}
-
-function requireWorkflowSnapshot(snapshot: AgentSurfaceSnapshot): AgentWorkflowSnapshot {
-  if (snapshot.mode !== "workflow") {
-    throw new Error("漫剧导演只能在工作流画布运行。");
-  }
-  return snapshot;
-}
-
-function isActiveMangaDirector(snapshot: AgentSurfaceSnapshot) {
-  return snapshot.mode === "workflow" && snapshot.nodes.some((node) =>
-    node.storyRole === "analysis" &&
-    node.storyboardMode === "comic" &&
-    node.mangaPlanningStage &&
-    node.mangaPlanningStage !== "complete",
-  );
-}
-
-function mangaDirectorHistory(
-  history: AgentMessage[],
-  snapshot: AgentSurfaceSnapshot,
-) {
-  const stage = snapshot.mode === "workflow"
-    ? snapshot.nodes.find((node) =>
-      node.storyRole === "analysis" &&
-      node.storyboardMode === "comic" &&
-      node.mangaPlanningStage &&
-      node.mangaPlanningStage !== "complete"
-    )?.mangaPlanningStage
-    : undefined;
-  if (stage && stage !== "story-beats") return history.slice(-1);
-  const scriptMessage = history.find((message) => message.role === "user");
-  return scriptMessage ? [scriptMessage] : history.slice(-1);
-}
-
-function isRecoverableMangaResponseError(error: unknown) {
-  return error instanceof AgentSseError &&
-    (error.code === "response-envelope" || error.code === "missing-operations" ||
-      error.code === "invalid-operation");
-}
-
-function mangaRecoveryHistory(
-  history: AgentMessage[],
-  snapshot: AgentSurfaceSnapshot,
-) {
-  const instruction = createMangaRecoveryInstruction(snapshot);
-  if (!instruction || snapshot.mode !== "workflow") return null;
-  const analysis = snapshot.nodes.find((node) =>
-    node.storyRole === "analysis" &&
-    node.storyboardMode === "comic" &&
-    node.mangaPlanningStage &&
-    node.mangaPlanningStage !== "complete"
-  );
-  const recovery: AgentMessage = {
-    id: `manga-recovery-${analysis?.mangaPlanningStage ?? "unknown"}-${Date.now()}`,
-    role: "user",
-    content: instruction,
-    createdAt: Date.now(),
-  };
-  if (analysis?.mangaPlanningStage !== "story-beats") return [recovery];
-  const scriptMessage = history.find((message) => message.role === "user");
-  return scriptMessage ? [scriptMessage, recovery] : [recovery];
-}
 
 function sortAndLimitConversations(conversations: AgentConversation[]) {
   return [...conversations]
@@ -178,13 +83,6 @@ type CanvasAgentSidebarProps = {
     status: "stopped" | "failed",
   ) => void;
   onApproveFoundation?: (storyId: string) => string;
-  onSelectStoryboardMode?: (
-    storyId: string,
-    mode: AgentStoryboardMode,
-    tempo?: AgentMangaStoryboardTempo,
-  ) => void;
-  onResetMangaStoryboard?: (storyId: string) => void;
-  onApproveContinuity?: (storyId: string) => void;
   onConfirmOperation: (
     operation: AgentDangerousOperation,
     signal: AbortSignal,
@@ -221,9 +119,6 @@ export function CanvasAgentSidebar({
   getSnapshot,
   onPlanningInterrupted,
   onApproveFoundation,
-  onSelectStoryboardMode,
-  onResetMangaStoryboard,
-  onApproveContinuity,
   onConfirmOperation,
   onReadImages,
   describeOperation = describeDangerousOperation,
@@ -252,9 +147,6 @@ export function CanvasAgentSidebar({
   const [streamingSummary, setStreamingSummary] = useState("");
   const [requestStartedAt, setRequestStartedAt] = useState<number | null>(null);
   const [requestClock, setRequestClock] = useState(() => Date.now());
-  const [mangaTempoByStory, setMangaTempoByStory] = useState<
-    Record<string, AgentMangaStoryboardTempo>
-  >({});
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const planningAbortRef = useRef<AbortController | null>(null);
@@ -340,40 +232,6 @@ export function CanvasAgentSidebar({
         }
       }
       return [];
-    });
-  }, [snapshot]);
-  const storyboardControls = useMemo(() => {
-    if (snapshot.mode !== "workflow") return [];
-    return snapshot.nodes.flatMap((analysis) => {
-      if (
-        analysis.storyRole !== "analysis" ||
-        !analysis.storyId ||
-        analysis.planningStage !== "complete" ||
-        analysis.planningStatus !== "complete" ||
-        !analysis.foundationApprovedAt
-      ) {
-        return [];
-      }
-      const results = snapshot.nodes.filter((node) =>
-        node.storyId === analysis.storyId &&
-        node.assetRole === "result" &&
-        Boolean(node.assetRef),
-      );
-      if (!results.length || results.some((node) => !node.assetAvailable)) return [];
-      return [{
-        storyId: analysis.storyId,
-        mode: analysis.storyboardMode,
-        mangaStoryboardTempo: analysis.mangaStoryboardTempo ?? "long-form",
-        assetCount: results.length,
-        mangaPlanningStage: analysis.mangaPlanningStage,
-        mangaPlanningStatus: analysis.mangaPlanningStatus,
-        warningCount: snapshot.nodes.find((node) =>
-          node.storyId === analysis.storyId && node.storyRole === "continuity-report"
-        )?.continuityReport?.issues.filter((issue) => issue.severity === "warning").length ?? 0,
-        locked: snapshot.nodes.some((node) =>
-          node.storyId === analysis.storyId && node.storyRole === "video-scheduler"
-        ),
-      }];
     });
   }, [snapshot]);
   const isConfirmationBusy = Boolean(confirmingId) || Boolean(batchProgress);
@@ -484,7 +342,6 @@ export function CanvasAgentSidebar({
     phase: AgentConversationPhase,
     inspectedImages?: AgentInspectedImage[],
     signal?: AbortSignal,
-    allowMangaRecovery = true,
   ): Promise<AgentResponse> {
     const relevantHistory = history.filter((message) => message.content.trim());
     const requestHistory = relevantHistory.length <= 20
@@ -493,64 +350,27 @@ export function CanvasAgentSidebar({
     setStreamingSummary("");
     setRequestStartedAt(Date.now());
     setRequestClock(Date.now());
-    try {
-      const result = await runAgentRequestWithTimeout(async (requestSignal, markActivity) => {
-        const response = await fetch("/api/ai/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: requestHistory
-              .map(({ role, content }) => ({ role, content })),
-            canvas: compactMangaPlanningSnapshot(getSnapshot?.() ?? snapshot),
-            phase,
-            focusedNodeId,
-            inspectedImages,
-          }),
-          signal: requestSignal,
-        });
-        if (!response.ok) throw new Error(await readApiError(response));
-        return readAgentSseResponse(
-          response,
-          setStreamingSummary,
-          markActivity,
-        );
-      }, signal);
-      if (
-        !inspectedImages?.length &&
-        createMangaRecoveryInstruction(getSnapshot?.() ?? snapshot) &&
-        !result.operations.length
-      ) {
-        throw new AgentSseError(
-          "Agent 未返回当前漫剧导演阶段所需的操作。",
-          "missing-operations",
-        );
-      }
-      return result;
-    } catch (error) {
-      const recoveryHistory = allowMangaRecovery && !inspectedImages?.length &&
-        isRecoverableMangaResponseError(error)
-        ? mangaRecoveryHistory(history, getSnapshot?.() ?? snapshot)
-        : null;
-      if (!recoveryHistory) throw error;
-      setStreamingSummary("上游响应未形成可校验操作，正在使用精简上下文恢复本批规划…");
-      try {
-        return await requestAgent(
-          recoveryHistory,
-          "active",
-          undefined,
-          signal,
-          false,
-        );
-      } catch (recoveryError) {
-        if (recoveryError instanceof AgentSseError) {
-          throw new AgentSseError(
-            `漫剧导演恢复续批仍未返回有效操作：${recoveryError.message} 已停止本批，未创建节点。`,
-            "manga-recovery-failed",
-          );
-        }
-        throw recoveryError;
-      }
-    }
+    return runAgentRequestWithTimeout(async (requestSignal, markActivity) => {
+      const response = await fetch("/api/ai/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: requestHistory
+            .map(({ role, content }) => ({ role, content })),
+          canvas: getSnapshot?.() ?? snapshot,
+          phase,
+          focusedNodeId,
+          inspectedImages,
+        }),
+        signal: requestSignal,
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      return readAgentSseResponse(
+        response,
+        setStreamingSummary,
+        markActivity,
+      );
+    }, signal);
   }
 
   async function submit(contentOverride?: string) {
@@ -579,9 +399,7 @@ export function CanvasAgentSidebar({
     const planningController = new AbortController();
     planningAbortRef.current = planningController;
     let activeAssetStoryId = "";
-    let activeMangaStoryId = "";
     const planningSummaries: string[] = [];
-    const planningDetails: string[] = [];
     const rememberSummary = (response: AgentResponse) => {
       if (
         response.progressSummary &&
@@ -591,21 +409,8 @@ export function CanvasAgentSidebar({
       }
     };
     try {
-      const initialSnapshot = getSnapshot?.() ?? snapshot;
-      if (isActiveMangaDirector(initialSnapshot) && initialSnapshot.mode === "workflow") {
-        activeMangaStoryId = initialSnapshot.nodes.find((node) =>
-          node.storyRole === "analysis" &&
-          node.storyboardMode === "comic" &&
-          node.mangaPlanningStage &&
-          node.mangaPlanningStage !== "complete" &&
-          Boolean(node.storyId)
-        )?.storyId ?? "";
-      }
-      const initialHistory = isActiveMangaDirector(initialSnapshot)
-        ? mangaDirectorHistory(history, initialSnapshot)
-        : history;
       let response = await requestAgent(
-        initialHistory,
+        history,
         phase,
         undefined,
         planningController.signal,
@@ -615,7 +420,7 @@ export function CanvasAgentSidebar({
         const images = await onReadImages(response.inspectImageNodeIds);
         if (!images.length) throw new Error("Agent 无法读取请求的画布图片。");
         response = await requestAgent(
-          initialHistory,
+          history,
           phase,
           images,
           planningController.signal,
@@ -626,6 +431,7 @@ export function CanvasAgentSidebar({
         }
       }
       validateAgentOperationsForSurface(snapshot.mode, response.operations);
+      const planningDetails: string[] = [];
       const storyAnalysis = response.operations.filter(
         (operation): operation is AgentCreateStoryAnalysisOperation =>
           operation.type === "create_story_analysis",
@@ -817,112 +623,12 @@ export function CanvasAgentSidebar({
           };
         }
       }
-      const initialMangaOperations = response.operations.filter(
-        isMangaPlanningOperation,
-      );
-      if (initialMangaOperations.length) {
-        requireWorkflowSnapshot(snapshot);
-        if (
-          initialMangaOperations.length !== 1 ||
-          response.operations.length !== 1
-        ) {
-          throw new Error("Agent 每次只能返回一个漫剧导演阶段操作。");
-        }
-        let mangaOperation = initialMangaOperations[0];
-        const mangaStoryId = mangaOperation.storyId;
-        activeMangaStoryId = mangaStoryId;
-        planningDetails.push(...onApplyOperations([mangaOperation]));
-        const mangaHistory = mangaDirectorHistory(
-          history,
-          requireWorkflowSnapshot(getSnapshot?.() ?? snapshot),
-        );
-
-        while (true) {
-          const liveSnapshot = requireWorkflowSnapshot(getSnapshot?.() ?? snapshot);
-          const analysis = liveSnapshot.nodes.find((node) =>
-            node.storyId === mangaStoryId && node.storyRole === "analysis"
-          );
-          if (!analysis?.mangaPlanningStage) {
-            throw new Error("漫剧导演规划状态未能写入分析节点。");
-          }
-          if (analysis.mangaPlanningStage === "complete") break;
-          const stage = analysis.mangaPlanningStage;
-          const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
-          const shotContext = getMangaShotPlanningContext(
-            liveSnapshot,
-            mangaStoryId,
-          );
-          if (!shotContext) {
-            throw new Error("无法读取当前漫剧镜头续批状态。");
-          }
-          const shotCount = shotContext.shotCount;
-          setPlanningProgress({
-            batch: chunkIndex,
-            count: shotCount,
-            label: MANGA_STAGE_LABEL[stage],
-          });
-          const expectedType = stage === "story-beats"
-            ? "create_manga_story_beats"
-            : stage === "scene-plans"
-              ? "create_manga_scene_plans"
-              : stage === "shot-plans"
-                ? "create_manga_shot_batch"
-                : "create_manga_continuity_report";
-          const continuationUser: AgentMessage = {
-            id: `manga-director-user-${stage}-${chunkIndex}`,
-            role: "user",
-            content: stage === "shot-plans"
-              ? `继续短剧 ${mangaStoryId} 的镜头规划，只返回 ${expectedType}。操作字段 chunk_index 必须严格等于 ${chunkIndex}，这是批次编号，不是镜头编号；已有 ${shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${shotContext.nextShotRef}、sequence=${shotContext.nextSequence}；若返回 2 镜，必须依次为 ${shotContext.nextShotRef}/${shotContext.nextSequence} 和 ${shotContext.followingShotRef}/${shotContext.nextSequence + 1}，不得重复、跳号或改写既有镜头。shot_id、scene_id、beat_id 必须为实际 ID；chunk_index、sequence、duration、timeline 的 start_second/end_second 必须是 JSON 整数；is_final 必须为布尔值；character_ids、prop_ids、reference_node_ids 必须为数组。上述结构字段不得填写“无”、空字符串或省略；“无”只可用于对白、旁白、声音等文本字段。当前尚未覆盖的剧情节拍为：${shotContext.uncoveredBeatIds.join("、") || "无"}；本批必须优先覆盖这些节拍，不得用已覆盖节拍替代。核心摄影、资产、时长、时间轴和禁止项字段必须完整；无对白、旁白或声音等文本字段填写“无”，不得省略。仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段。${analysis.mangaStoryboardTempo === "short-cut" ? "当前为短片剪辑：每镜严格为2或3秒，时间轴用连续整数秒区间；视频将按场景合并为最长30秒片段。" : analysis.mangaStoryboardTempo === "multi-shot" ? "当前为影视剪辑：每镜为2至5秒或6至15秒，时间轴用连续整数秒区间；视频按顺序合并为4至30秒片段。" : "当前为长镜直出：普通镜头10至15秒，5至9秒必须说明原因，时间轴用连续整数秒区间。"}只有尚未覆盖列表在本批后变为空时 is_final=true。`
-              : `继续短剧 ${mangaStoryId} 的 ${MANGA_STAGE_LABEL[stage]} 阶段，只返回 ${expectedType}，不得返回其他操作或运行生成。`,
-            createdAt: Date.now(),
-          };
-          const continuationHistory = [...mangaHistory, continuationUser];
-          const nextResponse = await requestAgent(
-            continuationHistory,
-            "active",
-            undefined,
-            planningController.signal,
-          );
-          rememberSummary(nextResponse);
-          validateAgentOperationsForSurface(
-            liveSnapshot.mode,
-            nextResponse.operations,
-          );
-          const nextOperations = nextResponse.operations.filter(
-            isMangaPlanningOperation,
-          );
-          if (
-            nextOperations.length !== 1 ||
-            nextResponse.operations.length !== 1 ||
-            nextOperations[0].storyId !== mangaStoryId ||
-            nextOperations[0].type !== expectedType
-          ) {
-            throw new Error("Agent 未按当前阶段返回连续的漫剧导演操作。");
-          }
-          mangaOperation = nextOperations[0];
-          planningDetails.push(...onApplyOperations([mangaOperation]));
-          response = nextResponse;
-        }
-        const finalAnalysis = requireWorkflowSnapshot(getSnapshot?.() ?? snapshot).nodes.find((node) =>
-          node.storyId === mangaStoryId && node.storyRole === "analysis"
-        );
-        response = {
-          ...response,
-          message: finalAnalysis?.mangaPlanningStatus === "awaiting-continuity-approval"
-            ? "秒级漫剧视频工作流已创建。连续性报告仍有警告，请检查并确认后再生成视频。"
-            : "秒级漫剧视频工作流已创建并通过连续性检查。未运行任何图片或视频生成。",
-          operations: [],
-        };
-      }
       const chunks: AgentCreateStoryWorkflowOperation[] = response.operations.filter(
         (operation): operation is AgentCreateStoryWorkflowOperation =>
           operation.type === "create_story_workflow",
       );
-      if (chunks.length && chunks.length !== response.operations.length) {
-        throw new Error("Agent 分镜规划响应中包含了其他操作。");
-      }
-      if (chunks.length) {
-        mergeStoryWorkflowChunks(chunks, Boolean(chunks.at(-1)?.isFinal));
+      if (chunks.length > 1) {
+        throw new Error("Agent 单批只能返回一个短剧工作流方案。");
       }
       while (chunks.length && !chunks.at(-1)!.isFinal) {
         const previous = chunks.at(-1)!;
@@ -961,11 +667,18 @@ export function CanvasAgentSidebar({
           (operation): operation is AgentCreateStoryWorkflowOperation =>
             operation.type === "create_story_workflow",
         );
-        if (!nextChunks.length || nextChunks.length !== response.operations.length) {
+        if (nextChunks.length !== 1 || response.operations.length !== 1) {
           throw new Error("Agent 未按要求继续短剧工作流分批规划。");
         }
-        chunks.push(...nextChunks);
-        mergeStoryWorkflowChunks(chunks, Boolean(chunks.at(-1)?.isFinal));
+        chunks.push(nextChunks[0]);
+        mergeStoryWorkflowChunks(
+          chunks.at(-1)!.isFinal
+            ? chunks
+            : [
+                ...chunks.slice(0, -1).map((chunk) => ({ ...chunk, isFinal: false })),
+                { ...chunks.at(-1)!, isFinal: true },
+              ],
+        );
       }
       if (chunks.length) {
         const merged = mergeStoryWorkflowChunks(chunks);
@@ -1019,9 +732,9 @@ export function CanvasAgentSidebar({
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
       const timedOut = error instanceof AgentRequestTimeoutError;
-      if (activeAssetStoryId || activeMangaStoryId) {
+      if (activeAssetStoryId) {
         onPlanningInterrupted?.(
-          activeAssetStoryId || activeMangaStoryId,
+          activeAssetStoryId,
           stopped ? "stopped" : "failed",
         );
       }
@@ -1036,14 +749,10 @@ export function CanvasAgentSidebar({
               stopped
                 ? activeAssetStoryId
                   ? "已停止资产规划，已完成的分析和资产节点已保留。"
-                  : activeMangaStoryId
-                    ? "已停止漫剧导演规划，已完成的阶段节点已保留。"
                   : "已停止画布 Agent 请求，未应用本轮操作。"
                 : timedOut
                   ? activeAssetStoryId
                     ? `${error.message} 已完成的分析和资产节点已保留，可发送“继续资产规划”恢复。`
-                    : activeMangaStoryId
-                      ? `${error.message} 已完成的导演阶段节点已保留，可点击“继续漫剧导演规划”恢复。`
                     : `${error.message} 未应用本轮操作。`
                 : error instanceof Error
                   ? error.message
@@ -1554,126 +1263,6 @@ export function CanvasAgentSidebar({
                 </div>
               );
             })}
-            {storyboardControls.map((control) => (
-              <div
-                key={`${control.storyId}-storyboard-mode`}
-                className="mb-3 rounded-2xl border border-violet-200 bg-violet-50 p-3 text-[11px] leading-4 text-violet-950"
-              >
-                <p className="mt-0 mb-2">
-                  {control.mangaPlanningStatus === "awaiting-continuity-approval"
-                    ? `视频工作流已经创建，但连续性报告仍有 ${control.warningCount} 个警告；确认前禁止提交生成。`
-                    : control.locked
-                      ? "当前项目已经创建秒级漫剧视频工作流，分镜类型已锁定。"
-                    : `资产库已就绪（${control.assetCount} 项）。请选择本项目的分镜能力。`}
-                </p>
-                {control.mode !== "comic" ? (
-                  <>
-                    <p className="mt-0 mb-2">先选择漫剧的项目级镜头节奏；创建首个镜头后不能切换。</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {([
-                        ["multi-shot", "影视剪辑"],
-                        ["long-form", "长镜直出"],
-                        ["short-cut", "短片剪辑"],
-                      ] as const).map(([tempo, label]) => (
-                        <button
-                          key={tempo}
-                          aria-label={`选择${label}`}
-                          className={`inline-flex h-8 items-center justify-center rounded-full border px-3 text-xs font-medium ${
-                            (mangaTempoByStory[control.storyId] ?? "multi-shot") === tempo
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-violet-200 bg-white text-violet-950"
-                          }`}
-                          disabled={control.locked || isSending || isConfirmationBusy}
-                          type="button"
-                          onClick={() => setMangaTempoByStory((current) => ({
-                            ...current,
-                            [control.storyId]: tempo,
-                          }))}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <button
-                      aria-label="确认漫剧节奏并开始导演规划"
-                      className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full bg-zinc-900 px-3 text-xs font-medium text-white disabled:opacity-60"
-                      disabled={control.locked || isSending || isConfirmationBusy}
-                      type="button"
-                      onClick={() => onSelectStoryboardMode?.(
-                        control.storyId,
-                        "comic",
-                        mangaTempoByStory[control.storyId] ?? "multi-shot",
-                      )}
-                    >
-                      确认漫剧节奏并开始规划
-                    </button>
-                  </>
-                ) : (
-                  <p className="mt-0 mb-2">当前制作规则：{control.mangaStoryboardTempo === "multi-shot"
-                    ? "影视剪辑（每行2–5秒或6–15秒，按顺序合并为4–30秒视频片段）"
-                    : control.mangaStoryboardTempo === "short-cut"
-                      ? "短片剪辑（每行2–3秒，按场景合并视频片段）"
-                      : "长镜直出（普通镜头10–15秒）"}。</p>
-                )}
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <button
-                    aria-label="TVC 分镜待开发"
-                    className="inline-flex h-8 items-center justify-center rounded-full border border-violet-200 bg-white px-3 text-xs font-medium text-violet-500 opacity-70"
-                    disabled
-                    type="button"
-                  >
-                    TVC · 待开发
-                  </button>
-                </div>
-                {control.mode === "comic" &&
-                control.mangaPlanningStage &&
-                control.mangaPlanningStage !== "complete" &&
-                !control.locked ? (
-                  <button
-                    aria-label="开始规划漫剧分镜"
-                    className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full bg-violet-700 px-3 text-xs font-medium text-white disabled:opacity-60"
-                    disabled={isSending || isConfirmationBusy}
-                    type="button"
-                    onClick={() => void submit(
-                      control.mangaPlanningStage === "story-beats"
-                        ? "请启动当前短剧的漫剧导演流程。当前只完成剧情与情绪节拍阶段，返回 create_manga_story_beats；后续阶段由客户端按顺序继续。不得运行图片或视频生成。"
-                        : `继续当前短剧的漫剧导演流程，从 ${control.mangaPlanningStage} 阶段恢复；只返回当前阶段对应的专用操作，不得运行图片或视频生成。`,
-                    )}
-                  >
-                    {control.mangaPlanningStage === "story-beats"
-                      ? "开始规划漫剧分镜"
-                      : "继续漫剧导演规划"}
-                  </button>
-                ) : null}
-                {control.mangaPlanningStatus === "awaiting-continuity-approval" ? (
-                  <button
-                    aria-label="确认连续性警告并允许生成"
-                    className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full bg-amber-700 px-3 text-xs font-medium text-white disabled:opacity-60"
-                    disabled={isSending || isConfirmationBusy}
-                    type="button"
-                    onClick={() => onApproveContinuity?.(control.storyId)}
-                  >
-                    确认警告并允许生成
-                  </button>
-                ) : null}
-                {control.mode === "comic" && control.locked && onResetMangaStoryboard ? (
-                  <button
-                    aria-label="按影视剪辑重新规划"
-                    className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-full border border-violet-300 bg-white px-3 text-xs font-medium text-violet-950 disabled:opacity-60"
-                    disabled={isSending || isConfirmationBusy}
-                    type="button"
-                    onClick={() => {
-                      onResetMangaStoryboard(control.storyId);
-                      void submit(
-                        "请启动当前短剧的漫剧导演流程。从剧情与情绪节拍阶段开始，按影视剪辑规则完成规划；不得运行图片或视频生成。",
-                      );
-                    }}
-                  >
-                    保留资产，按影视剪辑重新规划
-                  </button>
-                ) : null}
-              </div>
-            ))}
             {pendingConfirmations.length > 1 || batchProgress || batchSummary ? (
               <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-4 text-amber-900">
                 {pendingConfirmations.length > 1 || batchProgress ? (

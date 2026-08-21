@@ -11,7 +11,7 @@ import {
   migrateActiveWorkflowAssetLayout,
   parseWorkflowProjectRegistry,
   parseWorkflowViewport,
-  projectAssetIds,
+  projectSourceAssetIds,
   removeWorkflowProject,
   renameWorkflowProject,
   workflowProjectBatchKey,
@@ -87,7 +87,7 @@ test("creates, renames, switches, and replaces the final project without name co
   assert.equal(replacement.projects[0].name, "未命名项目");
 });
 
-test("validates project viewports and finds shared source and result assets", () => {
+test("validates project viewports and finds only local uploaded source assets", () => {
   assert.deepEqual(parseWorkflowViewport('{"x":12,"y":-8,"scale":2}'), {
     x: 12,
     y: -8,
@@ -102,10 +102,10 @@ test("validates project viewports and finds shared source and result assets", ()
     ...emptyWorkflowGraph(),
     nodes: [
       { id: "source", x: 0, y: 0, type: "source", kind: "image", text: "", assetId: "asset-1" },
-      { id: "result", x: 1, y: 1, type: "result", kind: "image", schedulerId: "s", text: "", model: "gpt-image-2", status: "success", progress: "", error: "", resultUrl: "https://example.com/a.png", assetId: "asset-2" },
+      { id: "result", x: 1, y: 1, type: "result", kind: "image", schedulerId: "s", text: "", model: "gpt-image-2", status: "success", progress: "", error: "", resultUrl: "https://example.com/a.png" },
     ],
   };
-  assert.deepEqual([...projectAssetIds(graph)], ["asset-1", "asset-2"]);
+  assert.deepEqual([...projectSourceAssetIds(graph)], ["asset-1"]);
 });
 
 test("migrates only the active project asset layout once", () => {

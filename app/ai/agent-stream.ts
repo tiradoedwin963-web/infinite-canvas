@@ -5,16 +5,6 @@ export type AgentSseEvent = {
   data: string;
 };
 
-export class AgentSseError extends Error {
-  readonly code?: string;
-
-  constructor(message: string, code?: string) {
-    super(message);
-    this.name = "AgentSseError";
-    this.code = code;
-  }
-}
-
 export function encodeAgentSseEvent(event: string, data: unknown) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
@@ -133,15 +123,10 @@ export async function readAgentSseResponse(
           payload && typeof payload === "object" && "message" in payload
             ? Reflect.get(payload, "message")
             : "";
-        const code =
-          payload && typeof payload === "object" && "code" in payload
-            ? Reflect.get(payload, "code")
-            : undefined;
-        throw new AgentSseError(
+        throw new Error(
           typeof message === "string" && message
             ? message
             : "画布 Agent 请求失败，请稍后重试。",
-          typeof code === "string" ? code : undefined,
         );
       }
     }

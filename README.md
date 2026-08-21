@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-运行前在被 Git 忽略的 `.env.local` 中配置 `LINGKE_BASE_URL`、`LINGKE_API_KEY`、`TRX_VIDEO_BASE_URL` 和 `TRX_VIDEO_API_KEY`。当前版本仅供本机或私有环境使用，不应携带服务端密钥公开部署。
+运行前在被 Git 忽略的 `.env.local` 中配置 `LINGKE_BASE_URL` 和 `LINGKE_API_KEY`。当前版本仅供本机或私有环境使用，不应携带服务端密钥公开部署。
 
 ## 验证
 

@@ -34,8 +34,6 @@ git -C /opt/infinite-canvas switch main
 ```text
 LINGKE_BASE_URL=服务端模型地址
 LINGKE_API_KEY=服务端模型密钥
-TRX_VIDEO_BASE_URL=https://trxdoc.xin
-TRX_VIDEO_API_KEY=企业视频平台密钥
 CANVAS_BASIC_AUTH_HASH='Caddy bcrypt 哈希'
 CANVAS_DATABASE_PASSWORD=随机数据库强密码
 CANVAS_ADMIN_PASSWORD_HASH='scrypt 管理员密码哈希'
@@ -104,13 +102,7 @@ sudo docker compose --env-file .env.production \
 
 ## 项目与素材迁移
 
-本地旧项目先从工作流项目菜单导出为 `*.canvas.json`，再生成包含成功图片原图和校验清单的迁移目录：
-
-```bash
-node scripts/prepare-workflow-migration.mjs project.canvas.json /tmp/canvas-migration
-```
-
-准备工具只下载状态成功的图片结果；尚未生成的视频占位不会被当作图片，也不会产生生成费用。图片支持 PNG、JPEG 和 WebP，并记录节点 ID、原地址、大小和 SHA-256。把迁移目录复制到应用容器后执行导入工具：
+本地旧项目先从工作流项目菜单导出为 `*.canvas.json`。正式迁移必须同时提供完整素材清单；把迁移目录复制到应用容器后执行导入工具：
 
 ```bash
 docker cp /opt/infinite-canvas-migration infinite-canvas-app-1:/migration
@@ -118,7 +110,7 @@ docker compose --env-file .env.production -f deploy/canvas/compose.production.ym
   node scripts/import-workflow-project.mjs /migration/project.canvas.json /migration/manifest.json
 ```
 
-导入工具先校验节点和素材映射，再逐张上传并通过 COS `HeadObject` 校验大小与类型，最后用单个数据库事务写入管理员项目；任一图片缺失或数据库写入失败会删除本次已上传对象，不留下半套项目。图片结果会获得新的云端 `assetId`，未完成的视频调度器和占位会恢复为无错误的“待生成”；迁移时清除旧任务 ID、批量队列及提交中状态，避免刷新后重复生成或计费。
+导入工具先校验节点和素材映射，再逐张上传并通过 COS `HeadObject` 校验大小与类型，最后用单个数据库事务写入管理员项目；任一图片缺失或数据库写入失败会删除本次已上传对象，不留下半套项目。迁移时会清除旧任务 ID、批量队列及提交中状态，避免刷新后重复生成或计费。
 
 ## 备份与健康检查
 

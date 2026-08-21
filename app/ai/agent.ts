@@ -40,10 +40,6 @@ export class AgentRequestTimeoutError extends Error {
 export type AgentMessageRole = "user" | "assistant";
 export type AgentConversationPhase = "intake" | "clarifying" | "active";
 export type AgentWorkflowState = "clarifying" | "active";
-export type AgentMangaStoryboardTempo =
-  | "long-form"
-  | "short-cut"
-  | "multi-shot";
 
 export type AgentStoredAction = {
   label: string;
@@ -121,8 +117,6 @@ export type AgentWorkflowNodeSnapshot = {
   foundationRole?: AgentStoryFoundationRole;
   assetStrategy?: "foundation-pair-v1";
   foundationApprovedAt?: number;
-  storyboardMode?: AgentStoryboardMode;
-  mangaStoryboardTempo?: AgentMangaStoryboardTempo;
   storyVisualStyle?: string;
   assetAvailable?: boolean;
   planningStage?: AgentStoryAssetPlanningStage;
@@ -130,15 +124,6 @@ export type AgentWorkflowNodeSnapshot = {
   planningChunkIndex?: number;
   projectAspectRatio?: string;
   storyImageModel?: string;
-  mangaPlanningStage?: AgentMangaPlanningStage;
-  mangaPlanningStatus?: AgentMangaPlanningStatus;
-  mangaPlanningChunkIndex?: number;
-  continuityApprovedAt?: number;
-  storyBeats?: StoryBeat[];
-  scenePlan?: ScenePlan;
-  shotPlan?: ShotPlan;
-  continuityReport?: ContinuityReport;
-  videoSegment?: MangaVideoSegment;
   assetName?: string;
   text: string;
   prompt: string;
@@ -155,196 +140,6 @@ export type AgentWorkflowSnapshot = {
 };
 
 export type AgentSurfaceSnapshot = AgentCanvasSnapshot | AgentWorkflowSnapshot;
-
-export type AgentResponseParseFailure =
-  | "response-envelope"
-  | "missing-workflow-state"
-  | "missing-operations"
-  | "invalid-operation";
-
-export class AgentResponseParseError extends Error {
-  readonly code: AgentResponseParseFailure;
-
-  constructor(code: AgentResponseParseFailure, message: string) {
-    super(message);
-    this.name = "AgentResponseParseError";
-    this.code = code;
-  }
-}
-
-function compactShotPlanText(plan: ShotPlan) {
-  return JSON.stringify({
-    shotId: plan.shotId,
-    sequence: plan.sequence,
-    sceneId: plan.sceneId,
-    beatId: plan.beatId,
-    duration: plan.duration,
-    characterIds: plan.characterIds,
-    propIds: plan.propIds,
-    startFrame: plan.startFrame,
-    endFrame: plan.endFrame,
-    previousShotId: plan.previousShotId,
-    nextShotId: plan.nextShotId,
-    continuityNotes: plan.continuityNotes,
-    continuityWarnings: plan.continuityWarnings,
-  });
-}
-
-export function compactMangaPlanningSnapshot(
-  snapshot: AgentSurfaceSnapshot,
-): AgentSurfaceSnapshot {
-  if (snapshot.mode !== "workflow") return snapshot;
-  const analysis = snapshot.nodes.find((node) =>
-    node.storyRole === "analysis" &&
-    node.storyboardMode === "comic" &&
-    node.mangaPlanningStage &&
-    node.mangaPlanningStage !== "complete"
-  );
-  if (!analysis?.storyId) return snapshot;
-
-  const shots = snapshot.nodes
-    .filter((node) =>
-      node.storyId === analysis.storyId &&
-      node.storyRole === "shot" &&
-      node.shotPlan
-    )
-    .sort((left, right) =>
-      (left.shotPlan?.sequence ?? 0) - (right.shotPlan?.sequence ?? 0)
-    );
-  const fullShotIds = new Set(
-    analysis.mangaPlanningStage === "shot-plans"
-      ? shots.slice(-4).map((node) => node.id)
-      : [],
-  );
-  const compactedNodes = snapshot.nodes.flatMap((node) => {
-    if (node.storyId !== analysis.storyId) return [];
-    if (
-      node.storyRole === "analysis" ||
-      node.storyRole === "story-beats" ||
-      node.storyRole === "scene-plan"
-    ) {
-      return [node];
-    }
-    if (node.storyRole === "shot" && node.shotPlan) {
-      return [
-        fullShotIds.has(node.id)
-          ? node
-          : {
-              ...node,
-              shotPlan: undefined,
-              text: compactShotPlanText(node.shotPlan),
-              prompt: "",
-            },
-      ];
-    }
-    if (node.assetRole === "result" && node.assetRef && node.assetAvailable) {
-      return [{
-        ...node,
-        text: node.label ?? node.assetRef,
-        prompt: "",
-        model: "",
-      }];
-    }
-    return [];
-  });
-  const nodeIds = new Set(compactedNodes.map((node) => node.id));
-
-  return {
-    ...snapshot,
-    nodes: compactedNodes,
-    edges: snapshot.edges.filter((edge) =>
-      nodeIds.has(edge.sourceId) && nodeIds.has(edge.targetId),
-    ),
-  };
-}
-
-export type MangaShotPlanningContext = {
-  shotCount: number;
-  nextSequence: number;
-  nextShotRef: string;
-  followingShotRef: string;
-  uncoveredBeatIds: string[];
-};
-
-export function getMangaShotPlanningContext(
-  snapshot: AgentSurfaceSnapshot,
-  storyId: string,
-): MangaShotPlanningContext | null {
-  if (snapshot.mode !== "workflow") return null;
-  const shots = snapshot.nodes.flatMap((node) =>
-    node.storyId === storyId && node.storyRole === "shot" && node.shotPlan
-      ? [node.shotPlan]
-      : [],
-  );
-  const coveredBeatIds = new Set(shots.map((shot) => shot.beatId));
-  const uncoveredBeatIds = snapshot.nodes.flatMap((node) =>
-    node.storyId === storyId && node.storyRole === "story-beats"
-      ? (node.storyBeats ?? [])
-        .map((beat) => beat.beatId)
-        .filter((beatId) => !coveredBeatIds.has(beatId))
-      : [],
-  );
-  const nextSequence = Math.max(
-    0,
-    ...shots.map((shot) =>
-      Number.isInteger(shot.sequence) ? shot.sequence : 0
-    ),
-  ) + 1;
-  const nextShotNumber = Math.max(
-    nextSequence,
-    ...shots.flatMap((shot) => {
-      const match = /^shot-(\d+)$/i.exec(shot.shotId);
-      return match ? [Number(match[1]) + 1] : [];
-    }),
-  );
-  const formatShotRef = (value: number) =>
-    `shot-${String(value).padStart(3, "0")}`;
-  return {
-    shotCount: shots.length,
-    nextSequence,
-    nextShotRef: formatShotRef(nextShotNumber),
-    followingShotRef: formatShotRef(nextShotNumber + 1),
-    uncoveredBeatIds,
-  };
-}
-
-export function createMangaRecoveryInstruction(
-  snapshot: AgentSurfaceSnapshot,
-) {
-  if (snapshot.mode !== "workflow") return null;
-  const analysis = snapshot.nodes.find((node) =>
-    node.storyRole === "analysis" &&
-    node.storyboardMode === "comic" &&
-    node.mangaPlanningStage &&
-    node.mangaPlanningStage !== "complete" &&
-    Boolean(node.storyId)
-  );
-  if (!analysis?.storyId || !analysis.mangaPlanningStage) return null;
-
-  const expectedType = analysis.mangaPlanningStage === "story-beats"
-    ? "create_manga_story_beats"
-    : analysis.mangaPlanningStage === "scene-plans"
-      ? "create_manga_scene_plans"
-      : analysis.mangaPlanningStage === "shot-plans"
-        ? "create_manga_shot_batch"
-        : "create_manga_continuity_report";
-  const stageIndex = analysis.mangaPlanningStage === "story-beats"
-    ? 0
-    : analysis.mangaPlanningStage === "scene-plans"
-      ? 1
-      : analysis.mangaPlanningStage === "continuity"
-        ? 3
-        : undefined;
-  const header = `恢复模式：上一次响应未形成可校验的操作。仅返回一个严格 JSON 对象，不要解释、Markdown、代码围栏、其他操作或媒体生成。短剧 ID 必须为 ${analysis.storyId}；operations 必须恰好包含一个 ${expectedType}。`;
-  if (analysis.mangaPlanningStage !== "shot-plans") {
-    return `${header} stage_index 必须为 ${stageIndex}。`;
-  }
-
-  const context = getMangaShotPlanningContext(snapshot, analysis.storyId);
-  if (!context) return null;
-  const chunkIndex = analysis.mangaPlanningChunkIndex ?? 0;
-  return `${header} chunk_index 必须为 ${chunkIndex}；已有 ${context.shotCount} 镜。本批仅规划 1 至 2 镜：若返回 1 镜，shots[0] 必须为 shot_id=${context.nextShotRef}、sequence=${context.nextSequence}；若返回 2 镜，必须依次为 ${context.nextShotRef}/${context.nextSequence} 和 ${context.followingShotRef}/${context.nextSequence + 1}，不得重复、跳号或改写既有镜头。shot_id、scene_id、beat_id 必须为实际 ID；chunk_index、sequence、duration、timeline 的 start_second/end_second 必须是 JSON 整数；is_final 必须为布尔值；character_ids、prop_ids、reference_node_ids 必须为数组。上述结构字段不得填写“无”、空字符串或省略；“无”只可用于文本内容字段。优先覆盖：${context.uncoveredBeatIds.join("、") || "无"}；仅输出 Schema 允许的蛇形字段，不要输出 video_prompt 或其他额外字段；只有全部节拍覆盖后才可 is_final=true。`;
-}
 
 export type AgentInspectedImage = {
   nodeId: string;
@@ -420,145 +215,6 @@ export type AgentStoryAnalysis = {
 };
 
 export type AgentStoryFoundationRole = "lead" | "support";
-export type AgentStoryboardMode = "comic" | "tvc";
-export type AgentMangaPlanningStage =
-  | "story-beats"
-  | "scene-plans"
-  | "shot-plans"
-  | "continuity"
-  | "complete";
-export type AgentMangaPlanningStatus =
-  | "planning"
-  | "stopped"
-  | "failed"
-  | "awaiting-continuity-approval"
-  | "complete";
-
-export type StoryBeat = {
-  beatId: string;
-  sequence: number;
-  sceneId: string;
-  narrativePurpose: string;
-  emotionalGoal: string;
-  summary: string;
-};
-
-export type ScenePlan = {
-  sceneId: string;
-  beatIds: string[];
-  spatialLayout: string;
-  blocking: string;
-  eyeline: string;
-  axis: string;
-  entrancesExits: string;
-  lighting: string;
-  colorTone: string;
-};
-
-export type ShotTimelineSegment = {
-  startSecond: number;
-  endSecond: number;
-  visualAction: string;
-  performance: string;
-  camera: string;
-  audio: string;
-};
-
-export type ShotPlan = {
-  shotId: string;
-  sequence: number;
-  sceneId: string;
-  beatId: string;
-  duration: number;
-  durationReason: string;
-  narrativePurpose: string;
-  emotionalGoal: string;
-  shotSize: string;
-  lens: string;
-  perspective: string;
-  cameraAngle: string;
-  cameraMovement: string;
-  composition: string;
-  blocking: string;
-  characterIds: string[];
-  characterPosition: string;
-  characterMovement: string;
-  eyeline: string;
-  propIds: string[];
-  action: string;
-  dialogue: string;
-  voiceover: string;
-  soundEffect: string;
-  musicCue: string;
-  lighting: string;
-  colorTone: string;
-  texture: string;
-  startFrame: string;
-  endFrame: string;
-  transitionIn: string;
-  transitionOut: string;
-  imagePrompt: string;
-  videoPrompt: string;
-  negativePrompt: string;
-  previousShotId: string;
-  nextShotId: string;
-  continuityNotes: string;
-  generationStatus: "planned";
-  timeline: ShotTimelineSegment[];
-  referenceNodeIds: string[];
-  continuityWarnings: string[];
-};
-
-export type MangaVideoSegment = {
-  segmentId: string;
-  shotIds: string[];
-  sceneIds: string[];
-  duration: number;
-  referenceNodeIds: string[];
-};
-
-export type ContinuityIssue = {
-  code: string;
-  severity: "error" | "warning";
-  shotId: string;
-  relatedShotId?: string;
-  reason: string;
-  suggestion: string;
-  autoFixable: boolean;
-};
-
-export type ContinuityReport = {
-  issues: ContinuityIssue[];
-};
-
-export type AgentCreateMangaStoryBeatsOperation = {
-  type: "create_manga_story_beats";
-  storyId: string;
-  stageIndex: 0;
-  beats: StoryBeat[];
-};
-
-export type AgentCreateMangaScenePlansOperation = {
-  type: "create_manga_scene_plans";
-  storyId: string;
-  stageIndex: 1;
-  plans: ScenePlan[];
-};
-
-export type AgentCreateMangaShotBatchOperation = {
-  type: "create_manga_shot_batch";
-  storyId: string;
-  chunkIndex: number;
-  isFinal: boolean;
-  shots: ShotPlan[];
-};
-
-export type AgentCreateMangaContinuityReportOperation = {
-  type: "create_manga_continuity_report";
-  storyId: string;
-  stageIndex: 3;
-  report: ContinuityReport;
-};
 
 export type AgentCreateStoryAnalysisOperation = {
   type: "create_story_analysis";
@@ -609,10 +265,6 @@ export type AgentOperation =
   | AgentCreateStoryAnalysisOperation
   | AgentCreateStoryAssetBatchOperation
   | AgentRunStoryAssetsOperation
-  | AgentCreateMangaStoryBeatsOperation
-  | AgentCreateMangaScenePlansOperation
-  | AgentCreateMangaShotBatchOperation
-  | AgentCreateMangaContinuityReportOperation
   | AgentCreateStoryWorkflowOperation
   | AgentRunStoryWorkflowOperation
   | {
@@ -756,404 +408,8 @@ function parseStoryAssets(value: unknown, isFinal: boolean): AgentStoryAsset[] |
     : null;
 }
 
-function readStringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.map((item) => readString(item).trim()).filter(Boolean)
-    : [];
-}
-
-function parseStoryBeats(value: unknown): StoryBeat[] | null {
-  if (!Array.isArray(value) || !value.length) return null;
-  const beats = value.map((item) => {
-    if (!isRecord(item)) return null;
-    const beat: StoryBeat = {
-      beatId: readString(item.beat_id ?? item.beatId).trim(),
-      sequence: Number(item.sequence),
-      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
-      narrativePurpose: readString(
-        item.narrative_purpose ?? item.narrativePurpose,
-      ).trim(),
-      emotionalGoal: readString(item.emotional_goal ?? item.emotionalGoal).trim(),
-      summary: readString(item.summary).trim(),
-    };
-    return beat.beatId && Number.isInteger(beat.sequence) && beat.sequence >= 1 &&
-        beat.sceneId && beat.narrativePurpose && beat.emotionalGoal && beat.summary
-      ? beat
-      : null;
-  });
-  if (beats.some((beat) => beat === null)) return null;
-  const parsed = beats as StoryBeat[];
-  return new Set(parsed.map((beat) => beat.beatId)).size === parsed.length
-    ? parsed
-    : null;
-}
-
-function parseScenePlans(value: unknown): ScenePlan[] | null {
-  if (!Array.isArray(value) || !value.length) return null;
-  const plans = value.map((item) => {
-    if (!isRecord(item)) return null;
-    const plan: ScenePlan = {
-      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
-      beatIds: readStringList(item.beat_ids ?? item.beatIds),
-      spatialLayout: readString(item.spatial_layout ?? item.spatialLayout).trim(),
-      blocking: readString(item.blocking).trim(),
-      eyeline: readString(item.eyeline).trim(),
-      axis: readString(item.axis).trim(),
-      entrancesExits: readString(
-        item.entrances_exits ?? item.entrancesExits,
-      ).trim(),
-      lighting: readString(item.lighting).trim(),
-      colorTone: readString(item.color_tone ?? item.colorTone).trim(),
-    };
-    return plan.sceneId && plan.beatIds.length && plan.spatialLayout &&
-        plan.blocking && plan.eyeline && plan.axis && plan.entrancesExits &&
-        plan.lighting && plan.colorTone
-      ? plan
-      : null;
-  });
-  if (plans.some((plan) => plan === null)) return null;
-  const parsed = plans as ScenePlan[];
-  return new Set(parsed.map((plan) => plan.sceneId)).size === parsed.length
-    ? parsed
-    : null;
-}
-
-function missingStringField(
-  value: Record<string, unknown>,
-  fields: string[],
-) {
-  return fields.find((field) => {
-    const camel = field.replace(/_([a-z])/g, (_, character: string) =>
-      character.toUpperCase()
-    );
-    return !readString(value[field] ?? value[camel]).trim();
-  });
-}
-
-function describeInvalidMangaStoryBeats(value: unknown) {
-  if (!Array.isArray(value) || !value.length) {
-    return "beats 必须包含至少一个剧情节拍";
-  }
-  for (const [index, item] of value.entries()) {
-    if (!isRecord(item)) return `beats[${index}] 必须是对象`;
-    const missing = missingStringField(item, [
-      "beat_id",
-      "scene_id",
-      "narrative_purpose",
-      "emotional_goal",
-      "summary",
-    ]);
-    if (missing) return `beats[${index}] 的 ${missing} 不能为空`;
-    if (!Number.isInteger(Number(item.sequence)) || Number(item.sequence) < 1) {
-      return `beats[${index}] 的 sequence 必须是正整数`;
-    }
-  }
-  return "beats 的 beat_id 不能重复";
-}
-
-function describeInvalidMangaScenePlans(value: unknown) {
-  if (!Array.isArray(value) || !value.length) {
-    return "plans 必须包含至少一个场面调度";
-  }
-  for (const [index, item] of value.entries()) {
-    if (!isRecord(item)) return `plans[${index}] 必须是对象`;
-    const missing = missingStringField(item, [
-      "scene_id",
-      "spatial_layout",
-      "blocking",
-      "eyeline",
-      "axis",
-      "entrances_exits",
-      "lighting",
-      "color_tone",
-    ]);
-    if (missing) return `plans[${index}] 的 ${missing} 不能为空`;
-    if (!readStringList(item.beat_ids ?? item.beatIds).length) {
-      return `plans[${index}] 的 beat_ids 必须包含至少一个剧情节拍 ID`;
-    }
-  }
-  return "plans 的 scene_id 不能重复";
-}
-
-function describeInvalidMangaContinuityReport(value: unknown) {
-  if (!isRecord(value)) return "report 必须是对象";
-  if (!Array.isArray(value.issues)) return "report.issues 必须是数组";
-  for (const [index, item] of value.issues.entries()) {
-    if (!isRecord(item)) return `report.issues[${index}] 必须是对象`;
-    const missing = missingStringField(item, ["code", "shot_id", "reason", "suggestion"]);
-    if (missing) return `report.issues[${index}] 的 ${missing} 不能为空`;
-    if (item.severity !== "error" && item.severity !== "warning") {
-      return `report.issues[${index}] 的 severity 必须是 error 或 warning`;
-    }
-    if (typeof (item.auto_fixable ?? item.autoFixable) !== "boolean") {
-      return `report.issues[${index}] 的 auto_fixable 必须是布尔值`;
-    }
-  }
-  return "连续性报告字段无效";
-}
-
-function parseShotTimeline(value: unknown, duration: number) {
-  if (!Array.isArray(value) || !value.length) return null;
-  const timeline = value.map((item) => {
-    if (!isRecord(item)) return null;
-    const segment: ShotTimelineSegment = {
-      startSecond: Number(item.start_second ?? item.startSecond),
-      endSecond: Number(item.end_second ?? item.endSecond),
-      visualAction: readString(item.visual_action ?? item.visualAction).trim(),
-      performance: readString(item.performance).trim() || "无",
-      camera: readString(item.camera).trim(),
-      audio: readString(item.audio).trim() || "无",
-    };
-    return Number.isInteger(segment.startSecond) &&
-        Number.isInteger(segment.endSecond) &&
-        segment.visualAction && segment.performance && segment.camera && segment.audio
-      ? segment
-      : null;
-  });
-  if (timeline.some((segment) => segment === null)) return null;
-  let previousEnd = 0;
-  const parsed = (timeline as ShotTimelineSegment[]).map((segment, index, all) => {
-    const normalized = {
-      ...segment,
-      startSecond: previousEnd,
-      endSecond: index === all.length - 1 ? duration : segment.endSecond,
-    };
-    previousEnd = normalized.endSecond;
-    return normalized;
-  });
-  return parsed.every((segment) =>
-    segment.startSecond >= 0 && segment.endSecond > segment.startSecond &&
-    segment.endSecond <= duration
-  ) ? parsed : null;
-}
-
-function validMangaShotDuration(
-  duration: number,
-  _durationReason: string,
-  tempo: AgentMangaStoryboardTempo,
-) {
-  if (tempo === "short-cut") return duration === 2 || duration === 3;
-  if (tempo === "multi-shot") return duration >= 2 && duration <= 15;
-  return duration >= 5 && duration <= 15 && (duration >= 10 || Boolean(_durationReason));
-}
-
-function parseMangaShots(
-  value: unknown,
-  tempo: AgentMangaStoryboardTempo = "long-form",
-): ShotPlan[] | null {
-  if (!Array.isArray(value) || !value.length || value.length > 8) return null;
-  const shots = value.map((item) => {
-    if (!isRecord(item)) return null;
-    const duration = Number(item.duration);
-    const durationReason = readString(
-      item.duration_reason ?? item.durationReason,
-    ).trim();
-    const timeline = parseShotTimeline(item.timeline, duration);
-    const referenceNodeIds = readNodeIds(
-      item.reference_node_ids ?? item.referenceNodeIds,
-    );
-    const shot: ShotPlan = {
-      shotId: readString(item.shot_id ?? item.shotId).trim(),
-      sequence: Number(item.sequence),
-      sceneId: readString(item.scene_id ?? item.sceneId).trim(),
-      beatId: readString(item.beat_id ?? item.beatId).trim(),
-      duration,
-      durationReason,
-      narrativePurpose: readString(
-        item.narrative_purpose ?? item.narrativePurpose,
-      ).trim(),
-      emotionalGoal: readString(item.emotional_goal ?? item.emotionalGoal).trim(),
-      shotSize: readString(item.shot_size ?? item.shotSize).trim(),
-      lens: readString(item.lens).trim(),
-      perspective: readString(item.perspective).trim(),
-      cameraAngle: readString(item.camera_angle ?? item.cameraAngle).trim(),
-      cameraMovement: readString(
-        item.camera_movement ?? item.cameraMovement,
-      ).trim(),
-      composition: readString(item.composition).trim(),
-      blocking: readString(item.blocking).trim(),
-      characterIds: readStringList(item.character_ids ?? item.characterIds),
-      characterPosition: readString(
-        item.character_position ?? item.characterPosition,
-      ).trim() || "无",
-      characterMovement: readString(
-        item.character_movement ?? item.characterMovement,
-      ).trim() || "无",
-      eyeline: readString(item.eyeline).trim() || "无",
-      propIds: readStringList(item.prop_ids ?? item.propIds),
-      action: readString(item.action).trim(),
-      dialogue: readString(item.dialogue).trim() || "无",
-      voiceover: readString(item.voiceover).trim() || "无",
-      soundEffect: readString(item.sound_effect ?? item.soundEffect).trim() || "无",
-      musicCue: readString(item.music_cue ?? item.musicCue).trim() || "无",
-      lighting: readString(item.lighting).trim(),
-      colorTone: readString(item.color_tone ?? item.colorTone).trim(),
-      texture: readString(item.texture).trim(),
-      startFrame: readString(item.start_frame ?? item.startFrame).trim(),
-      endFrame: readString(item.end_frame ?? item.endFrame).trim(),
-      transitionIn: readString(item.transition_in ?? item.transitionIn).trim() || "无",
-      transitionOut: readString(item.transition_out ?? item.transitionOut).trim() || "无",
-      imagePrompt: readString(item.image_prompt ?? item.imagePrompt).trim(),
-      videoPrompt: "",
-      negativePrompt: readString(
-        item.negative_prompt ?? item.negativePrompt,
-      ).trim(),
-      previousShotId: readString(
-        item.previous_shot_id ?? item.previousShotId,
-      ).trim(),
-      nextShotId: readString(item.next_shot_id ?? item.nextShotId).trim(),
-      continuityNotes: readString(
-        item.continuity_notes ?? item.continuityNotes,
-      ).trim() || "无",
-      generationStatus: "planned",
-      timeline: timeline ?? [],
-      referenceNodeIds,
-      continuityWarnings: readStringList(
-        item.continuity_warnings ?? item.continuityWarnings,
-      ),
-    };
-    const required = [
-      shot.shotId, shot.sceneId, shot.beatId, shot.narrativePurpose,
-      shot.emotionalGoal, shot.shotSize, shot.lens, shot.perspective,
-      shot.cameraAngle, shot.cameraMovement, shot.composition, shot.blocking,
-      shot.action,
-      shot.lighting, shot.colorTone, shot.texture, shot.startFrame,
-      shot.endFrame, shot.imagePrompt, shot.negativePrompt,
-    ];
-    return Number.isInteger(shot.sequence) && shot.sequence >= 1 &&
-        Number.isInteger(duration) && validMangaShotDuration(duration, durationReason, tempo) && timeline &&
-        referenceNodeIds.length >= 1 && referenceNodeIds.length <= 5 &&
-        new Set(referenceNodeIds).size === referenceNodeIds.length &&
-        required.every(Boolean)
-      ? shot
-      : null;
-  });
-  if (shots.some((shot) => shot === null)) return null;
-  const parsed = shots as ShotPlan[];
-  if (new Set(parsed.map((shot) => shot.shotId)).size !== parsed.length) return null;
-  if (new Set(parsed.map((shot) => shot.sequence)).size !== parsed.length) return null;
-  return parsed;
-}
-
-function describeInvalidMangaShots(
-  value: unknown,
-  tempo: AgentMangaStoryboardTempo = "long-form",
-) {
-  if (!Array.isArray(value) || !value.length || value.length > 8) {
-    return "镜头批次必须包含 1 至 8 镜";
-  }
-  const requiredStrings = [
-    "shot_id", "scene_id", "beat_id", "narrative_purpose", "emotional_goal",
-    "shot_size", "lens", "perspective", "camera_angle", "camera_movement",
-    "composition", "blocking", "action", "lighting", "color_tone", "texture",
-    "start_frame", "end_frame", "image_prompt", "negative_prompt",
-  ];
-  for (const [index, item] of value.entries()) {
-    if (!isRecord(item)) return `第 ${index + 1} 镜不是对象`;
-    const shotId = readString(item.shot_id ?? item.shotId).trim() || `第 ${index + 1} 镜`;
-    const missing = requiredStrings.find((field) => {
-      const camel = field.replace(/_([a-z])/g, (_, character: string) =>
-        character.toUpperCase()
-      );
-      return !readString(item[field] ?? item[camel]).trim();
-    });
-    if (missing) return `${shotId} 的 ${missing} 不能为空；无内容时填写“无”`;
-    const sequence = Number(item.sequence);
-    if (!Number.isInteger(sequence) || sequence < 1) return `${shotId} 的 sequence 必须为正整数`;
-    const duration = Number(item.duration);
-    if (!Number.isInteger(duration) || !validMangaShotDuration(
-      duration,
-      readString(item.duration_reason ?? item.durationReason).trim(),
-      tempo,
-    )) {
-      return tempo === "short-cut"
-        ? `${shotId} 的 duration 必须为 2 或 3 秒`
-        : tempo === "multi-shot"
-          ? `${shotId} 的 duration 必须为 2 至 5 秒或 6 至 15 秒的整数`
-          : `${shotId} 的 duration 必须为 5 至 15 的整数；5 至 9 秒必须填写 duration_reason`;
-    }
-    if (!parseShotTimeline(item.timeline, duration)) {
-      return `${shotId} 的 timeline 必须从 0 秒连续覆盖到 ${duration} 秒`;
-    }
-    const references = readNodeIds(
-      item.reference_node_ids ?? item.referenceNodeIds,
-    );
-    if (
-      references.length < 1 || references.length > 5 ||
-      new Set(references).size !== references.length
-    ) {
-      return `${shotId} 必须引用 1 至 5 个不重复的成功资产节点`;
-    }
-  }
-  const shotIds = value.map((item) =>
-    isRecord(item) ? readString(item.shot_id ?? item.shotId).trim() : ""
-  );
-  const duplicateShotId = shotIds.find((shotId, index) =>
-    shotId && shotIds.indexOf(shotId) !== index
-  );
-  if (duplicateShotId) return `shot_id ${duplicateShotId} 在同一批次重复`;
-  const sequences = value.map((item) =>
-    isRecord(item) ? Number(item.sequence) : Number.NaN
-  );
-  const duplicateSequence = sequences.find((sequence, index) =>
-    Number.isInteger(sequence) && sequences.indexOf(sequence) !== index
-  );
-  if (duplicateSequence !== undefined) {
-    return `sequence ${duplicateSequence} 在同一批次重复`;
-  }
-  return "镜头字段类型或数量不符合协议";
-}
-
-function parseContinuityReport(value: unknown): ContinuityReport | null {
-  if (!isRecord(value) || !Array.isArray(value.issues)) return null;
-  const issues = value.issues.map((item) => {
-    if (!isRecord(item)) return null;
-    const severity = item.severity === "error" || item.severity === "warning"
-      ? "warning"
-      : null;
-    const autoFixable = item.auto_fixable ?? item.autoFixable;
-    const issue: ContinuityIssue = {
-      code: readString(item.code).trim(),
-      severity: severity ?? "warning",
-      shotId: readString(item.shot_id ?? item.shotId).trim(),
-      ...(readString(item.related_shot_id ?? item.relatedShotId).trim()
-        ? { relatedShotId: readString(item.related_shot_id ?? item.relatedShotId).trim() }
-        : {}),
-      reason: readString(item.reason).trim(),
-      suggestion: readString(item.suggestion).trim(),
-      autoFixable: autoFixable === true,
-    };
-    return severity && typeof autoFixable === "boolean" && issue.code && issue.shotId && issue.reason && issue.suggestion
-      ? issue
-      : null;
-  });
-  return issues.some((issue) => issue === null)
-    ? null
-    : { issues: issues as ContinuityIssue[] };
-}
-
-export function isPersistedStoryBeats(value: unknown): value is StoryBeat[] {
-  return parseStoryBeats(value) !== null;
-}
-
-export function isPersistedScenePlan(value: unknown): value is ScenePlan {
-  return parseScenePlans([value]) !== null;
-}
-
-export function isPersistedShotPlan(value: unknown): value is ShotPlan {
-  return parseMangaShots([value], "long-form") !== null ||
-    parseMangaShots([value], "short-cut") !== null ||
-    parseMangaShots([value], "multi-shot") !== null;
-}
-
-export function isPersistedContinuityReport(
-  value: unknown,
-): value is ContinuityReport {
-  return parseContinuityReport(value) !== null;
-}
-
 function parseStoryShots(value: unknown): AgentStoryShot[] | null {
-  if (!Array.isArray(value) || value.length < 1) return null;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) return null;
   const shots = value.map((item) => {
     if (!isRecord(item)) return null;
     const ref = readString(item.ref).trim();
@@ -1182,35 +438,7 @@ function parseStoryShots(value: unknown): AgentStoryShot[] | null {
     : null;
 }
 
-const STORY_WORKFLOW_CHUNK_SIZE = 8;
-
-function normalizeStoryWorkflowBatches(
-  operations: AgentOperation[],
-): AgentOperation[] {
-  let nextChunkIndex: number | undefined;
-  return operations.flatMap((operation): AgentOperation[] => {
-    if (operation.type !== "create_story_workflow") return [operation];
-    const chunkIndex = nextChunkIndex ?? operation.chunkIndex;
-    const chunkCount = Math.ceil(
-      operation.shots.length / STORY_WORKFLOW_CHUNK_SIZE,
-    );
-    nextChunkIndex = chunkIndex + chunkCount;
-    return Array.from({ length: chunkCount }, (_, index) => ({
-      ...operation,
-      chunkIndex: chunkIndex + index,
-      isFinal: operation.isFinal && index === chunkCount - 1,
-      shots: operation.shots.slice(
-        index * STORY_WORKFLOW_CHUNK_SIZE,
-        (index + 1) * STORY_WORKFLOW_CHUNK_SIZE,
-      ),
-    }));
-  });
-}
-
-function parseOperation(
-  value: unknown,
-  mangaTempo: AgentMangaStoryboardTempo = "long-form",
-): AgentOperation | null {
+function parseOperation(value: unknown): AgentOperation | null {
   if (!isRecord(value)) return null;
   const type = readString(value.type);
 
@@ -1311,62 +539,6 @@ function parseOperation(
       : null;
   }
 
-  if (type === "create_manga_story_beats") {
-    const storyId = readString(value.story_id ?? value.storyId).trim();
-    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
-    const beats = parseStoryBeats(value.beats);
-    if (!storyId) throw new Error("Agent 剧情节拍结构校验失败：story_id 不能为空。");
-    if (stageIndex !== 0) {
-      throw new Error("Agent 剧情节拍结构校验失败：stage_index 必须为 0。");
-    }
-    if (!beats) {
-      throw new Error(`Agent 剧情节拍结构校验失败：${describeInvalidMangaStoryBeats(value.beats)}。`);
-    }
-    return { type, storyId, stageIndex, beats };
-  }
-
-  if (type === "create_manga_scene_plans") {
-    const storyId = readString(value.story_id ?? value.storyId).trim();
-    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
-    const plans = parseScenePlans(value.plans);
-    if (!storyId) throw new Error("Agent 场面调度结构校验失败：story_id 不能为空。");
-    if (stageIndex !== 1) {
-      throw new Error("Agent 场面调度结构校验失败：stage_index 必须为 1。");
-    }
-    if (!plans) {
-      throw new Error(`Agent 场面调度结构校验失败：${describeInvalidMangaScenePlans(value.plans)}。`);
-    }
-    return { type, storyId, stageIndex, plans };
-  }
-
-  if (type === "create_manga_shot_batch") {
-    const storyId = readString(value.story_id ?? value.storyId).trim();
-    const chunkIndex = readFinite(value.chunk_index ?? value.chunkIndex);
-    const isFinal = readBoolean(value.is_final ?? value.isFinal);
-    const shots = parseMangaShots(value.shots, mangaTempo);
-    if (!shots) {
-      throw new Error(`Agent 镜头结构校验失败：${describeInvalidMangaShots(value.shots, mangaTempo)}`);
-    }
-    return storyId && chunkIndex !== null && Number.isInteger(chunkIndex) &&
-        chunkIndex >= 0 && isFinal !== null
-      ? { type, storyId, chunkIndex, isFinal, shots }
-      : null;
-  }
-
-  if (type === "create_manga_continuity_report") {
-    const storyId = readString(value.story_id ?? value.storyId).trim();
-    const stageIndex = readFinite(value.stage_index ?? value.stageIndex);
-    const report = parseContinuityReport(value.report);
-    if (!storyId) throw new Error("Agent 连续性报告结构校验失败：story_id 不能为空。");
-    if (stageIndex !== 3) {
-      throw new Error("Agent 连续性报告结构校验失败：stage_index 必须为 3。");
-    }
-    if (!report) {
-      throw new Error(`Agent 连续性报告结构校验失败：${describeInvalidMangaContinuityReport(value.report)}。`);
-    }
-    return { type, storyId, stageIndex, report };
-  }
-
   if (type === "create_story_workflow") {
     const ref = readString(value.ref).trim();
     const title = readString(value.title).trim();
@@ -1449,12 +621,8 @@ function parseOperation(
   return null;
 }
 
-export function parseAgentModelResponse(
-  raw: string,
-  options: { mangaTempo?: AgentMangaStoryboardTempo } = {},
-): AgentResponse {
+export function parseAgentModelResponse(raw: string): AgentResponse {
   const cleaned = raw
-    .replace(/^[\u200B-\u200D\u2060\uFEFF]+|[\u200B-\u200D\u2060\uFEFF]+$/g, "")
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/, "");
@@ -1462,104 +630,22 @@ export function parseAgentModelResponse(
   try {
     value = JSON.parse(cleaned);
   } catch {
-    let repaired = cleaned;
-    for (let removed = 0; removed < 3 && repaired.endsWith("}"); removed += 1) {
-      repaired = repaired.slice(0, -1).trimEnd();
-      try {
-        value = JSON.parse(repaired);
-        break;
-      } catch {
-        // Only tolerate surplus closing braces at the very end.
-      }
-    }
-    if (value === undefined) {
-      for (let start = cleaned.indexOf("{"); start >= 0; start = cleaned.indexOf("{", start + 1)) {
-        let depth = 0;
-        let inString = false;
-        let escaped = false;
-        for (let end = start; end < cleaned.length; end += 1) {
-          const character = cleaned[end];
-          if (inString) {
-            if (escaped) {
-              escaped = false;
-            } else if (character === "\\") {
-              escaped = true;
-            } else if (character === '"') {
-              inString = false;
-            }
-            continue;
-          }
-          if (character === '"') {
-            inString = true;
-          } else if (character === "{") {
-            depth += 1;
-          } else if (character === "}") {
-            depth -= 1;
-            if (depth === 0) {
-              try {
-                const candidate = JSON.parse(cleaned.slice(start, end + 1));
-                if (
-                  isRecord(candidate) &&
-                  ("workflow_state" in candidate || "workflowState" in candidate) &&
-                  "operations" in candidate
-                ) {
-                  value = candidate;
-                  break;
-                }
-              } catch {
-                // Continue searching for a complete agent response object.
-              }
-              break;
-            }
-          }
-        }
-        if (value !== undefined) break;
-      }
-    }
-    if (value === undefined) {
-      throw new AgentResponseParseError(
-        "response-envelope",
-        "Agent 返回中未找到完整的 JSON 操作对象。",
-      );
-    }
+    throw new Error("Agent 返回了无法识别的操作格式。");
   }
-  if (!isRecord(value)) {
-    throw new AgentResponseParseError(
-      "response-envelope",
-      "Agent 返回中未找到完整的 JSON 操作对象。",
-    );
-  }
-  const rawMessage = readString(value.message).trim();
+  if (!isRecord(value)) throw new Error("Agent 返回了无法识别的操作格式。");
+  const message = readString(value.message).trim();
+  if (!message) throw new Error("Agent 未返回可显示的回复。");
   const workflowState = readString(
     value.workflow_state ?? value.workflowState,
   );
   if (workflowState !== "clarifying" && workflowState !== "active") {
-    throw new AgentResponseParseError(
-      "missing-workflow-state",
-      "Agent 响应缺少有效的 workflow_state。",
-    );
+    throw new Error("Agent 未返回有效的工作流状态。");
   }
-  if (!Array.isArray(value.operations)) {
-    throw new AgentResponseParseError(
-      "missing-operations",
-      "Agent 响应缺少 operations 数组。",
-    );
+  const rawOperations = Array.isArray(value.operations) ? value.operations : [];
+  const operations = rawOperations.map(parseOperation);
+  if (operations.some((operation) => operation === null)) {
+    throw new Error("Agent 返回了不受支持的画布操作。");
   }
-  const rawOperations = value.operations;
-  const parsedOperations = rawOperations.map((operation) =>
-    parseOperation(operation, options.mangaTempo),
-  );
-  if (parsedOperations.some((operation) => operation === null)) {
-    throw new AgentResponseParseError(
-      "invalid-operation",
-      "Agent 返回了不受支持或字段不完整的画布操作。",
-    );
-  }
-  const operations = normalizeStoryWorkflowBatches(
-    parsedOperations as AgentOperation[],
-  );
-  const message = rawMessage || (operations.length ? "已完成当前阶段规划。" : "");
-  if (!message) throw new Error("Agent 未返回可显示的回复。");
   const inspectImageNodeIds = readNodeIds(
     value.inspect_image_node_ids ?? value.inspectImageNodeIds,
   ).slice(0, 5);
@@ -1580,7 +666,7 @@ export function parseAgentModelResponse(
     message,
     workflowState,
     inspectImageNodeIds,
-    operations,
+    operations: operations as AgentOperation[],
   };
 }
 
@@ -1604,10 +690,6 @@ export function validateAgentOperationsForSurface(
       operation.type === "create_story_analysis" ||
       operation.type === "create_story_asset_batch" ||
       operation.type === "run_story_assets" ||
-      operation.type === "create_manga_story_beats" ||
-      operation.type === "create_manga_scene_plans" ||
-      operation.type === "create_manga_shot_batch" ||
-      operation.type === "create_manga_continuity_report" ||
       operation.type === "create_story_workflow" ||
       operation.type === "run_story_workflow",
   );
@@ -1621,10 +703,6 @@ export function validateAgentOperationsForSurface(
     operations.some((operation) =>
       operation.type === "create_story_analysis" ||
       operation.type === "create_story_asset_batch" ||
-      operation.type === "create_manga_story_beats" ||
-      operation.type === "create_manga_scene_plans" ||
-      operation.type === "create_manga_shot_batch" ||
-      operation.type === "create_manga_continuity_report" ||
       operation.type === "create_story_workflow",
     ) &&
     operations.some((operation) =>

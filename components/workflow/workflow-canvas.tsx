@@ -2,7 +2,6 @@
 
 import {
   Bot,
-  Clapperboard,
   Download,
   FileText,
   Image as ImageIcon,
@@ -11,7 +10,6 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Table2,
   Trash2,
   Video,
   Workflow,
@@ -24,8 +22,6 @@ import {
   type AgentDangerousOperation,
   type AgentInspectedImage,
   type AgentOperation,
-  type AgentMangaStoryboardTempo,
-  type AgentStoryboardMode,
 } from "@/app/ai/agent";
 import {
   MODEL_CONFIGS,
@@ -34,6 +30,7 @@ import {
 } from "@/app/ai/models";
 import type {
   GenerateReferenceImage,
+  GenerateResponse,
   TaskStatusResponse,
 } from "@/app/ai/types";
 import {
@@ -64,7 +61,6 @@ import {
   readWorkflowInputs,
   removeWorkflowEdge,
   removeWorkflowNode,
-  retryWorkflowSubmissionUnknown,
   resizedWorkflowNodeBounds,
   resizeWorkflowNode,
   schedulerDefaults,
@@ -76,7 +72,6 @@ import {
   workflowEdgeKinds,
   workflowEdgePath,
   workflowInputPorts,
-  workflowImageMimeType,
   workflowNodesIntersecting,
   workflowPendingInputPoint,
   workflowSelectionBounds,
@@ -107,38 +102,18 @@ import {
   syncStoryFoundationStatuses,
 } from "@/app/workflow/story-assets";
 import {
-  resetMangaStoryboardForMultiShot,
-  setStoryStoryboardMode,
-} from "@/app/workflow/storyboard";
-import {
-  createStoryboardTable,
-  STORYBOARD_TABLE_HEADERS,
-} from "@/app/workflow/storyboard-table";
-import {
-  acknowledgeMangaContinuity,
-  createMangaCinematographyComparisonGraph,
-  markMangaPlanning,
-  refreshMangaVideoSchedulerPrompts,
-} from "@/app/workflow/manga-director";
-import {
   createWorkflowGraphPersistence,
   createWorkflowRafBatcher,
   createWorkflowViewportController,
   workflowGridTransform,
 } from "@/app/workflow/performance";
 import {
-  isSubmissionUnknownError,
-  readWorkflowGenerateResponse,
-  SUBMISSION_UNKNOWN_MESSAGE,
-  SUBMISSION_UNKNOWN_PROGRESS,
-} from "@/app/workflow/submission-unknown";
-import {
   WORKFLOW_PROJECTS_STORAGE_KEY,
   createWorkflowProject,
   ensureWorkflowProjectRegistry,
   migrateActiveWorkflowAssetLayout,
   parseWorkflowViewport,
-  projectAssetIds,
+  projectSourceAssetIds,
   removeWorkflowProject,
   renameWorkflowProject,
   workflowProjectBatchKey,
@@ -151,13 +126,10 @@ import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
 import { useCloudSession } from "@/components/cloud-session-gate";
 import {
   activateCloudProject,
-  cloneCloudStoryboardProject,
   cloudAssetUrl,
   createCloudProject,
   deleteCloudAsset,
   deleteCloudProject,
-  describeCloudRequestError,
-  isCloudRequestError,
   loadCloudProject,
   loadCloudProjects,
   readCloudAsset,
@@ -224,7 +196,7 @@ type ConnectionState = {
   targetId?: string;
 };
 type ProjectEditorState = {
-  mode: "create" | "rename" | "clone-storyboard";
+  mode: "create" | "rename";
   value: string;
   error: string;
 };
@@ -292,13 +264,7 @@ async function workflowImageToFile(
     blob = await response.blob();
   }
   if (!blob) throw new Error("上游图片素材已失效，请重新上传。");
-  const mimeType = workflowImageMimeType(
-    blob.type,
-    node.assetMimeType,
-    node.type === "result" ? node.resultUrl : undefined,
-  );
-  if (!mimeType) throw new Error("上游节点不是可用图片。");
-  if (blob.type !== mimeType) blob = new Blob([blob], { type: mimeType });
+  if (!blob.type.startsWith("image/")) throw new Error("上游节点不是可用图片。");
   return new File([blob], name, { type: blob.type });
 }
 
@@ -324,15 +290,10 @@ export function WorkflowCanvas() {
   const [batchRun, setBatchRun] = useState<WorkflowBatchRun | null>(null);
   const [projects, setProjects] = useState<WorkflowProjectRegistry | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
-  const [projectCloneBusy, setProjectCloneBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
-  const [submissionUnknownRetryId, setSubmissionUnknownRetryId] = useState<string | null>(null);
-  const [storyboardTableStoryId, setStoryboardTableStoryId] = useState<string | null>(null);
-  const [storyboardTableView, setStoryboardTableView] = useState<"shots" | "tasks">("shots");
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
   >("idle");
-  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -375,11 +336,6 @@ export function WorkflowCanvas() {
   } | null>(null);
   const cloudConversationSaveRef = useRef(Promise.resolve());
   const cloudConversationLastSavedRef = useRef("");
-  const cloudPendingConversationRef = useRef<{
-    projectId: string;
-    serialized: string;
-    store: AgentConversationStore;
-  } | null>(null);
   const cloudSaveRef = useRef(Promise.resolve());
   const cloudSaveTimerRef = useRef<number | null>(null);
   const cloudLastSavedRef = useRef("");
@@ -400,15 +356,12 @@ export function WorkflowCanvas() {
     const safeRestored = {
       ...restored,
       nodes: restored.nodes.map((node) =>
-        node.type === "result" &&
-        node.kind === "video" &&
-        node.status === "pending" &&
-        !node.taskId
+        node.type === "result" && node.status === "pending" && !node.taskId
           ? {
               ...node,
-              status: "submission-unknown" as const,
-              progress: SUBMISSION_UNKNOWN_PROGRESS,
-              error: SUBMISSION_UNKNOWN_MESSAGE,
+              status: "paused" as const,
+              progress: "提交状态未知",
+              error: "页面在任务 ID 保存前中断，已停止自动重试以避免重复计费。",
             }
           : node,
       ),
@@ -430,7 +383,6 @@ export function WorkflowCanvas() {
     setConnection(null);
     setHoveredEdgeId(null);
     setDetailId(null);
-    setSubmissionUnknownRetryId(null);
     setAgentContextNodeId(null);
     setBatchRun(restoredBatch);
     viewportRef.current = restoredViewport;
@@ -456,7 +408,6 @@ export function WorkflowCanvas() {
 
   const applyCloudProject = useCallback((project: CloudProjectDocument) => {
     cloudRevisionRef.current = project.revision;
-    cloudPendingConversationRef.current = null;
     cloudConversationRef.current = {
       projectId: project.id,
       revision: project.conversationRevision,
@@ -464,7 +415,6 @@ export function WorkflowCanvas() {
     };
     cloudConversationLastSavedRef.current = JSON.stringify(project.conversation);
     setCloudSyncState("idle");
-    setCloudSyncError(null);
     cloudLastSavedRef.current = JSON.stringify({
       name: project.name,
       graph: project.graph,
@@ -497,45 +447,27 @@ export function WorkflowCanvas() {
   const saveRemoteConversation = useCallback(async (store: AgentConversationStore) => {
     const serialized = JSON.stringify(store);
     if (serialized === cloudConversationLastSavedRef.current) return;
-    const current = cloudConversationRef.current;
-    if (!current) return;
-    const pending = {
-      projectId: current.projectId,
-      serialized,
-      store,
-    };
-    cloudPendingConversationRef.current = pending;
     cloudConversationSaveRef.current = cloudConversationSaveRef.current.then(async () => {
       const current = cloudConversationRef.current;
-      if (!current || current.projectId !== pending.projectId) return;
+      if (!current) return;
       try {
         const saved = await saveCloudConversation({
           projectId: current.projectId,
-          conversation: pending.store,
+          conversation: store,
           revision: current.revision,
         });
-        if (cloudConversationRef.current?.projectId !== pending.projectId) return;
+        if (cloudConversationRef.current?.projectId !== current.projectId) return;
         cloudConversationRef.current = {
-          projectId: pending.projectId,
+          projectId: current.projectId,
           revision: saved.revision,
-          store: pending.store,
+          store,
         };
-        cloudConversationLastSavedRef.current = pending.serialized;
-        if (
-          cloudPendingConversationRef.current?.projectId === pending.projectId &&
-          cloudPendingConversationRef.current.serialized === pending.serialized
-        ) {
-          cloudPendingConversationRef.current = null;
-        }
+        cloudConversationLastSavedRef.current = serialized;
       } catch (error) {
-        if (
-          activeProjectIdRef.current !== pending.projectId ||
-          cloudConversationRef.current?.projectId !== pending.projectId
-        ) return;
-        const conflict = isCloudRequestError(error) &&
-          error.category === "revision-conflict";
-        setCloudSyncState(conflict ? "conflict" : "unsynced");
-        setCloudSyncError(conflict ? null : describeCloudRequestError(error));
+        const status = error && typeof error === "object" && "status" in error
+          ? Number(error.status)
+          : 0;
+        setCloudSyncState(status === 409 ? "conflict" : "unsynced");
       }
     });
     await cloudConversationSaveRef.current;
@@ -554,11 +486,8 @@ export function WorkflowCanvas() {
           applyCloudProject(project);
           setHydrated(true);
         })
-        .catch((error) => {
-          if (!cancelled) {
-            setCloudSyncState("unsynced");
-            setCloudSyncError(describeCloudRequestError(error));
-          }
+        .catch(() => {
+          if (!cancelled) setCloudSyncState("unsynced");
         });
       return () => {
         cancelled = true;
@@ -607,10 +536,9 @@ export function WorkflowCanvas() {
   useEffect(() => {
     if (!hydrated) return;
     const synced = syncStoryFoundationStatuses(graph);
-    const refreshed = refreshMangaVideoSchedulerPrompts(synced);
-    if (refreshed === graph) return;
-    graphRef.current = refreshed;
-    setGraph(refreshed);
+    if (synced === graph) return;
+    graphRef.current = synced;
+    setGraph(synced);
   }, [graph, hydrated]);
 
   useEffect(() => {
@@ -677,12 +605,11 @@ export function WorkflowCanvas() {
           cloudLastSavedRef.current = serialized;
           cloudPendingSerializedRef.current = "";
           setCloudSyncState("idle");
-          setCloudSyncError(null);
         } catch (error) {
-          const conflict = isCloudRequestError(error) &&
-            error.category === "revision-conflict";
-          setCloudSyncState(conflict ? "conflict" : "unsynced");
-          setCloudSyncError(conflict ? null : describeCloudRequestError(error));
+          const status = error && typeof error === "object" && "status" in error
+            ? Number(error.status)
+            : 0;
+          setCloudSyncState(status === 409 ? "conflict" : "unsynced");
           cloudPendingSerializedRef.current = "";
         }
       });
@@ -1445,9 +1372,7 @@ export function WorkflowCanvas() {
       model,
       aspectRatio: config.aspectRatios[0] ?? "",
       resolution: config.defaultResolution ?? config.resolutions[0] ?? "",
-      duration: config.durations.includes(node.duration)
-        ? node.duration
-        : config.durations[0] ?? "",
+      duration: config.durations[0] ?? "",
       error: "",
     }));
   }
@@ -1463,28 +1388,13 @@ export function WorkflowCanvas() {
     [],
   );
 
-  const runScheduler = useCallback(async (
-    schedulerId: string,
-    options: { retrySubmissionUnknown?: boolean } = {},
-  ) => {
+  const runScheduler = useCallback(async (schedulerId: string) => {
     if (runningSchedulersRef.current.has(schedulerId)) return;
     const scheduler = graphRef.current.nodes.find(
       (node): node is WorkflowSchedulerNode =>
         node.id === schedulerId && node.type === "scheduler",
     );
     if (!scheduler) return;
-    const hasUnknownSubmission = graphRef.current.nodes.some(
-      (node) =>
-        node.type === "result" &&
-        node.schedulerId === scheduler.id &&
-        node.status === "submission-unknown",
-    );
-    if (hasUnknownSubmission && !options.retrySubmissionUnknown) {
-      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
-        error: "该任务提交状态未知，请在结果节点确认重新提交。",
-      }));
-      return;
-    }
     const inputs = readWorkflowInputs(graphRef.current, scheduler.id);
     if (inputs.videos.length) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
@@ -1498,7 +1408,7 @@ export function WorkflowCanvas() {
       )
     ) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
-        error: "上游参考图片尚未生成完成。",
+        error: "上游分镜图尚未生成完成。",
       }));
       return;
     }
@@ -1516,47 +1426,28 @@ export function WorkflowCanvas() {
     setRunningSchedulers((current) => new Set(current).add(scheduler.id));
     let createdResultIds: string[] = [];
     try {
-      if (inputs.images.length > config.maxReferenceImages) {
+      const files = await Promise.all(inputs.images.map((node) =>
+        workflowImageToFile(
+          node,
+          remote
+            ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
+            : readAsset,
+        )
+      ));
+      if (files.length > config.maxReferenceImages) {
         throw new Error(`参考图片超过当前模型的 ${config.maxReferenceImages} 张上限。`);
       }
-      const images: GenerateReferenceImage[] = scheduler.outputKind === "video"
-        ? inputs.images.map((node) => {
-            if (!node.assetId) {
-              throw new Error("视频参考图尚未同步到云端资产库。");
-            }
-            return {
-              name: node.assetName || node.label || "reference.png",
-              mimeType: node.assetMimeType || "image/png",
-              assetId: node.assetId,
-            };
-          })
-        : await Promise.all((await Promise.all(inputs.images.map((node) =>
-            workflowImageToFile(
-              node,
-              remote
-                ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
-                : readAsset,
-            )
-          ))).map(async (file) => {
-            if (file.size > MAX_IMAGE_BYTES) {
-              throw new Error("单张参考图片不能超过 10MB。");
-            }
-            return {
-              name: file.name,
-              mimeType: file.type,
-              size: file.size,
-              dataUrl: await fileToDataUrl(file),
-            } satisfies GenerateReferenceImage;
-          }));
-      if (
-        scheduler.outputKind !== "video" &&
-        images.reduce((sum, image) => sum + (image.size ?? 0), 0) > MAX_IMAGE_TOTAL_BYTES
-      ) {
+      if (files.some((file) => file.size > MAX_IMAGE_BYTES)) throw new Error("单张参考图片不能超过 10MB。");
+      if (files.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGE_TOTAL_BYTES) {
         throw new Error("参考图片合计不能超过 30MB。");
       }
-      const created = options.retrySubmissionUnknown
-        ? retryWorkflowSubmissionUnknown(graphRef.current, scheduler.id, Date.now())
-        : createWorkflowRun(graphRef.current, scheduler.id, Date.now());
+      const images = await Promise.all(files.map(async (file) => ({
+        name: file.name,
+        mimeType: file.type,
+        size: file.size,
+        dataUrl: await fileToDataUrl(file),
+      } satisfies GenerateReferenceImage)));
+      const created = createWorkflowRun(graphRef.current, scheduler.id, Date.now());
       if (!created.resultIds.length) return;
       createdResultIds = created.resultIds;
       graphRef.current = created.graph;
@@ -1576,7 +1467,8 @@ export function WorkflowCanvas() {
               duration: scheduler.duration || undefined,
             }),
           });
-          const result = await readWorkflowGenerateResponse(response, scheduler.outputKind);
+          if (!response.ok) throw new Error(await readApiError(response));
+          const result = (await response.json()) as GenerateResponse;
           commitGraph((current) => result.kind === "text"
             ? updateWorkflowResult(current, resultId, {
                 status: "success", progress: "", text: result.content,
@@ -1585,16 +1477,10 @@ export function WorkflowCanvas() {
                 status: "pending", progress: "排队中", taskId: result.taskId, startedAt: Date.now(),
               }));
         } catch (error) {
-          const submissionUnknown = scheduler.outputKind === "video" &&
-            isSubmissionUnknownError(error);
           commitGraph((current) => updateWorkflowResult(current, resultId, {
-            status: submissionUnknown ? "submission-unknown" : "failed",
-            progress: submissionUnknown ? SUBMISSION_UNKNOWN_PROGRESS : "",
-            error: submissionUnknown
-              ? error instanceof Error && error.message
-                ? error.message
-                : SUBMISSION_UNKNOWN_MESSAGE
-              : error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
+            status: "failed",
+            progress: "",
+            error: error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
           }));
         }
       }));
@@ -1661,10 +1547,7 @@ export function WorkflowCanvas() {
     storyId: string,
     status: "stopped" | "failed",
   ) {
-    commitGraph((current) => {
-      const assetUpdated = markStoryAssetPlanning(current, storyId, status);
-      return markMangaPlanning(assetUpdated, storyId, status);
-    });
+    commitGraph((current) => markStoryAssetPlanning(current, storyId, status));
   }
 
   function approveFoundation(storyId: string) {
@@ -1675,31 +1558,6 @@ export function WorkflowCanvas() {
       return next;
     });
     return message;
-  }
-
-  function selectStoryboardMode(
-    storyId: string,
-    mode: AgentStoryboardMode,
-    tempo: AgentMangaStoryboardTempo = "multi-shot",
-  ) {
-    commitGraph((current) => setStoryStoryboardMode(current, storyId, mode, tempo));
-  }
-
-  function resetMangaStoryboard(storyId: string) {
-    try {
-      const next = resetMangaStoryboardForMultiShot(graphRef.current, storyId);
-      graphRef.current = next;
-      setGraph(next);
-      setBatchRun(null);
-      setSelectedIds([]);
-      setAgentContextNodeId(null);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "无法重新规划当前漫剧。");
-    }
-  }
-
-  function approveContinuity(storyId: string) {
-    commitGraph((current) => acknowledgeMangaContinuity(current, storyId));
   }
 
   async function readAgentImages(
@@ -1773,11 +1631,9 @@ export function WorkflowCanvas() {
         if (
           node.storyRole === "analysis" &&
           node.storyId &&
-          (node.planningStatus === "planning" ||
-            node.mangaPlanningStatus === "planning")
+          node.planningStatus === "planning"
         ) {
           graphToSave = markStoryAssetPlanning(graphToSave, node.storyId, "stopped");
-          graphToSave = markMangaPlanning(graphToSave, node.storyId, "stopped");
         }
       });
     }
@@ -1849,71 +1705,9 @@ export function WorkflowCanvas() {
     });
   }
 
-  function cloneStoryboardProject() {
-    if (!projects) return;
-    if (agentBusy || runningSchedulersRef.current.size) {
-      window.alert("请等待当前 Agent 或生成任务结束后再创建对照版。");
-      return;
-    }
-    if (remote && cloudSyncState !== "idle") {
-      window.alert("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
-      return;
-    }
-    try {
-      createMangaCinematographyComparisonGraph(graphRef.current);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "当前项目不能创建电影语言对照版。");
-      return;
-    }
-    const active = projects.projects.find((project) => project.id === projects.activeProjectId);
-    if (!active) return;
-    setProjectEditor({
-      mode: "clone-storyboard",
-      value: `${active.name}-电影语言版`,
-      error: "",
-    });
-  }
-
   async function saveProjectName() {
     if (!projects || !projectEditor) return;
     try {
-      if (projectEditor.mode === "clone-storyboard") {
-        setProjectCloneBusy(true);
-        try {
-          if (remote) {
-            const cloned = await cloneCloudStoryboardProject(
-              projects.activeProjectId,
-              projectEditor.value,
-            );
-            const registry = await loadCloudProjects();
-            setProjectEditor(null);
-            activeProjectIdRef.current = cloned.id;
-            setProjects(registry);
-            setHydrated(false);
-            await reloadCloudProject(cloned.id);
-            setHydrated(true);
-            return;
-          }
-          persistActiveProject();
-          const clonedGraph = createMangaCinematographyComparisonGraph(graphRef.current);
-          const created = createWorkflowProject(projects, projectEditor.value);
-          window.localStorage.setItem(
-            workflowProjectGraphKey(created.project.id),
-            JSON.stringify(clonedGraph),
-          );
-          window.localStorage.setItem(
-            workflowProjectViewportKey(created.project.id),
-            JSON.stringify({ x: 0, y: 0, scale: 1 }),
-          );
-          window.localStorage.removeItem(workflowProjectBatchKey(created.project.id));
-          window.localStorage.removeItem(workflowProjectConversationKey(created.project.id));
-          setProjectEditor(null);
-          await activateProject(created.registry, created.project.id);
-          return;
-        } finally {
-          setProjectCloneBusy(false);
-        }
-      }
       if (projectEditor.mode === "create") {
         if (remote) {
           const created = await createCloudProject(projectEditor.value);
@@ -1991,10 +1785,8 @@ export function WorkflowCanvas() {
     );
     if (!active) return;
     const remoteCount = graphRef.current.nodes.filter((node) =>
-      node.type === "result" &&
-      ((Boolean(node.taskId) &&
-        (node.status === "pending" || node.status === "running")) ||
-        node.status === "submission-unknown")
+      node.type === "result" && Boolean(node.taskId) &&
+      (node.status === "pending" || node.status === "running")
     ).length;
     const warning = [
       `删除项目“${active.name}”？`,
@@ -2024,14 +1816,14 @@ export function WorkflowCanvas() {
     }
 
     persistActiveProject();
-    const removedAssetIds = projectAssetIds(graphRef.current);
+    const removedAssetIds = projectSourceAssetIds(graphRef.current);
     const remainingProjects = projects.projects.filter((project) => project.id !== active.id);
     const remainingAssetIds = new Set<string>();
     remainingProjects.forEach((project) => {
       const candidate = parseWorkflowGraph(window.localStorage.getItem(
         workflowProjectGraphKey(project.id),
       ));
-      projectAssetIds(candidate).forEach((assetId) => remainingAssetIds.add(assetId));
+      projectSourceAssetIds(candidate).forEach((assetId) => remainingAssetIds.add(assetId));
     });
     removedAssetIds.forEach((assetId) => {
       if (!remainingAssetIds.has(assetId)) void deleteAsset(assetId);
@@ -2087,16 +1879,6 @@ export function WorkflowCanvas() {
     }
   }
 
-  function retryCloudProjectSave() {
-    const pendingConversation = cloudPendingConversationRef.current;
-    cloudPendingSerializedRef.current = "";
-    setCloudSyncError(null);
-    setCloudSyncState("idle");
-    if (pendingConversation?.projectId === activeProjectIdRef.current) {
-      void saveRemoteConversation(pendingConversation.store);
-    }
-  }
-
   function exportLocalProject() {
     if (remote || !projects) return;
     const active = projects.projects.find((project) => project.id === projects.activeProjectId);
@@ -2140,58 +1922,8 @@ export function WorkflowCanvas() {
     URL.revokeObjectURL(url);
   }
 
-  function openStoryboardTable() {
-    const storyId = graphRef.current.nodes.find((node) =>
-      node.storyRole === "analysis" && node.storyId && graphRef.current.nodes.some((candidate) =>
-        candidate.storyId === node.storyId &&
-        (candidate.storyRole === "storyboard-table" || candidate.storyRole === "shot"),
-      ),
-    )?.storyId;
-    if (!storyId) {
-      window.alert("当前项目尚未创建漫剧镜头，暂时没有可查看的分镜表。");
-      return;
-    }
-    setStoryboardTableView("shots");
-    setStoryboardTableStoryId(storyId);
-  }
-
-  async function exportStoryboardTable(storyId: string) {
-    const active = projects?.projects.find((project) => project.id === projects.activeProjectId);
-    try {
-      const response = remote && active
-        ? await fetch(`/api/workflow/projects/${encodeURIComponent(active.id)}/storyboard.xlsx`)
-        : await fetch("/api/workflow/storyboard.xlsx", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: active?.name ?? "漫剧分镜表",
-              storyId,
-              graph: graphRef.current,
-            }),
-          });
-      if (!response.ok) throw new Error(await readApiError(response));
-      const blob = await response.blob();
-      const filename = `${(active?.name ?? "漫剧分镜表").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`;
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "无法导出分镜表。");
-    }
-  }
-
   function deleteNode(node: WorkflowNode) {
-    if (
-      node.type === "result" &&
-      (node.status === "pending" ||
-        node.status === "running" ||
-        node.status === "submission-unknown")
-    ) {
+    if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
     }
     setSelectedIds((current) => current.filter((id) => id !== node.id));
@@ -2316,27 +2048,6 @@ export function WorkflowCanvas() {
         },
     [canvasSize, graph, isAgentOpen, viewport],
   );
-  const storyboardTable = useMemo(
-    () => storyboardTableStoryId
-      ? createStoryboardTable(graph, storyboardTableStoryId)
-      : null,
-    [graph, storyboardTableStoryId],
-  );
-  const submissionUnknownRetryResult = submissionUnknownRetryId
-    ? graph.nodes.find(
-        (node): node is WorkflowResultNode =>
-          node.id === submissionUnknownRetryId &&
-          node.type === "result" &&
-          node.status === "submission-unknown",
-      )
-    : undefined;
-
-  function confirmSubmissionUnknownRetry() {
-    const result = submissionUnknownRetryResult;
-    setSubmissionUnknownRetryId(null);
-    if (!result) return;
-    void runScheduler(result.schedulerId, { retrySubmissionUnknown: true });
-  }
 
   return (
     <main
@@ -2375,29 +2086,12 @@ export function WorkflowCanvas() {
               <Download size={15} />
             </button>
           ) : null}
-          <button aria-label="查看分镜表" title="查看分镜表" type="button" onClick={openStoryboardTable}>
-            <Table2 size={15} />
-          </button>
-          <button
-            aria-label="创建电影语言对照版"
-            title="创建电影语言对照版"
-            type="button"
-            disabled={projectCloneBusy}
-            onClick={cloneStoryboardProject}
-          >
-            <Clapperboard size={15} />
-          </button>
           {agentBusy ? <span className="workflow-project-status">Agent 处理中</span> : null}
           {remote && cloudSyncState === "saving" ? (
             <span className="workflow-project-status">正在同步</span>
           ) : null}
           {remote && cloudSyncState === "unsynced" ? (
-            <span className="workflow-project-sync-status" role="status" aria-live="polite">
-              <span className="workflow-project-status">
-                尚未同步：{cloudSyncError || "请重试保存项目。"}
-              </span>
-              <button type="button" onClick={retryCloudProjectSave}>重试</button>
-            </span>
+            <><span className="workflow-project-status">尚未同步</span><button type="button" onClick={() => setCloudSyncState("idle")}>重试</button></>
           ) : null}
           {remote && cloudSyncState === "conflict" ? (
             <>
@@ -2421,13 +2115,7 @@ export function WorkflowCanvas() {
               void saveProjectName();
             }}
           >
-            <h2>{
-              projectEditor.mode === "create"
-                ? "新建项目"
-                : projectEditor.mode === "clone-storyboard"
-                  ? "创建电影语言对照版"
-                  : "重命名项目"
-            }</h2>
+            <h2>{projectEditor.mode === "create" ? "新建项目" : "重命名项目"}</h2>
             <label>
               项目名称
               <input
@@ -2442,94 +2130,9 @@ export function WorkflowCanvas() {
             {projectEditor.error ? <p>{projectEditor.error}</p> : null}
             <div>
               <button type="button" onClick={() => setProjectEditor(null)}>取消</button>
-              <button type="submit" disabled={projectCloneBusy}>
-                {projectCloneBusy ? "正在复制" : "保存"}
-              </button>
+              <button type="submit">保存</button>
             </div>
           </form>
-        </div>
-      ) : null}
-      {submissionUnknownRetryResult ? (
-        <div className="workflow-project-editor-backdrop" data-workflow-isolated>
-          <section
-            aria-label="确认重新提交"
-            aria-modal="true"
-            className="workflow-project-editor workflow-submission-confirmation"
-            role="dialog"
-          >
-            <h2>确认重新提交视频？</h2>
-            <p>此前请求可能已经提交到视频平台，但未取得任务编号。重新提交可能产生重复费用。</p>
-            <div>
-              <button type="button" onClick={() => setSubmissionUnknownRetryId(null)}>取消</button>
-              <button type="button" onClick={confirmSubmissionUnknownRetry}>确认重新提交</button>
-            </div>
-          </section>
-        </div>
-      ) : null}
-      {storyboardTable ? (
-        <div className="workflow-storyboard-backdrop" data-workflow-isolated>
-          <section className="workflow-storyboard-table" role="dialog" aria-modal="true" aria-label="漫剧分镜表">
-            <header>
-              <div>
-                <h2>{storyboardTable.title}｜分镜表</h2>
-                <p>{storyboardTable.rows.length} 镜 · {storyboardTable.totalDuration} 秒 · 校验{storyboardTable.validation} · {storyboardTable.productionRule}</p>
-                <div className="workflow-storyboard-tabs" role="tablist" aria-label="分镜表视图">
-                  <button
-                    aria-selected={storyboardTableView === "shots"}
-                    className={storyboardTableView === "shots" ? "is-active" : ""}
-                    role="tab"
-                    type="button"
-                    onClick={() => setStoryboardTableView("shots")}
-                  >镜头分镜表（{storyboardTable.rows.length}）</button>
-                  <button
-                    aria-selected={storyboardTableView === "tasks"}
-                    className={storyboardTableView === "tasks" ? "is-active" : ""}
-                    role="tab"
-                    type="button"
-                    onClick={() => setStoryboardTableView("tasks")}
-                  >视频任务与最终提示词（{storyboardTable.videoTasks.length}）</button>
-                </div>
-              </div>
-              <div>
-                <button type="button" onClick={() => void exportStoryboardTable(storyboardTable.storyId)}>
-                  <Download size={15} /> 导出 Excel
-                </button>
-                <button aria-label="关闭分镜表" type="button" onClick={() => {
-                  setStoryboardTableStoryId(null);
-                  setStoryboardTableView("shots");
-                }}>
-                  <X size={18} />
-                </button>
-              </div>
-            </header>
-            <div className="workflow-storyboard-scroll">
-              {storyboardTableView === "shots" ? (
-                <table>
-                  <thead><tr>{STORYBOARD_TABLE_HEADERS.map((header) => <th key={header}>{header}</th>)}</tr></thead>
-                  <tbody>{storyboardTable.rows.map((row) => (
-                    <tr key={row.shotId}>
-                      <td>{row.shotId}</td><td>{row.timecode}</td><td>{row.duration}</td>
-                      <td>{row.referenceAssets}</td><td>{row.sceneTime}</td><td>{row.shotSizeLens}</td>
-                      <td>{row.camera}</td><td>{row.composition}</td><td>{row.performance}</td>
-                      <td>{row.voiceover}</td><td>{row.sound}</td><td>{row.transition}</td>
-                      <td>{row.continuity}</td><td>{row.lightingTexture}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              ) : (
-                <table className="workflow-video-task-table">
-                  <thead><tr>{["任务编号", "时间码", "时长（秒）", "包含镜头", "场景", "参考资产", "最终提示词", "状态"].map((header) => <th key={header}>{header}</th>)}</tr></thead>
-                  <tbody>{storyboardTable.videoTasks.map((task) => (
-                    <tr key={task.segmentId}>
-                      <td>{task.segmentId}</td><td>{task.timecode}</td><td>{task.duration}</td>
-                      <td>{task.shotIds}</td><td>{task.sceneIds}</td><td>{task.referenceAssets}</td>
-                      <td className="workflow-video-task-prompt">{task.finalPrompt}</td><td>{task.status}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
-            </div>
-          </section>
         </div>
       ) : null}
       <div
@@ -2671,21 +2274,11 @@ export function WorkflowCanvas() {
             running={node.type === "scheduler" && runningSchedulers.has(node.id)}
             onDelete={() => deleteNode(node)}
             onOpen={() => setDetailId(node.id)}
-            onOpenStoryboard={() => {
-              if (!node.storyId || node.storyRole !== "storyboard-table") return;
-              setStoryboardTableView("shots");
-              setStoryboardTableStoryId(node.storyId);
-            }}
             onChange={(update) => setGraph((current) => updateWorkflowNode(current, node.id, update))}
             onUpload={(file) => node.type === "source" && void uploadSource(node, file)}
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
             onModelChange={(model) => node.type === "scheduler" && updateSchedulerModel(node, model)}
             onRun={() => node.type === "scheduler" && void runScheduler(node.id)}
-            onRetrySubmissionUnknown={() => {
-              if (node.type === "result" && node.status === "submission-unknown") {
-                setSubmissionUnknownRetryId(node.id);
-              }
-            }}
             onMediaLoad={(width, height) =>
               fitImageNodeToMedia(node.id, width, height)
             }
@@ -2786,9 +2379,6 @@ export function WorkflowCanvas() {
         getSnapshot={currentAgentSnapshot}
         onPlanningInterrupted={updateAssetPlanningStatus}
         onApproveFoundation={approveFoundation}
-        onSelectStoryboardMode={selectStoryboardMode}
-        onResetMangaStoryboard={resetMangaStoryboard}
-        onApproveContinuity={approveContinuity}
         onConfirmOperation={confirmAgentOperation}
         onReadImages={readAgentImages}
         describeOperation={describeAgentOperation}
@@ -2827,13 +2417,11 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   running,
   onDelete,
   onOpen,
-  onOpenStoryboard,
   onChange,
   onUpload,
   onKindChange,
   onModelChange,
   onRun,
-  onRetrySubmissionUnknown,
   onMediaLoad,
   onResume,
   onPointerDown,
@@ -2851,13 +2439,11 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   running: boolean;
   onDelete: () => void;
   onOpen: () => void;
-  onOpenStoryboard: () => void;
   onChange: (update: Partial<WorkflowNode>) => void;
   onUpload: (file?: File) => void;
   onKindChange: (kind: ComposerMode) => void;
   onModelChange: (model: string) => void;
   onRun: () => void;
-  onRetrySubmissionUnknown: () => void;
   onMediaLoad: (width: number, height: number) => void;
   onResume: () => void;
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
@@ -2867,16 +2453,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
 }) {
   const size = getWorkflowNodeSize(node);
   const kind = node.type === "scheduler" ? node.outputKind : node.kind;
-  const isStoryboardTable =
-    node.type === "source" && node.storyRole === "storyboard-table" &&
-    Boolean(node.storyboardTable);
-  const Icon = isStoryboardTable
-    ? Table2
-    : kind === "image"
-      ? ImageIcon
-      : kind === "video"
-        ? Video
-        : FileText;
+  const Icon = kind === "image" ? ImageIcon : kind === "video" ? Video : FileText;
   const title = node.label || (node.type === "scheduler"
     ? "通用调度"
     : node.type === "result"
@@ -2897,8 +2474,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
       onDoubleClick={(event) => {
         if ((event.target as HTMLElement).closest("[data-workflow-control]")) return;
         event.stopPropagation();
-        if (isStoryboardTable) onOpenStoryboard();
-        else if (node.type === "result" || (node.type === "source" && node.kind !== "text")) onOpen();
+        if (node.type === "result" || (node.type === "source" && node.kind !== "text")) onOpen();
       }}
     >
       <header className="canvas-node-header">
@@ -2915,9 +2491,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
 
       {node.type === "source" ? (
         <div className={`workflow-source-body${node.kind === "image" && assetUrl && !assetError ? " workflow-source-body-media" : ""}`}>
-          {isStoryboardTable ? (
-            <StoryboardTableNodeBody node={node} onOpen={onOpenStoryboard} />
-          ) : node.kind === "text" ? (
+          {node.kind === "text" ? (
             <textarea
               aria-label="文本素材内容"
               data-workflow-control
@@ -2976,7 +2550,6 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           assetUrl={assetUrl}
           assetLoading={assetLoading}
           onResume={onResume}
-          onRetrySubmissionUnknown={onRetrySubmissionUnknown}
           onMediaLoad={onMediaLoad}
         />
       )}
@@ -2992,30 +2565,6 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   sameWorkflowInputPorts(previous.inputPorts, next.inputPorts) &&
   previous.running === next.running,
 );
-
-function StoryboardTableNodeBody({
-  node,
-  onOpen,
-}: {
-  node: WorkflowSourceNode;
-  onOpen: () => void;
-}) {
-  const table = node.storyboardTable!;
-  return (
-    <div
-      className="workflow-storyboard-node"
-      data-workflow-control
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <span className="workflow-storyboard-node-kicker">项目级分镜表</span>
-      <strong>{table.rows.length} 镜 · {table.totalDuration} 秒</strong>
-      <span>{table.videoTasks.length} 个视频任务 · {table.validation}</span>
-      <button type="button" onClick={onOpen}>
-        <Table2 size={14} /> 查看分镜表与最终提示词
-      </button>
-    </div>
-  );
-}
 
 function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChange, onKindChange, onModelChange, onRun }: {
   node: WorkflowSchedulerNode;
@@ -3083,35 +2632,14 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
   );
 }
 
-function ResultBody({
-  node,
-  assetUrl,
-  assetLoading,
-  onResume,
-  onRetrySubmissionUnknown,
-  onMediaLoad,
-}: {
+function ResultBody({ node, assetUrl, assetLoading, onResume, onMediaLoad }: {
   node: WorkflowResultNode;
   assetUrl?: string;
   assetLoading: boolean;
   onResume: () => void;
-  onRetrySubmissionUnknown: () => void;
   onMediaLoad: (width: number, height: number) => void;
 }) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
-  if (node.status === "submission-unknown") return (
-    <div className="workflow-submission-unknown">
-      <p>{node.error || SUBMISSION_UNKNOWN_MESSAGE}</p>
-      <button
-        className="workflow-resubmit"
-        data-workflow-control
-        type="button"
-        onClick={onRetrySubmissionUnknown}
-      >
-        <RotateCcw size={13} /> 确认重新提交
-      </button>
-    </div>
-  );
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
   const mediaUrl = assetUrl || (node.assetId ? undefined : node.resultUrl);
   if (node.kind === "image" && mediaUrl) return (

@@ -24,15 +24,8 @@ export type ModelConfig = {
   videoResolutionParam?: "resolution";
 };
 
-const IMAGE_RATIOS = ["16:9", "1:1", "4:3", "3:4", "9:16"] as const;
-const VIDEO_RATIOS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] as const;
-const SEEDANCE_2_DURATIONS = [
-  "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
-] as const;
-const SEEDANCE_2_5_DURATIONS = [
-  "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17",
-  "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
-] as const;
+const IMAGE_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16"] as const;
+const VIDEO_RATIOS = ["16:9", "9:16", "1:1"] as const;
 
 export const MODEL_CONFIGS = {
   text: [
@@ -160,40 +153,27 @@ export const MODEL_CONFIGS = {
   ],
   video: [
     {
-      value: "seedance-2.0",
-      label: "Seedance 2.0",
+      value: "doubao-seedance-1-5-pro-251215",
+      label: "Seedance 3.5 Pro",
       mode: "video",
       protocol: "media",
-      maxReferenceImages: 9,
+      maxReferenceImages: 1,
       aspectRatios: VIDEO_RATIOS,
-      durations: SEEDANCE_2_DURATIONS,
-      resolutions: ["480p", "720p", "1080p", "4k"],
+      durations: ["5", "10"],
+      resolutions: ["480p", "720p", "1080p"],
       defaultResolution: "720p",
       referenceImagesParam: "images",
       videoResolutionParam: "resolution",
     },
     {
-      value: "seedance-2.0-fast",
-      label: "Seedance 2.0 Fast",
+      value: "viduq3",
+      label: "Vidu Q3",
       mode: "video",
       protocol: "media",
-      maxReferenceImages: 9,
+      maxReferenceImages: 1,
       aspectRatios: VIDEO_RATIOS,
-      durations: SEEDANCE_2_DURATIONS,
-      resolutions: ["480p", "720p"],
-      defaultResolution: "720p",
-      referenceImagesParam: "images",
-      videoResolutionParam: "resolution",
-    },
-    {
-      value: "seedance-2.5",
-      label: "Seedance 2.5",
-      mode: "video",
-      protocol: "media",
-      maxReferenceImages: 30,
-      aspectRatios: VIDEO_RATIOS,
-      durations: SEEDANCE_2_5_DURATIONS,
-      resolutions: ["480p", "720p"],
+      durations: ["5", "10"],
+      resolutions: ["540p", "720p", "1080p"],
       defaultResolution: "720p",
       referenceImagesParam: "images",
       videoResolutionParam: "resolution",

@@ -34,8 +34,6 @@ services:
     environment:
       LINGKE_BASE_URL: ${LINGKE_BASE_URL:?LINGKE_BASE_URL is required}
       LINGKE_API_KEY: ${LINGKE_API_KEY:?LINGKE_API_KEY is required}
-      TRX_VIDEO_BASE_URL: ${TRX_VIDEO_BASE_URL:?TRX_VIDEO_BASE_URL is required}
-      TRX_VIDEO_API_KEY: ${TRX_VIDEO_API_KEY:?TRX_VIDEO_API_KEY is required}
       WORKFLOW_STORAGE_MODE: server
       DATABASE_URL: postgresql://canvas:${CANVAS_DATABASE_PASSWORD}@postgres:5432/canvas
       CANVAS_ADMIN_USERNAME: admin

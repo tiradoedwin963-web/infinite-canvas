@@ -16,14 +16,12 @@ import {
   readWorkflowInputs,
   removeWorkflowEdge,
   removeWorkflowNode,
-  retryWorkflowSubmissionUnknown,
   resizedWorkflowNodeBounds,
   schedulerDefaults,
   workflowEdgeKinds,
   workflowEdgeGeometry,
   workflowEdgePath,
   workflowInputPorts,
-  workflowImageMimeType,
   workflowPendingInputPoint,
 } from "../app/workflow/graph.ts";
 
@@ -31,15 +29,6 @@ function ids() {
   let value = 0;
   return () => `workflow-${++value}`;
 }
-
-test("infers generated image MIME types from stable result URLs", () => {
-  assert.equal(workflowImageMimeType("image/png", undefined, undefined), "image/png");
-  assert.equal(
-    workflowImageMimeType("application/octet-stream", undefined, "https://cdn.example/result.png?token=1"),
-    "image/png",
-  );
-  assert.equal(workflowImageMimeType("application/octet-stream", undefined, "https://cdn.example/result.bin"), "");
-});
 
 function source(id, kind, text = "") {
   return { id, x: 0, y: 0, type: "source", kind, text };
@@ -64,7 +53,7 @@ function storyOperation(overrides = {}) {
     title: "夜班电梯",
     globalContext: "角色造型、场景光线和画面风格必须统一。",
     imageModel: "gemini-3-pro-image-preview",
-    videoModel: "seedance-2.0",
+    videoModel: "doubao-seedance-1-5-pro-251215",
     aspectRatio: "9:16",
     imageResolution: "1K",
     videoResolution: "720p",
@@ -104,105 +93,16 @@ test("creates four workflow node types at the requested world coordinate", () =>
   assert.deepEqual(graph.nodes.slice(0, 3).map((node) => node.kind), ["text", "image", "video"]);
   assert.equal(graph.nodes[3].outputKind, "image");
   assert.equal(graph.nodes[3].model, "gemini-3-pro-image-preview");
-  assert.equal(graph.nodes[3].aspectRatio, "16:9");
 });
 
 test("keeps workflow persistence separate and rejects invalid versions", () => {
-  const persistedScheduler = { ...scheduler(), aspectRatio: "9:16" };
   const graph = {
     version: 1,
-    nodes: [source("text", "text", "hello"), persistedScheduler],
+    nodes: [source("text", "text", "hello"), scheduler()],
     edges: [{ id: "edge", sourceId: "text", targetId: "scheduler" }],
   };
   assert.deepEqual(parseWorkflowGraph(JSON.stringify(graph)), graph);
-  assert.equal(parseWorkflowGraph(JSON.stringify(graph)).nodes[1].aspectRatio, "9:16");
   assert.deepEqual(parseWorkflowGraph(JSON.stringify({ ...graph, version: 2 })), emptyWorkflowGraph());
-});
-
-test("moves unfinished legacy video nodes to the current video provider", () => {
-  const legacyScheduler = {
-    ...scheduler("legacy-video"),
-    ...schedulerDefaults("video"),
-    model: "doubao-seedance-1-5-pro-251215",
-  };
-  const legacyResult = {
-    id: "legacy-result",
-    x: 0,
-    y: 0,
-    type: "result",
-    kind: "video",
-    schedulerId: legacyScheduler.id,
-    text: "",
-    model: "doubao-seedance-1-5-pro-251215",
-    status: "ready",
-    progress: "",
-    error: "",
-  };
-  const parsed = parseWorkflowGraph(JSON.stringify({
-    version: 1,
-    nodes: [legacyScheduler, legacyResult],
-    edges: [],
-  }));
-  assert.deepEqual(parsed.nodes.map((node) => node.model), [
-    "seedance-2.0",
-    "seedance-2.0",
-  ]);
-});
-
-test("persists submission-unknown results and protects legacy fetch interruptions", () => {
-  const videoScheduler = {
-    ...scheduler("video-scheduler"),
-    ...schedulerDefaults("video"),
-  };
-  const unknown = {
-    id: "unknown",
-    x: 0,
-    y: 0,
-    type: "result",
-    kind: "video",
-    schedulerId: videoScheduler.id,
-    text: "",
-    model: videoScheduler.model,
-    status: "submission-unknown",
-    progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-  };
-  const persisted = parseWorkflowGraph(JSON.stringify({
-    version: 1,
-    nodes: [videoScheduler, unknown],
-    edges: [],
-  }));
-  assert.equal(persisted.nodes.find((node) => node.id === unknown.id).status, "submission-unknown");
-
-  const legacy = parseWorkflowGraph(JSON.stringify({
-    version: 1,
-    nodes: [{
-      ...unknown,
-      id: "legacy-fetch-error",
-      model: "viduq3",
-      status: "failed",
-      progress: "",
-      error: "Failed to fetch",
-    }],
-    edges: [],
-  }));
-  const migrated = legacy.nodes[0];
-  assert.equal(migrated.status, "submission-unknown");
-  assert.match(migrated.error, /未收到任务编号/);
-  assert.equal(migrated.model, "seedance-2.0");
-
-  const explicitFailure = parseWorkflowGraph(JSON.stringify({
-    version: 1,
-    nodes: [{
-      ...unknown,
-      id: "explicit-failure",
-      status: "failed",
-      progress: "",
-      error: "余额不足",
-    }],
-    edges: [],
-  }));
-  assert.equal(explicitFailure.nodes[0].status, "failed");
 });
 
 test("allows only source or result inputs into schedulers and rejects duplicates", () => {
@@ -307,26 +207,6 @@ test("reads direct upstream text, image and video in edge order without recursio
       "节点提示词",
     );
   }
-});
-
-test("uses all multi-shot image assets as references without assigning a single start frame", () => {
-  const inputs = {
-    text: [],
-    images: [
-      { ...source("lead", "image"), label: "主角", assetKind: "character" },
-      { ...source("scene", "image"), label: "湖畔", assetKind: "scene" },
-    ],
-    videos: [],
-  };
-  const prompt = buildWorkflowGenerationPrompt(inputs, {
-    ...scheduler("multi-shot"),
-    ...schedulerDefaults("video"),
-    storyRole: "video-scheduler",
-    mangaStoryboardTempo: "multi-shot",
-  });
-  assert.match(prompt, /图1：人物资产 · 主角[\s\S]*图2：场景资产 · 湖畔/);
-  assert.match(prompt, /全部图片仅作为本视频片段的资产参考/);
-  assert.doesNotMatch(prompt, /以图1为镜头起始画面/);
 });
 
 test("places scheduler input rows inside the card by persisted connection order and media kind", () => {
@@ -466,41 +346,6 @@ test("creates one text result or one to four independent media results and appen
   const textScheduler = { ...scheduler("text-job"), ...schedulerDefaults("text") };
   graph = { version: 1, nodes: [textScheduler], edges: [] };
   assert.equal(createWorkflowRun(graph, textScheduler.id, 10, idFactory).resultIds.length, 1);
-});
-
-test("requires explicit confirmation before reusing a submission-unknown result", () => {
-  const videoScheduler = {
-    ...scheduler("video-scheduler"),
-    ...schedulerDefaults("video"),
-  };
-  const unknown = {
-    id: "unknown-result",
-    x: 800,
-    y: 0,
-    type: "result",
-    kind: "video",
-    schedulerId: videoScheduler.id,
-    text: "",
-    model: videoScheduler.model,
-    status: "submission-unknown",
-    progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-    startedAt: 1,
-  };
-  const graph = { version: 1, nodes: [videoScheduler, unknown], edges: [] };
-
-  const blocked = createWorkflowRun(graph, videoScheduler.id, 10, ids());
-  assert.strictEqual(blocked.graph, graph);
-  assert.deepEqual(blocked.resultIds, []);
-
-  const retried = retryWorkflowSubmissionUnknown(graph, videoScheduler.id, 20, ids());
-  assert.deepEqual(retried.resultIds, [unknown.id]);
-  const reset = retried.graph.nodes.find((node) => node.id === unknown.id);
-  assert.equal(reset.status, "pending");
-  assert.equal(reset.progress, "等待提交");
-  assert.equal(reset.error, "");
-  assert.equal(reset.startedAt, 20);
-  assert.equal(retryWorkflowSubmissionUnknown(retried.graph, videoScheduler.id, 30, ids()).resultIds.length, 0);
 });
 
 test("keeps completed results when their scheduler is deleted", () => {
@@ -663,42 +508,26 @@ test("keeps extreme image ratios natural while applying preview edge limits", ()
 });
 
 test("creates an atomic short-drama graph to the right with reusable placeholders", () => {
-  const character = {
-    ...source("character", "image"),
+  const reference = {
+    ...source("reference", "image"),
     x: 500,
-    label: "白雪公主",
-    assetId: "asset-character",
-    assetKind: "character",
-  };
-  const scene = {
-    ...source("scene", "image"),
-    x: 500,
-    label: "王宫寝室",
-    assetId: "asset-scene",
-    assetKind: "scene",
-  };
-  const prop = {
-    ...source("prop", "image"),
-    x: 500,
-    label: "毒苹果",
-    assetId: "asset-prop",
-    assetKind: "prop",
+    assetId: "asset-reference",
   };
   const operation = storyOperation({
     shots: storyOperation().shots.map((shot, index) => ({
       ...shot,
-      referenceNodeIds: index === 0 ? [character.id, scene.id, prop.id] : [],
+      referenceNodeIds: index === 0 ? [reference.id] : [],
     })),
   });
   const created = createStoryWorkflow(
-    { version: 1, nodes: [character, scene, prop], edges: [] },
+    { version: 1, nodes: [reference], edges: [] },
     operation,
     ids(),
   );
   const storyNodes = created.graph.nodes.filter((node) => node.storyId === created.storyId);
   assert.equal(storyNodes.length, 11);
-  assert.equal(created.graph.edges.length, 19);
-  assert.ok(storyNodes.every((node) => node.x > character.x));
+  assert.equal(created.graph.edges.length, 15);
+  assert.ok(storyNodes.every((node) => node.x > reference.x));
   assert.deepEqual(
     storyNodes.filter((node) => node.shotRef === "shot-01").map((node) => node.storyRole),
     ["shot", "storyboard-scheduler", "storyboard", "video-scheduler", "clip"],
@@ -707,21 +536,8 @@ test("creates an atomic short-drama graph to the right with reusable placeholder
   const imageScheduler = storyNodes.find((node) => node.storyRole === "storyboard-scheduler");
   const videoScheduler = storyNodes.find((node) => node.storyRole === "video-scheduler");
   assert.equal(imagePlaceholder.status, "ready");
-  assert.ok(created.graph.edges.some((edge) => edge.sourceId === character.id && edge.targetId === imageScheduler.id));
+  assert.ok(created.graph.edges.some((edge) => edge.sourceId === reference.id && edge.targetId === imageScheduler.id));
   assert.ok(created.graph.edges.some((edge) => edge.sourceId === imagePlaceholder.id && edge.targetId === videoScheduler.id));
-  assert.ok(created.graph.edges.some((edge) => edge.sourceId === character.id && edge.targetId === videoScheduler.id));
-  assert.ok(created.graph.edges.some((edge) => edge.sourceId === scene.id && edge.targetId === videoScheduler.id));
-  assert.ok(!created.graph.edges.some((edge) => edge.sourceId === prop.id && edge.targetId === videoScheduler.id));
-  const videoInputs = readWorkflowInputs(created.graph, videoScheduler.id);
-  assert.deepEqual(videoInputs.images.map((node) => node.id), [
-    imagePlaceholder.id,
-    character.id,
-    scene.id,
-  ]);
-  assert.match(
-    buildWorkflowGenerationPrompt(videoInputs, videoScheduler),
-    /图1：分镜首帧[\s\S]*图2：人物资产 · 白雪公主[\s\S]*图3：场景资产 · 王宫寝室/,
-  );
   const sizedGraph = {
     ...created.graph,
     nodes: created.graph.nodes.map((node) =>

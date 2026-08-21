@@ -198,13 +198,6 @@ export function applyAgentOperations(
       continue;
     }
 
-    if (
-      operation.type !== "connect_nodes" &&
-      operation.type !== "disconnect_nodes"
-    ) {
-      results.push({ operation, applied: false, message: "当前创作画布不支持此工作流操作。" });
-      continue;
-    }
     const sourceId = resolveNodeId(operation.sourceId, aliases);
     const targetId = resolveNodeId(operation.targetId, aliases);
     if (

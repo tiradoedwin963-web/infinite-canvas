@@ -3,9 +3,8 @@ import type { ComposerMode } from "./models";
 export type GenerateReferenceImage = {
   name: string;
   mimeType: string;
-  dataUrl?: string;
-  size?: number;
-  assetId?: string;
+  dataUrl: string;
+  size: number;
 };
 
 export type GenerateRequest = {

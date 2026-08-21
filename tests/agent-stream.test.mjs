@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  AgentSseError,
   encodeAgentSseEvent,
   extractProgressSummary,
   readAgentSseResponse,
@@ -76,18 +75,12 @@ test("reads byte-split agent SSE without exposing result before completion", asy
 
 test("reports sanitized SSE errors and incomplete streams", async () => {
   const failed = new Response(
-    byteStream(encodeAgentSseEvent("error", {
-      message: "请求超时。",
-      code: "response-envelope",
-    })),
+    byteStream(encodeAgentSseEvent("error", { message: "请求超时。" })),
     { headers: { "content-type": "text/event-stream" } },
   );
   await assert.rejects(
     readAgentSseResponse(failed, () => {}),
-    (error) =>
-      error instanceof AgentSseError &&
-      error.code === "response-envelope" &&
-      /请求超时/.test(error.message),
+    /请求超时/,
   );
 
   const incomplete = new Response(

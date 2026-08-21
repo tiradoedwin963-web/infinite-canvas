@@ -5,24 +5,7 @@ import {
   type ComposerMode,
 } from "../ai/models.ts";
 import type { TaskStatusResponse } from "../ai/types";
-import type {
-  AgentCreateStoryWorkflowOperation,
-  AgentMangaPlanningStage,
-  AgentMangaPlanningStatus,
-  AgentMangaStoryboardTempo,
-  AgentStoryboardMode,
-  ContinuityReport,
-  MangaVideoSegment,
-  ScenePlan,
-  ShotPlan,
-  StoryBeat,
-} from "../ai/agent.ts";
-import {
-  isPersistedContinuityReport,
-  isPersistedScenePlan,
-  isPersistedShotPlan,
-  isPersistedStoryBeats,
-} from "../ai/agent.ts";
+import type { AgentCreateStoryWorkflowOperation } from "../ai/agent.ts";
 
 export const WORKFLOW_STORAGE_KEY = "lingke-workflow-canvas-v1";
 export const WORKFLOW_VERSION = 1;
@@ -36,28 +19,13 @@ export const WORKFLOW_INPUT_ROW_STEP = 30;
 const WORKFLOW_MEDIA_MIN_EDGE = 96;
 const WORKFLOW_MEDIA_MAX_EDGE = 1200;
 
-export function workflowImageMimeType(
-  blobType: string,
-  assetMimeType: string | undefined,
-  resultUrl: string | undefined,
-) {
-  if (blobType.startsWith("image/")) return blobType;
-  if (assetMimeType?.startsWith("image/")) return assetMimeType;
-  const path = resultUrl?.split(/[?#]/, 1)[0].toLowerCase() ?? "";
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  if (path.endsWith(".webp")) return "image/webp";
-  return "";
-}
-
 export type WorkflowNodeStatus =
   | "ready"
   | "pending"
   | "running"
   | "success"
   | "failed"
-  | "paused"
-  | "submission-unknown";
+  | "paused";
 
 export type WorkflowStoryRole =
   | "project"
@@ -65,11 +33,7 @@ export type WorkflowStoryRole =
   | "asset-spec"
   | "asset-scheduler"
   | "asset-result"
-  | "story-beats"
-  | "scene-plan"
   | "shot"
-  | "storyboard-table"
-  | "continuity-report"
   | "storyboard-scheduler"
   | "storyboard"
   | "video-scheduler"
@@ -90,37 +54,6 @@ export type WorkflowAssetPlanningStatus =
   | "failed"
   | "complete";
 
-export type WorkflowStoryboardTableRow = {
-  shotId: string;
-  timecode: string;
-  duration: number;
-  referenceAssets: string;
-  sceneTime: string;
-  shotSizeLens: string;
-  camera: string;
-  composition: string;
-  performance: string;
-  voiceover: string;
-  sound: string;
-  transition: string;
-  continuity: string;
-  lightingTexture: string;
-};
-
-export type WorkflowStoryboardVideoTask = MangaVideoSegment & {
-  schedulerId: string;
-};
-
-export type WorkflowStoryboardTable = {
-  version: 1;
-  tempo: AgentMangaStoryboardTempo;
-  shotPlans: ShotPlan[];
-  rows: WorkflowStoryboardTableRow[];
-  videoTasks: WorkflowStoryboardVideoTask[];
-  totalDuration: number;
-  validation: "通过" | "需检查";
-};
-
 type WorkflowNodeBase = {
   id: string;
   x: number;
@@ -137,24 +70,12 @@ type WorkflowNodeBase = {
   foundationRole?: "lead" | "support";
   assetStrategy?: "foundation-pair-v1";
   foundationApprovedAt?: number;
-  storyboardMode?: AgentStoryboardMode;
-  mangaStoryboardTempo?: AgentMangaStoryboardTempo;
   storyVisualStyle?: string;
   planningStage?: WorkflowAssetPlanningStage;
   planningStatus?: WorkflowAssetPlanningStatus;
   planningChunkIndex?: number;
   projectAspectRatio?: string;
   storyImageModel?: string;
-  mangaPlanningStage?: AgentMangaPlanningStage;
-  mangaPlanningStatus?: AgentMangaPlanningStatus;
-  mangaPlanningChunkIndex?: number;
-  continuityApprovedAt?: number;
-  storyBeats?: StoryBeat[];
-  scenePlan?: ScenePlan;
-  shotPlan?: ShotPlan;
-  continuityReport?: ContinuityReport;
-  videoSegment?: MangaVideoSegment;
-  storyboardTable?: WorkflowStoryboardTable;
 };
 
 export type WorkflowSourceNode = WorkflowNodeBase & {
@@ -248,62 +169,6 @@ export function emptyWorkflowGraph(): WorkflowGraph {
   return { version: WORKFLOW_VERSION, nodes: [], edges: [] };
 }
 
-function isPersistedVideoSegment(value: unknown): value is MangaVideoSegment {
-  if (!value || typeof value !== "object") return false;
-  const segment = value as Partial<MangaVideoSegment>;
-  return typeof segment.segmentId === "string" &&
-    Array.isArray(segment.shotIds) &&
-    segment.shotIds.every((id) => typeof id === "string") &&
-    Array.isArray(segment.sceneIds) &&
-    segment.sceneIds.every((id) => typeof id === "string") &&
-    typeof segment.duration === "number" &&
-    Number.isInteger(segment.duration) &&
-    segment.duration >= 4 &&
-    segment.duration <= 30 &&
-    Array.isArray(segment.referenceNodeIds) &&
-    segment.referenceNodeIds.every((id) => typeof id === "string");
-}
-
-function isWorkflowStoryboardTableRow(value: unknown): value is WorkflowStoryboardTableRow {
-  if (!value || typeof value !== "object") return false;
-  const row = value as Partial<WorkflowStoryboardTableRow>;
-  return typeof row.shotId === "string" &&
-    typeof row.timecode === "string" &&
-    typeof row.duration === "number" &&
-    Number.isInteger(row.duration) &&
-    row.duration > 0 &&
-    typeof row.referenceAssets === "string" &&
-    typeof row.sceneTime === "string" &&
-    typeof row.shotSizeLens === "string" &&
-    typeof row.camera === "string" &&
-    typeof row.composition === "string" &&
-    typeof row.performance === "string" &&
-    typeof row.voiceover === "string" &&
-    typeof row.sound === "string" &&
-    typeof row.transition === "string" &&
-    typeof row.continuity === "string" &&
-    typeof row.lightingTexture === "string";
-}
-
-function isWorkflowStoryboardTable(value: unknown): value is WorkflowStoryboardTable {
-  if (!value || typeof value !== "object") return false;
-  const table = value as Partial<WorkflowStoryboardTable>;
-  return table.version === 1 &&
-    (table.tempo === "long-form" || table.tempo === "short-cut" || table.tempo === "multi-shot") &&
-    Array.isArray(table.shotPlans) &&
-    table.shotPlans.every(isPersistedShotPlan) &&
-    Array.isArray(table.rows) &&
-    table.rows.every(isWorkflowStoryboardTableRow) &&
-    Array.isArray(table.videoTasks) &&
-    table.videoTasks.every((task) =>
-      isPersistedVideoSegment(task) && typeof task.schedulerId === "string"
-    ) &&
-    typeof table.totalDuration === "number" &&
-    Number.isInteger(table.totalDuration) &&
-    table.totalDuration >= 0 &&
-    (table.validation === "通过" || table.validation === "需检查");
-}
-
 function validBase(node: Partial<WorkflowNode>) {
   return (
     typeof node.id === "string" &&
@@ -328,11 +193,7 @@ function validBase(node: Partial<WorkflowNode>) {
         "asset-spec",
         "asset-scheduler",
         "asset-result",
-        "story-beats",
-        "scene-plan",
         "shot",
-        "storyboard-table",
-        "continuity-report",
         "storyboard-scheduler",
         "storyboard",
         "video-scheduler",
@@ -350,13 +211,6 @@ function validBase(node: Partial<WorkflowNode>) {
     (node.foundationApprovedAt === undefined ||
       (typeof node.foundationApprovedAt === "number" &&
         Number.isFinite(node.foundationApprovedAt))) &&
-    (node.storyboardMode === undefined ||
-      node.storyboardMode === "comic" ||
-      node.storyboardMode === "tvc") &&
-    (node.mangaStoryboardTempo === undefined ||
-      node.mangaStoryboardTempo === "long-form" ||
-      node.mangaStoryboardTempo === "short-cut" ||
-      node.mangaStoryboardTempo === "multi-shot") &&
     (node.storyVisualStyle === undefined ||
       typeof node.storyVisualStyle === "string") &&
     (node.planningStage === undefined ||
@@ -375,32 +229,6 @@ function validBase(node: Partial<WorkflowNode>) {
     (node.projectAspectRatio === undefined ||
       typeof node.projectAspectRatio === "string") &&
     (node.storyImageModel === undefined || typeof node.storyImageModel === "string")
-    && (node.mangaPlanningStage === undefined || [
-      "story-beats",
-      "scene-plans",
-      "shot-plans",
-      "continuity",
-      "complete",
-    ].includes(node.mangaPlanningStage))
-    && (node.mangaPlanningStatus === undefined || [
-      "planning",
-      "stopped",
-      "failed",
-      "awaiting-continuity-approval",
-      "complete",
-    ].includes(node.mangaPlanningStatus))
-    && (node.mangaPlanningChunkIndex === undefined ||
-      (Number.isInteger(node.mangaPlanningChunkIndex) && node.mangaPlanningChunkIndex >= 0))
-    && (node.continuityApprovedAt === undefined ||
-      (typeof node.continuityApprovedAt === "number" &&
-        Number.isFinite(node.continuityApprovedAt)))
-    && (node.storyBeats === undefined || isPersistedStoryBeats(node.storyBeats))
-    && (node.scenePlan === undefined || isPersistedScenePlan(node.scenePlan))
-    && (node.shotPlan === undefined || isPersistedShotPlan(node.shotPlan))
-    && (node.continuityReport === undefined ||
-      isPersistedContinuityReport(node.continuityReport))
-    && (node.videoSegment === undefined || isPersistedVideoSegment(node.videoSegment))
-    && (node.storyboardTable === undefined || isWorkflowStoryboardTable(node.storyboardTable))
   );
 }
 
@@ -436,15 +264,7 @@ function isWorkflowNode(value: unknown): value is WorkflowNode {
       typeof node.schedulerId === "string" &&
       typeof node.text === "string" &&
       typeof node.model === "string" &&
-      [
-        "ready",
-        "pending",
-        "running",
-        "success",
-        "failed",
-        "paused",
-        "submission-unknown",
-      ].includes(
+      ["ready", "pending", "running", "success", "failed", "paused"].includes(
         String(node.status),
       ) &&
       typeof node.progress === "string" &&
@@ -481,44 +301,9 @@ export function parseWorkflowGraph(raw: string | null): WorkflowGraph {
       return emptyWorkflowGraph();
     }
     const ids = new Set(value.nodes.map((node) => node.id));
-    const legacyVideoModels = new Set([
-      "doubao-seedance-1-5-pro-251215",
-      "viduq3",
-    ]);
-    const nodes = value.nodes.map((node) => {
-      const current =
-        node.type === "result" &&
-        node.kind === "video" &&
-        node.status === "failed" &&
-        !node.taskId &&
-        node.error === "Failed to fetch"
-          ? {
-              ...node,
-              status: "submission-unknown" as const,
-              progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-              error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
-            }
-          : node;
-      if (
-        current.type === "scheduler" &&
-        current.outputKind === "video" &&
-        legacyVideoModels.has(current.model)
-      ) {
-        return { ...current, model: DEFAULT_MODEL_BY_MODE.video };
-      }
-      if (
-        current.type === "result" &&
-        current.kind === "video" &&
-        current.status !== "success" &&
-        legacyVideoModels.has(current.model)
-      ) {
-        return { ...current, model: DEFAULT_MODEL_BY_MODE.video };
-      }
-      return current;
-    });
     return {
       version: WORKFLOW_VERSION,
-      nodes,
+      nodes: value.nodes,
       edges: value.edges.filter(
         (edge) => ids.has(edge.sourceId) && ids.has(edge.targetId),
       ),
@@ -570,7 +355,6 @@ export function createStoryWorkflow(
   graph: WorkflowGraph,
   operation: AgentCreateStoryWorkflowOperation,
   idFactory: IdFactory = () => crypto.randomUUID(),
-  storyIdOverride?: string,
 ): { graph: WorkflowGraph; storyId: string } {
   if (!operation.isFinal || operation.chunkIndex !== 0 || !operation.shots.length) {
     throw new Error("短剧工作流方案尚未完整，未创建节点。");
@@ -593,7 +377,7 @@ export function createStoryWorkflow(
     });
   });
 
-  const storyId = storyIdOverride ?? idFactory();
+  const storyId = idFactory();
   const right = graph.nodes.reduce((maximum, node) => {
     const size = getWorkflowNodeSize(node);
     return Math.max(maximum, node.x + size.width);
@@ -723,12 +507,6 @@ export function createStoryWorkflow(
     connect(projectId, videoSchedulerId);
     connect(shotId, videoSchedulerId);
     connect(imageResultId, videoSchedulerId);
-    shot.referenceNodeIds.forEach((nodeId) => {
-      const node = nodesById.get(nodeId);
-      if (node?.assetKind === "character" || node?.assetKind === "scene") {
-        connect(nodeId, videoSchedulerId);
-      }
-    });
     connect(videoSchedulerId, videoResultId);
   });
 
@@ -1069,38 +847,10 @@ export function buildWorkflowGenerationPrompt(
 ): string {
   if (
     scheduler.storyRole === "asset-scheduler" ||
-    scheduler.storyRole === "storyboard-scheduler"
+    scheduler.storyRole === "storyboard-scheduler" ||
+    scheduler.storyRole === "video-scheduler"
   ) {
     return scheduler.prompt.trim();
-  }
-  if (scheduler.storyRole === "video-scheduler") {
-    const hasStoryReferences = inputs.images.some(
-      (node) =>
-        node.storyRole === "storyboard" ||
-        node.assetKind === "character" ||
-        node.assetKind === "scene",
-    );
-    if (!hasStoryReferences) return scheduler.prompt.trim();
-    const references = inputs.images.map((node, index) => {
-      const role = node.storyRole === "storyboard"
-        ? "分镜首帧"
-        : node.assetKind === "character"
-          ? "人物资产"
-          : node.assetKind === "scene"
-            ? "场景资产"
-            : "参考图";
-      return `图${index + 1}：${role} · ${node.label || node.assetName || node.text}`;
-    });
-    const guide = references.length
-      ? [
-          "参考素材顺序：",
-          ...references,
-          scheduler.mangaStoryboardTempo === "multi-shot"
-            ? "全部图片仅作为本视频片段的资产参考；按图号保持人物、服装、道具、场景的外观、数量、空间、陈设、光线与时间特征，不将任意单张图片指定为起始画面或构图基础。"
-            : "以图1为镜头起始画面和构图基础；同时严格保持后续人物资产的外观、服装和身份，以及场景资产的空间、陈设、光线与时间特征。",
-        ].join("\n")
-      : "";
-    return [guide, scheduler.prompt.trim()].filter(Boolean).join("\n\n");
   }
   return buildWorkflowPrompt(inputs, scheduler.prompt);
 }
@@ -1134,7 +884,6 @@ export function createWorkflowRun(
   schedulerId: string,
   now: number,
   idFactory: IdFactory = () => crypto.randomUUID(),
-  allowSubmissionUnknownRetry = false,
 ): { graph: WorkflowGraph; resultIds: string[] } {
   const scheduler = graph.nodes.find(
     (node): node is WorkflowSchedulerNode =>
@@ -1142,39 +891,6 @@ export function createWorkflowRun(
   );
   if (!scheduler) return { graph, resultIds: [] };
   const count = scheduler.outputKind === "text" ? 1 : scheduler.outputCount;
-  const unknownResults = graph.nodes.filter(
-    (node): node is WorkflowResultNode =>
-      node.type === "result" &&
-      node.schedulerId === scheduler.id &&
-      node.status === "submission-unknown",
-  );
-  if (unknownResults.length) {
-    if (!allowSubmissionUnknownRetry) return { graph, resultIds: [] };
-    const reusable = unknownResults.slice(0, count);
-    return {
-      resultIds: reusable.map((node) => node.id),
-      graph: {
-        ...graph,
-        nodes: graph.nodes.map((node) =>
-          reusable.some((candidate) => candidate.id === node.id)
-            ? {
-                ...node,
-                ...(node.type === "result" && node.kind === "image"
-                  ? { width: undefined, height: undefined }
-                  : {}),
-                status: "pending" as const,
-                progress: "等待提交",
-                error: "",
-                model: scheduler.model,
-                resultUrl: undefined,
-                taskId: undefined,
-                startedAt: now,
-              }
-            : node,
-        ),
-      },
-    };
-  }
   const storyResults = graph.nodes.filter(
     (node): node is WorkflowResultNode =>
       node.type === "result" &&
@@ -1246,22 +962,6 @@ export function createWorkflowRun(
     resultIds.push(id);
   }
   return { graph: next, resultIds };
-}
-
-export function retryWorkflowSubmissionUnknown(
-  graph: WorkflowGraph,
-  schedulerId: string,
-  now: number,
-  idFactory: IdFactory = () => crypto.randomUUID(),
-): { graph: WorkflowGraph; resultIds: string[] } {
-  const hasUnknownResult = graph.nodes.some(
-    (node) =>
-      node.type === "result" &&
-      node.schedulerId === schedulerId &&
-      node.status === "submission-unknown",
-  );
-  if (!hasUnknownResult) return { graph, resultIds: [] };
-  return createWorkflowRun(graph, schedulerId, now, idFactory, true);
 }
 
 export function updateWorkflowResult(
