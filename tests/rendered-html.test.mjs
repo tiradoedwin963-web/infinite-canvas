@@ -447,6 +447,18 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflow, /cloudSyncError/);
   assert.match(workflow, /尚未同步：/);
   assert.match(workflow, /retryCloudProjectSave/);
+  assert.match(workflow, /cloudPendingConversationRef/);
+  assert.match(
+    workflow,
+    /const applyCloudProject[\s\S]*?cloudPendingConversationRef\.current = null;/,
+  );
+  assert.match(
+    workflow,
+    /cloudConversationLastSavedRef\.current = pending\.serialized;[\s\S]*?cloudPendingConversationRef\.current = null;/,
+  );
+  assert.match(workflow, /conversation: pending\.store/);
+  assert.match(workflow, /pendingConversation\?\.projectId === activeProjectIdRef\.current/);
+  assert.match(workflow, /saveRemoteConversation\(pendingConversation\.store\)/);
   assert.match(workflow, /revision-conflict/);
   assert.match(workflow, /aria-label="打开工作流 Agent"/);
   assert.match(workflow, /先分析类型、主题、受众、情绪和时长/);

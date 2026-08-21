@@ -2421,3 +2421,37 @@
 - `docs/canvas.md`：记录生产同步诊断、重试边界与访问日志位置。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/workflow/cloud-client.ts components/workflow/workflow-canvas.tsx app/globals.css deploy/canvas/Caddyfile tests/cloud-client.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-21 - Task: 让云端同步重试覆盖未保存对话
+
+### What was done
+- 发现工具栏“重试”只会重新排队项目图保存；当未同步状态来自 Agent 对话写入失败时，不会产生任何保存请求。
+- 为当前项目保存最新未写入的对话快照，并让同一“重试”安全重发该快照；项目切换、成功保存或版本冲突继续隔离旧项目状态。
+- 该重试仅调用项目或对话保存接口，不会发起 Agent、图片或视频请求。
+
+### Testing
+- `node --test tests/rendered-html.test.mjs`：通过。
+- `npm run lint`：通过。
+- `npm test`、`npm run build` 与 `git diff --check`：在提交前重新执行。
+
+### Notes
+- `components/workflow/workflow-canvas.tsx`：持久保存当前项目的待写入对话，并在工具栏重试时安全重发。
+- `tests/rendered-html.test.mjs`：覆盖待写入对话与重试入口的回归结构。
+- `docs/canvas.md`：说明同步重试包含最新未保存对话、且不触发媒体生成。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- components/workflow/workflow-canvas.tsx tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-21 - Task: 验证云端对话重试修复
+
+### What was done
+- 在提交前完成云端对话重试与既有视频未知提交保护的完整工程验证。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过；Vinext 生产构建成功，216 项自动化测试全部通过。
+- `npm run build`：通过。
+- `git diff --check`：通过。
+
+### Notes
+- `progress.md`：补充本次提交前的完整验证证据。
+- 回滚方式：随同上一条“让云端同步重试覆盖未保存对话”记录的回滚方式执行；提交后使用 `git revert <本轮提交哈希>`。

@@ -375,6 +375,11 @@ export function WorkflowCanvas() {
   } | null>(null);
   const cloudConversationSaveRef = useRef(Promise.resolve());
   const cloudConversationLastSavedRef = useRef("");
+  const cloudPendingConversationRef = useRef<{
+    projectId: string;
+    serialized: string;
+    store: AgentConversationStore;
+  } | null>(null);
   const cloudSaveRef = useRef(Promise.resolve());
   const cloudSaveTimerRef = useRef<number | null>(null);
   const cloudLastSavedRef = useRef("");
@@ -451,6 +456,7 @@ export function WorkflowCanvas() {
 
   const applyCloudProject = useCallback((project: CloudProjectDocument) => {
     cloudRevisionRef.current = project.revision;
+    cloudPendingConversationRef.current = null;
     cloudConversationRef.current = {
       projectId: project.id,
       revision: project.conversationRevision,
@@ -491,23 +497,41 @@ export function WorkflowCanvas() {
   const saveRemoteConversation = useCallback(async (store: AgentConversationStore) => {
     const serialized = JSON.stringify(store);
     if (serialized === cloudConversationLastSavedRef.current) return;
+    const current = cloudConversationRef.current;
+    if (!current) return;
+    const pending = {
+      projectId: current.projectId,
+      serialized,
+      store,
+    };
+    cloudPendingConversationRef.current = pending;
     cloudConversationSaveRef.current = cloudConversationSaveRef.current.then(async () => {
       const current = cloudConversationRef.current;
-      if (!current) return;
+      if (!current || current.projectId !== pending.projectId) return;
       try {
         const saved = await saveCloudConversation({
           projectId: current.projectId,
-          conversation: store,
+          conversation: pending.store,
           revision: current.revision,
         });
-        if (cloudConversationRef.current?.projectId !== current.projectId) return;
+        if (cloudConversationRef.current?.projectId !== pending.projectId) return;
         cloudConversationRef.current = {
-          projectId: current.projectId,
+          projectId: pending.projectId,
           revision: saved.revision,
-          store,
+          store: pending.store,
         };
-        cloudConversationLastSavedRef.current = serialized;
+        cloudConversationLastSavedRef.current = pending.serialized;
+        if (
+          cloudPendingConversationRef.current?.projectId === pending.projectId &&
+          cloudPendingConversationRef.current.serialized === pending.serialized
+        ) {
+          cloudPendingConversationRef.current = null;
+        }
       } catch (error) {
+        if (
+          activeProjectIdRef.current !== pending.projectId ||
+          cloudConversationRef.current?.projectId !== pending.projectId
+        ) return;
         const conflict = isCloudRequestError(error) &&
           error.category === "revision-conflict";
         setCloudSyncState(conflict ? "conflict" : "unsynced");
@@ -2064,9 +2088,13 @@ export function WorkflowCanvas() {
   }
 
   function retryCloudProjectSave() {
+    const pendingConversation = cloudPendingConversationRef.current;
     cloudPendingSerializedRef.current = "";
     setCloudSyncError(null);
     setCloudSyncState("idle");
+    if (pendingConversation?.projectId === activeProjectIdRef.current) {
+      void saveRemoteConversation(pendingConversation.store);
+    }
   }
 
   function exportLocalProject() {
