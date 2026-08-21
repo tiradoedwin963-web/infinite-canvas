@@ -16,13 +16,27 @@ export type LingkeClientConfig = {
   apiKey: string;
 };
 
+export type LingkeRequestErrorCode = "submission-unknown";
+
 export class LingkeRequestError extends Error {
   readonly status: number;
+  readonly code?: LingkeRequestErrorCode;
 
-  constructor(message: string, status = 502) {
+  constructor(
+    message: string,
+    status = 502,
+    code?: LingkeRequestErrorCode,
+  ) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+export function toSafeRequestErrorPayload(error: LingkeRequestError) {
+  return error.code
+    ? { error: error.message, code: error.code }
+    : { error: error.message };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

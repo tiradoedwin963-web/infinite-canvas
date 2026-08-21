@@ -16,6 +16,7 @@ import {
   readWorkflowInputs,
   removeWorkflowEdge,
   removeWorkflowNode,
+  retryWorkflowSubmissionUnknown,
   resizedWorkflowNodeBounds,
   schedulerDefaults,
   workflowEdgeKinds,
@@ -146,6 +147,62 @@ test("moves unfinished legacy video nodes to the current video provider", () => 
     "seedance-2.0",
     "seedance-2.0",
   ]);
+});
+
+test("persists submission-unknown results and protects legacy fetch interruptions", () => {
+  const videoScheduler = {
+    ...scheduler("video-scheduler"),
+    ...schedulerDefaults("video"),
+  };
+  const unknown = {
+    id: "unknown",
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: videoScheduler.id,
+    text: "",
+    model: videoScheduler.model,
+    status: "submission-unknown",
+    progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+  };
+  const persisted = parseWorkflowGraph(JSON.stringify({
+    version: 1,
+    nodes: [videoScheduler, unknown],
+    edges: [],
+  }));
+  assert.equal(persisted.nodes.find((node) => node.id === unknown.id).status, "submission-unknown");
+
+  const legacy = parseWorkflowGraph(JSON.stringify({
+    version: 1,
+    nodes: [{
+      ...unknown,
+      id: "legacy-fetch-error",
+      model: "viduq3",
+      status: "failed",
+      progress: "",
+      error: "Failed to fetch",
+    }],
+    edges: [],
+  }));
+  const migrated = legacy.nodes[0];
+  assert.equal(migrated.status, "submission-unknown");
+  assert.match(migrated.error, /未收到任务编号/);
+  assert.equal(migrated.model, "seedance-2.0");
+
+  const explicitFailure = parseWorkflowGraph(JSON.stringify({
+    version: 1,
+    nodes: [{
+      ...unknown,
+      id: "explicit-failure",
+      status: "failed",
+      progress: "",
+      error: "余额不足",
+    }],
+    edges: [],
+  }));
+  assert.equal(explicitFailure.nodes[0].status, "failed");
 });
 
 test("allows only source or result inputs into schedulers and rejects duplicates", () => {
@@ -409,6 +466,41 @@ test("creates one text result or one to four independent media results and appen
   const textScheduler = { ...scheduler("text-job"), ...schedulerDefaults("text") };
   graph = { version: 1, nodes: [textScheduler], edges: [] };
   assert.equal(createWorkflowRun(graph, textScheduler.id, 10, idFactory).resultIds.length, 1);
+});
+
+test("requires explicit confirmation before reusing a submission-unknown result", () => {
+  const videoScheduler = {
+    ...scheduler("video-scheduler"),
+    ...schedulerDefaults("video"),
+  };
+  const unknown = {
+    id: "unknown-result",
+    x: 800,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: videoScheduler.id,
+    text: "",
+    model: videoScheduler.model,
+    status: "submission-unknown",
+    progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+    startedAt: 1,
+  };
+  const graph = { version: 1, nodes: [videoScheduler, unknown], edges: [] };
+
+  const blocked = createWorkflowRun(graph, videoScheduler.id, 10, ids());
+  assert.strictEqual(blocked.graph, graph);
+  assert.deepEqual(blocked.resultIds, []);
+
+  const retried = retryWorkflowSubmissionUnknown(graph, videoScheduler.id, 20, ids());
+  assert.deepEqual(retried.resultIds, [unknown.id]);
+  const reset = retried.graph.nodes.find((node) => node.id === unknown.id);
+  assert.equal(reset.status, "pending");
+  assert.equal(reset.progress, "等待提交");
+  assert.equal(reset.error, "");
+  assert.equal(reset.startedAt, 20);
+  assert.equal(retryWorkflowSubmissionUnknown(retried.graph, videoScheduler.id, 30, ids()).resultIds.length, 0);
 });
 
 test("keeps completed results when their scheduler is deleted", () => {

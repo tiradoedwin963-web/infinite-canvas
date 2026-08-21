@@ -34,7 +34,6 @@ import {
 } from "@/app/ai/models";
 import type {
   GenerateReferenceImage,
-  GenerateResponse,
   TaskStatusResponse,
 } from "@/app/ai/types";
 import {
@@ -65,6 +64,7 @@ import {
   readWorkflowInputs,
   removeWorkflowEdge,
   removeWorkflowNode,
+  retryWorkflowSubmissionUnknown,
   resizedWorkflowNodeBounds,
   resizeWorkflowNode,
   schedulerDefaults,
@@ -127,6 +127,12 @@ import {
   workflowGridTransform,
 } from "@/app/workflow/performance";
 import {
+  isSubmissionUnknownError,
+  readWorkflowGenerateResponse,
+  SUBMISSION_UNKNOWN_MESSAGE,
+  SUBMISSION_UNKNOWN_PROGRESS,
+} from "@/app/workflow/submission-unknown";
+import {
   WORKFLOW_PROJECTS_STORAGE_KEY,
   createWorkflowProject,
   ensureWorkflowProjectRegistry,
@@ -150,6 +156,8 @@ import {
   createCloudProject,
   deleteCloudAsset,
   deleteCloudProject,
+  describeCloudRequestError,
+  isCloudRequestError,
   loadCloudProject,
   loadCloudProjects,
   readCloudAsset,
@@ -318,11 +326,13 @@ export function WorkflowCanvas() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [projectCloneBusy, setProjectCloneBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
+  const [submissionUnknownRetryId, setSubmissionUnknownRetryId] = useState<string | null>(null);
   const [storyboardTableStoryId, setStoryboardTableStoryId] = useState<string | null>(null);
   const [storyboardTableView, setStoryboardTableView] = useState<"shots" | "tasks">("shots");
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
   >("idle");
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -385,12 +395,15 @@ export function WorkflowCanvas() {
     const safeRestored = {
       ...restored,
       nodes: restored.nodes.map((node) =>
-        node.type === "result" && node.status === "pending" && !node.taskId
+        node.type === "result" &&
+        node.kind === "video" &&
+        node.status === "pending" &&
+        !node.taskId
           ? {
               ...node,
-              status: "paused" as const,
-              progress: "提交状态未知",
-              error: "页面在任务 ID 保存前中断，已停止自动重试以避免重复计费。",
+              status: "submission-unknown" as const,
+              progress: SUBMISSION_UNKNOWN_PROGRESS,
+              error: SUBMISSION_UNKNOWN_MESSAGE,
             }
           : node,
       ),
@@ -412,6 +425,7 @@ export function WorkflowCanvas() {
     setConnection(null);
     setHoveredEdgeId(null);
     setDetailId(null);
+    setSubmissionUnknownRetryId(null);
     setAgentContextNodeId(null);
     setBatchRun(restoredBatch);
     viewportRef.current = restoredViewport;
@@ -444,6 +458,7 @@ export function WorkflowCanvas() {
     };
     cloudConversationLastSavedRef.current = JSON.stringify(project.conversation);
     setCloudSyncState("idle");
+    setCloudSyncError(null);
     cloudLastSavedRef.current = JSON.stringify({
       name: project.name,
       graph: project.graph,
@@ -493,10 +508,10 @@ export function WorkflowCanvas() {
         };
         cloudConversationLastSavedRef.current = serialized;
       } catch (error) {
-        const status = error && typeof error === "object" && "status" in error
-          ? Number(error.status)
-          : 0;
-        setCloudSyncState(status === 409 ? "conflict" : "unsynced");
+        const conflict = isCloudRequestError(error) &&
+          error.category === "revision-conflict";
+        setCloudSyncState(conflict ? "conflict" : "unsynced");
+        setCloudSyncError(conflict ? null : describeCloudRequestError(error));
       }
     });
     await cloudConversationSaveRef.current;
@@ -515,8 +530,11 @@ export function WorkflowCanvas() {
           applyCloudProject(project);
           setHydrated(true);
         })
-        .catch(() => {
-          if (!cancelled) setCloudSyncState("unsynced");
+        .catch((error) => {
+          if (!cancelled) {
+            setCloudSyncState("unsynced");
+            setCloudSyncError(describeCloudRequestError(error));
+          }
         });
       return () => {
         cancelled = true;
@@ -635,11 +653,12 @@ export function WorkflowCanvas() {
           cloudLastSavedRef.current = serialized;
           cloudPendingSerializedRef.current = "";
           setCloudSyncState("idle");
+          setCloudSyncError(null);
         } catch (error) {
-          const status = error && typeof error === "object" && "status" in error
-            ? Number(error.status)
-            : 0;
-          setCloudSyncState(status === 409 ? "conflict" : "unsynced");
+          const conflict = isCloudRequestError(error) &&
+            error.category === "revision-conflict";
+          setCloudSyncState(conflict ? "conflict" : "unsynced");
+          setCloudSyncError(conflict ? null : describeCloudRequestError(error));
           cloudPendingSerializedRef.current = "";
         }
       });
@@ -1420,13 +1439,28 @@ export function WorkflowCanvas() {
     [],
   );
 
-  const runScheduler = useCallback(async (schedulerId: string) => {
+  const runScheduler = useCallback(async (
+    schedulerId: string,
+    options: { retrySubmissionUnknown?: boolean } = {},
+  ) => {
     if (runningSchedulersRef.current.has(schedulerId)) return;
     const scheduler = graphRef.current.nodes.find(
       (node): node is WorkflowSchedulerNode =>
         node.id === schedulerId && node.type === "scheduler",
     );
     if (!scheduler) return;
+    const hasUnknownSubmission = graphRef.current.nodes.some(
+      (node) =>
+        node.type === "result" &&
+        node.schedulerId === scheduler.id &&
+        node.status === "submission-unknown",
+    );
+    if (hasUnknownSubmission && !options.retrySubmissionUnknown) {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: "该任务提交状态未知，请在结果节点确认重新提交。",
+      }));
+      return;
+    }
     const inputs = readWorkflowInputs(graphRef.current, scheduler.id);
     if (inputs.videos.length) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
@@ -1496,7 +1530,9 @@ export function WorkflowCanvas() {
       ) {
         throw new Error("参考图片合计不能超过 30MB。");
       }
-      const created = createWorkflowRun(graphRef.current, scheduler.id, Date.now());
+      const created = options.retrySubmissionUnknown
+        ? retryWorkflowSubmissionUnknown(graphRef.current, scheduler.id, Date.now())
+        : createWorkflowRun(graphRef.current, scheduler.id, Date.now());
       if (!created.resultIds.length) return;
       createdResultIds = created.resultIds;
       graphRef.current = created.graph;
@@ -1516,8 +1552,7 @@ export function WorkflowCanvas() {
               duration: scheduler.duration || undefined,
             }),
           });
-          if (!response.ok) throw new Error(await readApiError(response));
-          const result = (await response.json()) as GenerateResponse;
+          const result = await readWorkflowGenerateResponse(response, scheduler.outputKind);
           commitGraph((current) => result.kind === "text"
             ? updateWorkflowResult(current, resultId, {
                 status: "success", progress: "", text: result.content,
@@ -1526,10 +1561,16 @@ export function WorkflowCanvas() {
                 status: "pending", progress: "排队中", taskId: result.taskId, startedAt: Date.now(),
               }));
         } catch (error) {
+          const submissionUnknown = scheduler.outputKind === "video" &&
+            isSubmissionUnknownError(error);
           commitGraph((current) => updateWorkflowResult(current, resultId, {
-            status: "failed",
-            progress: "",
-            error: error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
+            status: submissionUnknown ? "submission-unknown" : "failed",
+            progress: submissionUnknown ? SUBMISSION_UNKNOWN_PROGRESS : "",
+            error: submissionUnknown
+              ? error instanceof Error && error.message
+                ? error.message
+                : SUBMISSION_UNKNOWN_MESSAGE
+              : error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
           }));
         }
       }));
@@ -1926,8 +1967,10 @@ export function WorkflowCanvas() {
     );
     if (!active) return;
     const remoteCount = graphRef.current.nodes.filter((node) =>
-      node.type === "result" && Boolean(node.taskId) &&
-      (node.status === "pending" || node.status === "running")
+      node.type === "result" &&
+      ((Boolean(node.taskId) &&
+        (node.status === "pending" || node.status === "running")) ||
+        node.status === "submission-unknown")
     ).length;
     const warning = [
       `删除项目“${active.name}”？`,
@@ -2020,6 +2063,12 @@ export function WorkflowCanvas() {
     }
   }
 
+  function retryCloudProjectSave() {
+    cloudPendingSerializedRef.current = "";
+    setCloudSyncError(null);
+    setCloudSyncState("idle");
+  }
+
   function exportLocalProject() {
     if (remote || !projects) return;
     const active = projects.projects.find((project) => project.id === projects.activeProjectId);
@@ -2109,7 +2158,12 @@ export function WorkflowCanvas() {
   }
 
   function deleteNode(node: WorkflowNode) {
-    if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
+    if (
+      node.type === "result" &&
+      (node.status === "pending" ||
+        node.status === "running" ||
+        node.status === "submission-unknown")
+    ) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
     }
     setSelectedIds((current) => current.filter((id) => id !== node.id));
@@ -2240,6 +2294,21 @@ export function WorkflowCanvas() {
       : null,
     [graph, storyboardTableStoryId],
   );
+  const submissionUnknownRetryResult = submissionUnknownRetryId
+    ? graph.nodes.find(
+        (node): node is WorkflowResultNode =>
+          node.id === submissionUnknownRetryId &&
+          node.type === "result" &&
+          node.status === "submission-unknown",
+      )
+    : undefined;
+
+  function confirmSubmissionUnknownRetry() {
+    const result = submissionUnknownRetryResult;
+    setSubmissionUnknownRetryId(null);
+    if (!result) return;
+    void runScheduler(result.schedulerId, { retrySubmissionUnknown: true });
+  }
 
   return (
     <main
@@ -2295,7 +2364,12 @@ export function WorkflowCanvas() {
             <span className="workflow-project-status">正在同步</span>
           ) : null}
           {remote && cloudSyncState === "unsynced" ? (
-            <><span className="workflow-project-status">尚未同步</span><button type="button" onClick={() => setCloudSyncState("idle")}>重试</button></>
+            <span className="workflow-project-sync-status" role="status" aria-live="polite">
+              <span className="workflow-project-status">
+                尚未同步：{cloudSyncError || "请重试保存项目。"}
+              </span>
+              <button type="button" onClick={retryCloudProjectSave}>重试</button>
+            </span>
           ) : null}
           {remote && cloudSyncState === "conflict" ? (
             <>
@@ -2345,6 +2419,23 @@ export function WorkflowCanvas() {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+      {submissionUnknownRetryResult ? (
+        <div className="workflow-project-editor-backdrop" data-workflow-isolated>
+          <section
+            aria-label="确认重新提交"
+            aria-modal="true"
+            className="workflow-project-editor workflow-submission-confirmation"
+            role="dialog"
+          >
+            <h2>确认重新提交视频？</h2>
+            <p>此前请求可能已经提交到视频平台，但未取得任务编号。重新提交可能产生重复费用。</p>
+            <div>
+              <button type="button" onClick={() => setSubmissionUnknownRetryId(null)}>取消</button>
+              <button type="button" onClick={confirmSubmissionUnknownRetry}>确认重新提交</button>
+            </div>
+          </section>
         </div>
       ) : null}
       {storyboardTable ? (
@@ -2562,6 +2653,11 @@ export function WorkflowCanvas() {
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
             onModelChange={(model) => node.type === "scheduler" && updateSchedulerModel(node, model)}
             onRun={() => node.type === "scheduler" && void runScheduler(node.id)}
+            onRetrySubmissionUnknown={() => {
+              if (node.type === "result" && node.status === "submission-unknown") {
+                setSubmissionUnknownRetryId(node.id);
+              }
+            }}
             onMediaLoad={(width, height) =>
               fitImageNodeToMedia(node.id, width, height)
             }
@@ -2709,6 +2805,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   onKindChange,
   onModelChange,
   onRun,
+  onRetrySubmissionUnknown,
   onMediaLoad,
   onResume,
   onPointerDown,
@@ -2732,6 +2829,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   onKindChange: (kind: ComposerMode) => void;
   onModelChange: (model: string) => void;
   onRun: () => void;
+  onRetrySubmissionUnknown: () => void;
   onMediaLoad: (width: number, height: number) => void;
   onResume: () => void;
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
@@ -2850,6 +2948,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           assetUrl={assetUrl}
           assetLoading={assetLoading}
           onResume={onResume}
+          onRetrySubmissionUnknown={onRetrySubmissionUnknown}
           onMediaLoad={onMediaLoad}
         />
       )}
@@ -2956,14 +3055,35 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
   );
 }
 
-function ResultBody({ node, assetUrl, assetLoading, onResume, onMediaLoad }: {
+function ResultBody({
+  node,
+  assetUrl,
+  assetLoading,
+  onResume,
+  onRetrySubmissionUnknown,
+  onMediaLoad,
+}: {
   node: WorkflowResultNode;
   assetUrl?: string;
   assetLoading: boolean;
   onResume: () => void;
+  onRetrySubmissionUnknown: () => void;
   onMediaLoad: (width: number, height: number) => void;
 }) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
+  if (node.status === "submission-unknown") return (
+    <div className="workflow-submission-unknown">
+      <p>{node.error || SUBMISSION_UNKNOWN_MESSAGE}</p>
+      <button
+        className="workflow-resubmit"
+        data-workflow-control
+        type="button"
+        onClick={onRetrySubmissionUnknown}
+      >
+        <RotateCcw size={13} /> 确认重新提交
+      </button>
+    </div>
+  );
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
   const mediaUrl = assetUrl || (node.assetId ? undefined : node.resultUrl);
   if (node.kind === "image" && mediaUrl) return (

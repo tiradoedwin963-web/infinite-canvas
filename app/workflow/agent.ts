@@ -43,6 +43,8 @@ export type WorkflowBatchRun = {
   target?: "story" | "assets";
   assetRefs?: string[];
   schedulerIds: string[];
+  submissionUnknownSchedulerIds?: string[];
+  blockedSchedulerIds?: string[];
   status: "running" | "completed" | "partial-failure";
 };
 
@@ -51,6 +53,28 @@ function schedulerContainsShot(
   shotRef: string,
 ) {
   return scheduler.videoSegment?.shotIds.includes(shotRef) || scheduler.shotRef === shotRef;
+}
+
+function schedulerHasSubmissionUnknownResult(
+  graph: WorkflowGraph,
+  schedulerId: string,
+) {
+  return graph.nodes.some(
+    (node) =>
+      node.type === "result" &&
+      node.schedulerId === schedulerId &&
+      node.status === "submission-unknown",
+  );
+}
+
+function schedulerHasSubmissionUnknownInput(
+  graph: WorkflowGraph,
+  schedulerId: string,
+) {
+  const inputs = readWorkflowInputs(graph, schedulerId);
+  return [...inputs.images, ...inputs.videos].some(
+    (node) => node.type === "result" && node.status === "submission-unknown",
+  );
 }
 
 export function createWorkflowAgentSnapshot(
@@ -294,13 +318,35 @@ export function createWorkflowBatchRun(
   const schedulers = storySchedulers.filter(
     (node) => !selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef)),
   );
+  const submissionUnknownSchedulerIds = schedulers
+    .filter((node) => schedulerHasSubmissionUnknownResult(graph, node.id))
+    .map((node) => node.id);
+  const blockedSchedulerIds = schedulers
+    .filter(
+      (node) =>
+        !submissionUnknownSchedulerIds.includes(node.id) &&
+        schedulerHasSubmissionUnknownInput(graph, node.id),
+    )
+    .map((node) => node.id);
+  const runnableSchedulers = schedulers.filter(
+    (node) =>
+      !submissionUnknownSchedulerIds.includes(node.id) &&
+      !blockedSchedulerIds.includes(node.id),
+  );
+  if (!runnableSchedulers.length) {
+    throw new Error(
+      "没有可批量提交的任务：所选任务均为提交状态未知，或依赖提交状态未知的上游任务。",
+    );
+  }
   return {
     version: 1,
     id: idFactory(),
     storyId: operation.storyId,
     shotRefs: [...selected],
     target: "story",
-    schedulerIds: schedulers.map((node) => node.id),
+    schedulerIds: runnableSchedulers.map((node) => node.id),
+    ...(submissionUnknownSchedulerIds.length ? { submissionUnknownSchedulerIds } : {}),
+    ...(blockedSchedulerIds.length ? { blockedSchedulerIds } : {}),
     status: "running",
   };
 }
@@ -351,6 +397,12 @@ export function parseWorkflowBatchRun(raw: string | null): WorkflowBatchRun | nu
       value.shotRefs.every((item) => typeof item === "string") &&
       Array.isArray(value.schedulerIds) &&
       value.schedulerIds.every((item) => typeof item === "string") &&
+      (value.submissionUnknownSchedulerIds === undefined ||
+        (Array.isArray(value.submissionUnknownSchedulerIds) &&
+          value.submissionUnknownSchedulerIds.every((item) => typeof item === "string"))) &&
+      (value.blockedSchedulerIds === undefined ||
+        (Array.isArray(value.blockedSchedulerIds) &&
+          value.blockedSchedulerIds.every((item) => typeof item === "string"))) &&
       (value.target === undefined || value.target === "story" || value.target === "assets") &&
       (value.assetRefs === undefined ||
         (Array.isArray(value.assetRefs) && value.assetRefs.every((item) => typeof item === "string"))) &&
@@ -386,6 +438,22 @@ export function advanceWorkflowBatch(
   }
   let next = graph;
   const readySchedulerIds: string[] = [];
+  (batch.blockedSchedulerIds ?? []).forEach((schedulerId) => {
+    const scheduler = next.nodes.find(
+      (node): node is WorkflowSchedulerNode =>
+        node.id === schedulerId && node.type === "scheduler",
+    );
+    const result = resultForScheduler(next, schedulerId);
+    if (!scheduler || !result || result.status !== "ready") return;
+    next = updateWorkflowNode(next, schedulerId, {
+      error: "上游分镜提交状态未知，已停止当前分支。",
+    });
+    next = updateWorkflowResult(next, result.id, {
+      status: "failed",
+      progress: "",
+      error: "上游分镜提交状态未知，未提交当前任务。",
+    });
+  });
   batch.schedulerIds.forEach((schedulerId) => {
     const scheduler = next.nodes.find(
       (node): node is WorkflowSchedulerNode =>
@@ -397,16 +465,25 @@ export function advanceWorkflowBatch(
     const failedUpstream = [...inputs.images, ...inputs.videos].find(
       (node) =>
         node.type === "result" &&
-        (node.status === "failed" || node.status === "paused"),
+        (node.status === "failed" ||
+          node.status === "paused" ||
+          node.status === "submission-unknown"),
     );
     if (failedUpstream) {
+      const unknownSubmission =
+        failedUpstream.type === "result" &&
+        failedUpstream.status === "submission-unknown";
       next = updateWorkflowNode(next, schedulerId, {
-        error: "上游分镜生成失败，已停止当前分支。",
+        error: unknownSubmission
+          ? "上游分镜提交状态未知，已停止当前分支。"
+          : "上游分镜生成失败，已停止当前分支。",
       });
       next = updateWorkflowResult(next, result.id, {
         status: "failed",
         progress: "",
-        error: "上游分镜生成失败，未提交当前任务。",
+        error: unknownSubmission
+          ? "上游分镜提交状态未知，未提交当前任务。"
+          : "上游分镜生成失败，未提交当前任务。",
       });
       return;
     }
@@ -421,16 +498,23 @@ export function advanceWorkflowBatch(
   const finished =
     results.length === batch.schedulerIds.length &&
     results.every((node) =>
-      ["success", "failed", "paused"].includes(node.status),
+      ["success", "failed", "paused", "submission-unknown"].includes(node.status),
     );
   const failed = results.some(
-    (node) => node.status === "failed" || node.status === "paused",
+    (node) =>
+      node.status === "failed" ||
+      node.status === "paused" ||
+      node.status === "submission-unknown",
   );
+  const partial =
+    failed ||
+    Boolean(batch.submissionUnknownSchedulerIds?.length) ||
+    Boolean(batch.blockedSchedulerIds?.length);
   return {
     graph: next,
     readySchedulerIds,
     batch: finished
-      ? { ...batch, status: failed ? "partial-failure" : "completed" }
+      ? { ...batch, status: partial ? "partial-failure" : "completed" }
       : batch,
   };
 }
@@ -458,12 +542,44 @@ export function describeWorkflowRun(
       (node.storyRole === "storyboard-scheduler" || node.storyRole === "video-scheduler") &&
       (!selected.size || [...selected].some((shotRef) => schedulerContainsShot(node, shotRef))),
   );
-  const images = schedulers.filter((node) => node.outputKind === "image").length;
-  const videos = schedulers.filter((node) => node.outputKind === "video").length;
-  if (!images) {
-    return `批量生成 ${videos} 个视频片段；依赖就绪的镜头将同层并行，可能产生 ${videos} 笔模型费用`;
+  const submissionUnknownSchedulerIds = new Set(
+    schedulers
+      .filter((node) => schedulerHasSubmissionUnknownResult(graph, node.id))
+      .map((node) => node.id),
+  );
+  const blockedSchedulerIds = new Set(
+    schedulers
+      .filter(
+        (node) =>
+          !submissionUnknownSchedulerIds.has(node.id) &&
+          schedulerHasSubmissionUnknownInput(graph, node.id),
+      )
+      .map((node) => node.id),
+  );
+  const runnableSchedulers = schedulers.filter(
+    (node) =>
+      !submissionUnknownSchedulerIds.has(node.id) &&
+      !blockedSchedulerIds.has(node.id),
+  );
+  if (!runnableSchedulers.length) {
+    throw new Error(
+      "没有可批量提交的任务：所选任务均为提交状态未知，或依赖提交状态未知的上游任务。",
+    );
   }
-  return `批量生成 ${images} 个分镜图片和 ${videos} 个视频片段；依赖就绪的同层任务将全部并行，可能产生 ${images + videos} 笔模型费用`;
+  const images = runnableSchedulers.filter((node) => node.outputKind === "image").length;
+  const videos = runnableSchedulers.filter((node) => node.outputKind === "video").length;
+  const skipped = [
+    submissionUnknownSchedulerIds.size
+      ? `已跳过 ${submissionUnknownSchedulerIds.size} 个提交状态未知任务`
+      : "",
+    blockedSchedulerIds.size
+      ? `${blockedSchedulerIds.size} 个下游任务因上游未知状态不会提交`
+      : "",
+  ].filter(Boolean).join("；");
+  if (!images) {
+    return `批量生成 ${videos} 个视频片段；依赖就绪的镜头将同层并行，可能产生 ${videos} 笔模型费用${skipped ? `；${skipped}` : ""}`;
+  }
+  return `批量生成 ${images} 个分镜图片和 ${videos} 个视频片段；依赖就绪的同层任务将全部并行，可能产生 ${images + videos} 笔模型费用${skipped ? `；${skipped}` : ""}`;
 }
 
 export { describeStoryAssetRun };

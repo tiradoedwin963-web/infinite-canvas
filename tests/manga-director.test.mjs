@@ -328,6 +328,21 @@ test("uses 2–3 second storyboard rows and groups them into Seedance 2.5 segmen
   assert.equal(table.productionRule.includes("Seedance 2.5"), true);
 });
 
+test("labels an unknown video submission clearly in the storyboard table", () => {
+  const { graph, idFactory } = plannedGraph();
+  const completed = createMangaContinuityReport(graph, {
+    type: "create_manga_continuity_report",
+    storyId: "story",
+    stageIndex: 3,
+    report: { issues: [] },
+  }, idFactory);
+  const clip = completed.nodes.find((node) => node.storyRole === "clip");
+  clip.status = "submission-unknown";
+
+  const table = createStoryboardTable(completed, "story");
+  assert.equal(table.videoTasks[0].status, "提交状态未知");
+});
+
 test("merges a short scene into the adjacent segment and rejects an unmergeable tail", () => {
   const shots = [
     shortShot({ shotId: "shot-001", sequence: 1, sceneId: "scene-a", duration: 2 }),

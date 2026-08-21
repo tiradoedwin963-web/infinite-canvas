@@ -439,6 +439,15 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflow, /describeWorkflowRun/);
   assert.match(workflow, /advanceWorkflowBatch/);
   assert.match(workflow, /提交状态未知/);
+  assert.match(workflow, /readWorkflowGenerateResponse/);
+  assert.match(workflow, /@\/app\/workflow\/submission-unknown/);
+  assert.match(workflow, /retryWorkflowSubmissionUnknown/);
+  assert.match(workflow, /确认重新提交/);
+  assert.match(workflow, /describeCloudRequestError/);
+  assert.match(workflow, /cloudSyncError/);
+  assert.match(workflow, /尚未同步：/);
+  assert.match(workflow, /retryCloudProjectSave/);
+  assert.match(workflow, /revision-conflict/);
   assert.match(workflow, /aria-label="打开工作流 Agent"/);
   assert.match(workflow, /先分析类型、主题、受众、情绪和时长/);
   assert.match(workflow, /粘贴完整剧本或输入资产规划要求/);
@@ -486,7 +495,9 @@ test("exposes an isolated workflow mode without the bottom composer", async () =
   assert.match(workflowGraph, /export function createConnectedScheduler/);
   assert.match(styles, /\.canvas-mode-switch \{/);
   assert.match(styles, /\.workflow-project-switcher \{/);
+  assert.match(styles, /\.workflow-project-sync-status \{/);
   assert.match(styles, /\.workflow-scheduler \{/);
+  assert.match(styles, /\.workflow-submission-unknown \{/);
   assert.match(styles, /\.workflow-source-body-media \{/);
   assert.match(styles, /\.workflow-node-title \{/);
   const baseEdgeRule = styles.match(/\.canvas-edges path\s*\{([^}]*)\}/)?.[1] ?? "";

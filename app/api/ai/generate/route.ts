@@ -1,6 +1,7 @@
 import {
   createLingkeClient,
   LingkeRequestError,
+  toSafeRequestErrorPayload,
   validateGenerateRequest,
 } from "@/app/ai/provider";
 import { createTrxVideoClient } from "@/app/ai/trx-video-provider";
@@ -43,6 +44,6 @@ export async function POST(request: Request) {
       error instanceof LingkeRequestError
         ? error
         : new LingkeRequestError("生成请求无效。", 400);
-    return Response.json({ error: known.message }, { status: known.status });
+    return Response.json(toSafeRequestErrorPayload(known), { status: known.status });
   }
 }

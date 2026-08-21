@@ -253,6 +253,8 @@ function videoTaskRows(
         ? "已完成"
         : result?.status === "failed"
           ? "失败"
+          : result?.status === "submission-unknown"
+            ? "提交状态未知"
           : result?.status === "running" || result?.status === "pending"
             ? "生成中"
             : "待生成",

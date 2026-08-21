@@ -130,6 +130,7 @@ export function resetMangaStoryboardForMultiShot(
     (
       node.status === "pending" ||
       node.status === "running" ||
+      node.status === "submission-unknown" ||
       (node.status === "paused" &&
         (Boolean(node.taskId) || node.progress === "提交状态未知"))
     ),

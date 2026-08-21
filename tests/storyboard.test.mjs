@@ -233,6 +233,29 @@ test("does not discard an uncertain remote video task during replanning", () => 
   );
 });
 
+test("does not discard a submission-unknown video during replanning", () => {
+  const graph = readyAssetGraph();
+  graph.nodes.push({
+    id: "clip",
+    x: 0,
+    y: 0,
+    type: "result",
+    kind: "video",
+    schedulerId: "scheduler",
+    text: "视频",
+    model: "seedance-2.5",
+    status: "submission-unknown",
+    progress: "提交状态未知",
+    error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+    storyId: "asset-story",
+    storyRole: "clip",
+  });
+  assert.throws(
+    () => resetMangaStoryboardForMultiShot(graph, "asset-story"),
+    /正在提交或生成的视频任务/,
+  );
+});
+
 test("does not discard a video request before its task ID is saved", () => {
   const graph = readyAssetGraph();
   graph.nodes.push({

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createLingkeClient,
   LingkeRequestError,
+  toSafeRequestErrorPayload,
   validateGenerateRequest,
 } from "../app/ai/provider.ts";
 import {
@@ -422,6 +423,74 @@ test("submits ordered video references and normalizes TRX tasks", async () => {
     results: [{ url: "https://cdn.test/video.mp4", kind: "video" }],
     error: "",
   });
+});
+
+test("marks ambiguous TRX video submissions without exposing provider details", async () => {
+  const request = {
+    mode: "video",
+    model: "seedance-2.0",
+    prompt: "cat",
+    aspectRatio: "16:9",
+    duration: "5",
+    resolution: "1080p",
+  };
+  const cases = [
+    async () => {
+      throw new TypeError("Failed to fetch https://provider.test/Bearer secret");
+    },
+    async () => jsonResponse({}, 200),
+    async () => new Response("not-json", { status: 200 }),
+    async () => jsonResponse({ detail: "Bearer secret" }, 503),
+  ];
+
+  for (const fetcher of cases) {
+    const client = createTrxVideoClient(
+      { baseUrl: "https://example.test", apiKey: "secret" },
+      fetcher,
+    );
+    await assert.rejects(client.generate(request, []), (error) => {
+      assert.ok(error instanceof LingkeRequestError);
+      assert.equal(error.code, "submission-unknown");
+      assert.equal(error.status, 502);
+      assert.doesNotMatch(error.message, /secret|provider\.test/i);
+      assert.deepEqual(toSafeRequestErrorPayload(error), {
+        error: error.message,
+        code: "submission-unknown",
+      });
+      return true;
+    });
+  }
+});
+
+test("keeps explicit TRX request rejections out of submission-unknown", async () => {
+  const request = {
+    mode: "video",
+    model: "seedance-2.0",
+    prompt: "cat",
+    aspectRatio: "16:9",
+    duration: "5",
+    resolution: "1080p",
+  };
+  const cases = [
+    { status: 400, payload: { detail: "视频参数无效" }, expectedStatus: 400 },
+    { status: 401, payload: { detail: "invalid" }, expectedStatus: 502 },
+    { status: 402, payload: { detail: "balance" }, expectedStatus: 402 },
+    { status: 429, payload: { detail: "slow down" }, expectedStatus: 429 },
+  ];
+
+  for (const { status, payload, expectedStatus } of cases) {
+    const client = createTrxVideoClient(
+      { baseUrl: "https://example.test", apiKey: "secret" },
+      async () => jsonResponse(payload, status),
+    );
+    await assert.rejects(client.generate(request, []), (error) => {
+      assert.ok(error instanceof LingkeRequestError);
+      assert.equal(error.code, undefined);
+      assert.equal(error.status, expectedStatus);
+      assert.deepEqual(toSafeRequestErrorPayload(error), { error: error.message });
+      return true;
+    });
+  }
 });
 
 test("normalizes nested media task states and task result images", async () => {

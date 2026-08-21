@@ -2356,3 +2356,68 @@
 - `tests/agent-provider.test.mjs`、`tests/agent.test.mjs`、`tests/rendered-html.test.mjs`：覆盖 Schema 约束、恢复指令与侧栏恢复边界。
 - `progress.md`：记录本轮验证与回滚点。
 - 回滚方式：在未提交状态下执行 `git restore -- app/ai/agent-provider.ts app/ai/agent.ts components/canvas-agent-sidebar.tsx manga-shot-plan-tools.md docs/canvas.md tests/agent-provider.test.mjs tests/agent.test.mjs tests/rendered-html.test.mjs progress.md`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-21 - Task: 安全处理视频提交状态未知
+
+### What was done
+- 将视频提交阶段的浏览器连接中断、TRX 请求传输中断、无任务编号的成功响应和 TRX 5xx 响应统一标记为 `submission-unknown`；它不再被误作普通失败而可直接重试。
+- 增加二次确认的“确认重新提交”入口。仅在用户确认可能重复计费后，才复用原视频结果占位重新发送请求；未知任务不会自动轮询或自动重试。
+- 兼容旧项目中无任务 ID 且错误为 `Failed to fetch` 的视频节点，并让批量执行跳过未知任务及其受阻下游，按实际可提交任务统计费用和部分完成状态。
+- 分镜表、重规划保护、删除提示和画布结果卡均能识别“提交状态未知”。
+
+### Testing
+- `node --test tests/provider.test.mjs tests/generate-route.test.mjs tests/submission-unknown.test.mjs tests/workflow.test.mjs tests/workflow-agent.test.mjs tests/storyboard.test.mjs tests/manga-director.test.mjs tests/rendered-html.test.mjs`：通过，82 项针对性回归测试全部通过。
+- `npm run lint`：通过。
+- `npm test`：通过；内含 Vinext 生产构建，212 项自动化测试全部通过。
+- `npm run build`：通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：仍被仓库既有 TypeScript 配置与历史类型错误阻断（例如未启用 `.ts` 扩展导入）；生产构建和本轮测试不受影响。
+
+### Notes
+- `app/ai/provider.ts`：为安全的未知提交结果增加可选错误码及响应载荷转换。
+- `app/ai/trx-video-provider.ts`：区分明确业务拒绝和无法确认是否已受理的视频提交。
+- `app/api/ai/generate/route.ts`：将安全错误码返回给画布客户端。
+- `app/globals.css`：添加未知提交结果和二次确认卡片样式。
+- `app/workflow/agent.ts`：使批量队列跳过未知提交和其受阻分支，并按实际任务数计费。
+- `app/workflow/graph.ts`：持久化未知状态、迁移旧 `Failed to fetch` 节点并只允许显式重提。
+- `app/workflow/storyboard-table.ts`：在视频任务表中显示“提交状态未知”。
+- `app/workflow/storyboard.ts`：重新规划时保护未知提交的视频任务不被删除。
+- `app/workflow/submission-unknown.ts`：集中客户端响应分类和未知提交安全文案。
+- `components/workflow/workflow-canvas.tsx`：展示未知状态、阻止自动继续并提供独立确认重提操作。
+- `docs/canvas.md`：记录未知提交的触发条件、批量边界和人工重提规则。
+- `tests/generate-route.test.mjs`：覆盖生成接口仅返回安全未知状态码的边界。
+- `tests/manga-director.test.mjs`：覆盖分镜表中的未知任务状态。
+- `tests/provider.test.mjs`：覆盖 TRX 模糊提交、明确拒绝和安全错误映射。
+- `tests/rendered-html.test.mjs`：覆盖画布未知提交交互的结构入口。
+- `tests/storyboard.test.mjs`：覆盖重新规划不会删除未知提交节点。
+- `tests/submission-unknown.test.mjs`：覆盖浏览器网络中断、缺失任务号和明确业务错误的客户端分类。
+- `tests/workflow-agent.test.mjs`：覆盖批量未知状态、下游阻断和部分完成。
+- `tests/workflow.test.mjs`：覆盖图持久化迁移和显式重提复用占位节点。
+- `progress.md`：记录本轮实现、验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/ai/provider.ts app/ai/trx-video-provider.ts app/api/ai/generate/route.ts app/globals.css app/workflow/agent.ts app/workflow/graph.ts app/workflow/storyboard-table.ts app/workflow/storyboard.ts components/workflow/workflow-canvas.tsx docs/canvas.md tests/manga-director.test.mjs tests/provider.test.mjs tests/rendered-html.test.mjs tests/storyboard.test.mjs tests/workflow-agent.test.mjs tests/workflow.test.mjs progress.md`，再删除新增的 `app/workflow/submission-unknown.ts tests/generate-route.test.mjs tests/submission-unknown.test.mjs`；提交后使用 `git revert <本轮提交哈希>`。
+
+## 2026-08-21 - Task: 诊断云端项目保存并记录生产访问状态
+
+### What was done
+- 云端项目保存失败现在只展示安全、可操作的原因：登录失效、来源拒绝、项目不存在、版本冲突、服务端不可用、网络中断或通用请求拒绝；不再显示未过滤的服务端文本。
+- “重试”仅解除当前保存队列并重发最新的项目图、视口和批量状态，不会创建媒体任务，也不会绕过修订冲突保护。
+- Caddy 增加 JSON 访问日志到容器标准输出，可核验项目保存与媒体提交的路径和 HTTP 状态；请求体不记录，保留默认敏感头脱敏。
+
+### Testing
+- `node --test tests/cloud-client.test.mjs`：通过，覆盖安全 HTTP 分类、网络中断和不回显服务端原文。
+- `npm run lint`：通过。
+- `npm test`：通过；Vinext 生产构建成功，216 项自动化测试全部通过。
+- `npm run build`：通过。
+- `git diff --check`：通过。
+- `caddy:2.10-alpine caddy validate --adapter caddyfile`：通过，Caddyfile 配置有效。
+
+### Notes
+- `app/workflow/cloud-client.ts`：将云端请求错误转换为安全的分类错误并保留修订冲突信息。
+- `components/workflow/workflow-canvas.tsx`：显示同步失败原因并确保重试只重发当前项目保存。
+- `app/globals.css`：增加同步状态的紧凑错误展示样式。
+- `deploy/canvas/Caddyfile`：启用容器标准输出 JSON 访问日志。
+- `tests/cloud-client.test.mjs`：覆盖云端保存错误分类和安全文案。
+- `tests/rendered-html.test.mjs`：覆盖工作流同步状态 UI 结构。
+- `docs/canvas.md`：记录生产同步诊断、重试边界与访问日志位置。
+- `progress.md`：记录本轮验证与回滚点。
+- 回滚方式：在未提交状态下执行 `git restore -- app/workflow/cloud-client.ts components/workflow/workflow-canvas.tsx app/globals.css deploy/canvas/Caddyfile tests/cloud-client.test.mjs tests/rendered-html.test.mjs docs/canvas.md progress.md`；提交后使用 `git revert <本轮提交哈希>`。

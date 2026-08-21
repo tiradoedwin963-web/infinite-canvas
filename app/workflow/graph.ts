@@ -56,7 +56,8 @@ export type WorkflowNodeStatus =
   | "running"
   | "success"
   | "failed"
-  | "paused";
+  | "paused"
+  | "submission-unknown";
 
 export type WorkflowStoryRole =
   | "project"
@@ -435,7 +436,15 @@ function isWorkflowNode(value: unknown): value is WorkflowNode {
       typeof node.schedulerId === "string" &&
       typeof node.text === "string" &&
       typeof node.model === "string" &&
-      ["ready", "pending", "running", "success", "failed", "paused"].includes(
+      [
+        "ready",
+        "pending",
+        "running",
+        "success",
+        "failed",
+        "paused",
+        "submission-unknown",
+      ].includes(
         String(node.status),
       ) &&
       typeof node.progress === "string" &&
@@ -477,22 +486,35 @@ export function parseWorkflowGraph(raw: string | null): WorkflowGraph {
       "viduq3",
     ]);
     const nodes = value.nodes.map((node) => {
-      if (
-        node.type === "scheduler" &&
-        node.outputKind === "video" &&
-        legacyVideoModels.has(node.model)
-      ) {
-        return { ...node, model: DEFAULT_MODEL_BY_MODE.video };
-      }
-      if (
+      const current =
         node.type === "result" &&
         node.kind === "video" &&
-        node.status !== "success" &&
-        legacyVideoModels.has(node.model)
+        node.status === "failed" &&
+        !node.taskId &&
+        node.error === "Failed to fetch"
+          ? {
+              ...node,
+              status: "submission-unknown" as const,
+              progress: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+              error: "提交状态未知：未收到任务编号，不能确认视频平台是否已接收请求。",
+            }
+          : node;
+      if (
+        current.type === "scheduler" &&
+        current.outputKind === "video" &&
+        legacyVideoModels.has(current.model)
       ) {
-        return { ...node, model: DEFAULT_MODEL_BY_MODE.video };
+        return { ...current, model: DEFAULT_MODEL_BY_MODE.video };
       }
-      return node;
+      if (
+        current.type === "result" &&
+        current.kind === "video" &&
+        current.status !== "success" &&
+        legacyVideoModels.has(current.model)
+      ) {
+        return { ...current, model: DEFAULT_MODEL_BY_MODE.video };
+      }
+      return current;
     });
     return {
       version: WORKFLOW_VERSION,
@@ -1112,6 +1134,7 @@ export function createWorkflowRun(
   schedulerId: string,
   now: number,
   idFactory: IdFactory = () => crypto.randomUUID(),
+  allowSubmissionUnknownRetry = false,
 ): { graph: WorkflowGraph; resultIds: string[] } {
   const scheduler = graph.nodes.find(
     (node): node is WorkflowSchedulerNode =>
@@ -1119,6 +1142,39 @@ export function createWorkflowRun(
   );
   if (!scheduler) return { graph, resultIds: [] };
   const count = scheduler.outputKind === "text" ? 1 : scheduler.outputCount;
+  const unknownResults = graph.nodes.filter(
+    (node): node is WorkflowResultNode =>
+      node.type === "result" &&
+      node.schedulerId === scheduler.id &&
+      node.status === "submission-unknown",
+  );
+  if (unknownResults.length) {
+    if (!allowSubmissionUnknownRetry) return { graph, resultIds: [] };
+    const reusable = unknownResults.slice(0, count);
+    return {
+      resultIds: reusable.map((node) => node.id),
+      graph: {
+        ...graph,
+        nodes: graph.nodes.map((node) =>
+          reusable.some((candidate) => candidate.id === node.id)
+            ? {
+                ...node,
+                ...(node.type === "result" && node.kind === "image"
+                  ? { width: undefined, height: undefined }
+                  : {}),
+                status: "pending" as const,
+                progress: "等待提交",
+                error: "",
+                model: scheduler.model,
+                resultUrl: undefined,
+                taskId: undefined,
+                startedAt: now,
+              }
+            : node,
+        ),
+      },
+    };
+  }
   const storyResults = graph.nodes.filter(
     (node): node is WorkflowResultNode =>
       node.type === "result" &&
@@ -1190,6 +1246,22 @@ export function createWorkflowRun(
     resultIds.push(id);
   }
   return { graph: next, resultIds };
+}
+
+export function retryWorkflowSubmissionUnknown(
+  graph: WorkflowGraph,
+  schedulerId: string,
+  now: number,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): { graph: WorkflowGraph; resultIds: string[] } {
+  const hasUnknownResult = graph.nodes.some(
+    (node) =>
+      node.type === "result" &&
+      node.schedulerId === schedulerId &&
+      node.status === "submission-unknown",
+  );
+  if (!hasUnknownResult) return { graph, resultIds: [] };
+  return createWorkflowRun(graph, schedulerId, now, idFactory, true);
 }
 
 export function updateWorkflowResult(

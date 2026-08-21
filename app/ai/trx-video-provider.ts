@@ -27,6 +27,19 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
+async function readJsonIfPresent(response: Response): Promise<Record<string, unknown> | undefined> {
+  try {
+    const value: unknown = await response.json();
+    return isRecord(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function submissionUnknown(message: string) {
+  return new LingkeRequestError(message, 502, "submission-unknown");
+}
+
 function providerError(status: number, payload: Record<string, unknown>) {
   if (status === 401 || status === 403) {
     return new LingkeRequestError("视频平台鉴权失败，请检查服务端密钥。", 502);
@@ -37,13 +50,18 @@ function providerError(status: number, payload: Record<string, unknown>) {
   if (status === 429) {
     return new LingkeRequestError("视频请求过于频繁，请稍后重试。", 429);
   }
+  if (status >= 500) {
+    return submissionUnknown(
+      "视频平台未确认任务提交结果。为避免重复计费，请先核实后再重新提交。",
+    );
+  }
   const detail = [payload.detail, payload.message, payload.error_message]
     .map(readString)
     .find(Boolean)
     ?.trim()
     .slice(0, 180);
   if (detail && !/bearer\s|api[_ -]?key|ek-[a-z0-9]{12,}|https?:\/\//i.test(detail)) {
-    return new LingkeRequestError(detail, status >= 500 ? 502 : status);
+    return new LingkeRequestError(detail, status);
   }
   return new LingkeRequestError("视频平台暂时不可用，请稍后重试。", 502);
 }
@@ -92,16 +110,17 @@ export function createTrxVideoClient(
           }),
         });
       } catch {
-        throw new LingkeRequestError(
-          "无法连接视频平台。由于提交接口不保证幂等，未确认任务状态前请勿自动重试。",
-          502,
+        throw submissionUnknown(
+          "无法确认视频平台是否已收到请求。为避免重复计费，请先核实后再重新提交。",
         );
       }
-      const payload = await readJson(response);
-      if (!response.ok) throw providerError(response.status, payload);
-      const taskId = readString(payload.task_id);
+      const payload = await readJsonIfPresent(response);
+      if (!response.ok) throw providerError(response.status, payload ?? {});
+      const taskId = readString(payload?.task_id);
       if (!taskId) {
-        throw new LingkeRequestError("视频平台未返回任务编号。", 502);
+        throw submissionUnknown(
+          "视频平台未返回任务编号，无法确认任务是否已提交。为避免重复计费，请先核实后再重新提交。",
+        );
       }
       return { kind: "task", taskId: `${TRX_TASK_PREFIX}${taskId}` };
     },

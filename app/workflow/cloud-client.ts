@@ -24,16 +24,78 @@ export type CloudProjectDocument = {
   assetVersions: Record<string, string>;
 };
 
+export type CloudRequestErrorCategory =
+  | "session-expired"
+  | "source-denied"
+  | "project-missing"
+  | "revision-conflict"
+  | "server-unavailable"
+  | "network-interruption"
+  | "request-rejected";
+
+const CLOUD_REQUEST_ERROR_MESSAGES: Record<CloudRequestErrorCategory, string> = {
+  "session-expired": "登录状态已失效，请重新登录后再保存。",
+  "source-denied": "当前来源未获允许，无法保存项目。",
+  "project-missing": "项目已不存在或无权访问。",
+  "revision-conflict": "项目已在其他设备更新，请重新加载或另存副本。",
+  "server-unavailable": "云端暂时不可用，请稍后重试。",
+  "network-interruption": "网络连接中断，未能保存项目。",
+  "request-rejected": "云端请求未被接受，请稍后重试。",
+};
+
+export class CloudRequestError extends Error {
+  readonly category: CloudRequestErrorCategory;
+  readonly status?: number;
+  readonly revision?: number;
+
+  constructor(input: {
+    category: CloudRequestErrorCategory;
+    status?: number;
+    revision?: number;
+  }) {
+    super(CLOUD_REQUEST_ERROR_MESSAGES[input.category]);
+    this.name = "CloudRequestError";
+    this.category = input.category;
+    this.status = input.status;
+    this.revision = input.revision;
+  }
+}
+
+export function isCloudRequestError(error: unknown): error is CloudRequestError {
+  return error instanceof CloudRequestError;
+}
+
+export function describeCloudRequestError(error: unknown): string {
+  return isCloudRequestError(error)
+    ? error.message
+    : CLOUD_REQUEST_ERROR_MESSAGES["request-rejected"];
+}
+
+function cloudRequestErrorCategory(status: number): CloudRequestErrorCategory {
+  if (status === 401) return "session-expired";
+  if (status === 403) return "source-denied";
+  if (status === 404) return "project-missing";
+  if (status === 409) return "revision-conflict";
+  if (status >= 500) return "server-unavailable";
+  return "request-rejected";
+}
+
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit) {
-  const response = await fetch(input, init);
+  let response: Response;
+  try {
+    response = await fetch(input, init);
+  } catch {
+    throw new CloudRequestError({ category: "network-interruption" });
+  }
   const payload = await response.json().catch(() => ({})) as T & {
-    error?: string;
     revision?: number;
   };
   if (!response.ok) {
-    const error = new Error(payload.error || "云端请求失败，请稍后重试。");
-    Object.assign(error, { status: response.status, revision: payload.revision });
-    throw error;
+    throw new CloudRequestError({
+      category: cloudRequestErrorCategory(response.status),
+      status: response.status,
+      revision: payload.revision,
+    });
   }
   return payload;
 }

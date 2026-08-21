@@ -1008,6 +1008,26 @@ body {
   white-space: nowrap;
 }
 
+.workflow-project-sync-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.workflow-project-sync-status .workflow-project-status {
+  max-width: min(300px, 36vw);
+  color: #bd3e37;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workflow-project-sync-status button {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .workflow-project-editor-backdrop {
   position: fixed;
   inset: 0;
@@ -1590,6 +1610,24 @@ body {
   line-height: 1.4;
 }
 
+.workflow-submission-unknown {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+}
+
+.workflow-submission-unknown p {
+  margin: 0;
+  color: #a84444;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .workflow-run,
 .workflow-resume {
   display: inline-flex;
@@ -1621,6 +1659,28 @@ body {
   background: #eeece8;
   color: #5d647e;
   font-size: 11px;
+}
+
+.workflow-resubmit {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 9px;
+  background: #292824;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  padding: 0 10px;
+}
+
+.workflow-submission-confirmation > div > button:last-child {
+  background: #292824;
+  color: #fff;
 }
 
 .workflow-result-media {
