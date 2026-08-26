@@ -82,6 +82,14 @@ test("keeps media capabilities scoped to the selected model", () => {
       "30",
     ],
   );
+  assert.deepEqual(
+    getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.aspectRatios,
+    ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+  );
+  assert.deepEqual(
+    getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.resolutions,
+    ["480p", "720p", "1080p"],
+  );
   assert.equal(
     getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.maxReferenceImages,
     30,

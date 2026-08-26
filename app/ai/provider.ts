@@ -12,6 +12,7 @@ import type {
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 30 * 1024 * 1024;
+const MAX_SD_25_PROMPT_CODE_POINTS = 5_000;
 
 type Fetcher = typeof fetch;
 
@@ -148,6 +149,13 @@ export function validateGenerateRequest(value: unknown): GenerateRequest {
   }
   if (!prompt) {
     throw new LingkeRequestError("请输入生成内容。", 400);
+  }
+  if (
+    value.mode === "video" &&
+    model === TRX_SEEDANCE_25_MODEL &&
+    Array.from(prompt).length > MAX_SD_25_PROMPT_CODE_POINTS
+  ) {
+    throw new LingkeRequestError("SD 2.5 视频提示词最多支持 5000 个 Unicode 码点。", 400);
   }
 
   const rawImages = Array.isArray(value.images) ? value.images : [];

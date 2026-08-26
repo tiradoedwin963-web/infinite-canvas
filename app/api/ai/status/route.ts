@@ -15,10 +15,10 @@ function getClient() {
 }
 
 function getTrxVideoClient() {
-  const baseUrl = process.env.LINGKE_BASE_URL;
-  const apiKey = process.env.LINGKE_API_KEY;
+  const baseUrl = process.env.TRX_VIDEO_BASE_URL;
+  const apiKey = process.env.TRX_VIDEO_API_KEY;
   if (!baseUrl || !apiKey) {
-    throw new LingkeRequestError("服务端尚未配置 LingkeAI。", 503);
+    throw new LingkeRequestError("服务端尚未配置 TRX 视频服务。", 503);
   }
   return createTrxVideoClient({
     baseUrl,

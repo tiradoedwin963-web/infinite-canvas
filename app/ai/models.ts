@@ -26,6 +26,7 @@ export type ModelConfig = {
 
 const IMAGE_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16"] as const;
 const VIDEO_RATIOS = ["16:9", "9:16", "1:1"] as const;
+const SD_25_VIDEO_RATIOS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] as const;
 export const TRX_SEEDANCE_25_MODEL = "doubao-seedance-2-5-quannengcankao";
 const SD_25_DURATIONS = [
   "4",
@@ -214,9 +215,9 @@ export const MODEL_CONFIGS = {
       mode: "video",
       protocol: "media",
       maxReferenceImages: 30,
-      aspectRatios: VIDEO_RATIOS,
+      aspectRatios: SD_25_VIDEO_RATIOS,
       durations: SD_25_DURATIONS,
-      resolutions: ["480p", "720p"],
+      resolutions: ["480p", "720p", "1080p"],
       defaultResolution: "720p",
       referenceImagesParam: "image_url",
       videoResolutionParam: "resolution",

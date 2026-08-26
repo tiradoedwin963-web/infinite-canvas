@@ -32,7 +32,7 @@ function videoRequest(referenceAssetIds = []) {
 const referenceAssetId = "11111111-1111-4111-8111-111111111111";
 const secondReferenceAssetId = "22222222-2222-4222-8222-222222222222";
 
-test("submits Seedance 2.5 through the profile-gated TRX video contract", async () => {
+test("submits Seedance 2.5 through the models-gated TRX video contract", async () => {
   const calls = [];
   const diagnostics = [];
   let resolved = false;
@@ -44,8 +44,8 @@ test("submits Seedance 2.5 through the profile-gated TRX video contract", async 
     },
     async (url, init = {}) => {
       calls.push({ url, init });
-      if (url.endsWith("/v1/video/profile")) {
-        return jsonResponse({ models: [TRX_VIDEO_MODEL] });
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse({ data: [{ id: TRX_VIDEO_MODEL }] });
       }
       if (url.endsWith("/v1/video/generate")) {
         assert.equal(resolved, true);
@@ -68,8 +68,9 @@ test("submits Seedance 2.5 through the profile-gated TRX video contract", async 
   });
 
   assert.deepEqual(generated, { kind: "task", taskId: `${TRX_TASK_PREFIX}task-42` });
-  assert.equal(calls[0].url, "https://trx.example.test/v1/video/profile");
+  assert.equal(calls[0].url, "https://trx.example.test/v1/models");
   assert.equal(calls[0].init.method, undefined);
+  assert.equal(calls[0].init.headers.Authorization, "Bearer private-api-key");
   assert.equal(calls[1].url, "https://trx.example.test/v1/video/generate");
   assert.deepEqual(JSON.parse(calls[1].init.body), {
     model: "seedance-2.5",
@@ -78,7 +79,6 @@ test("submits Seedance 2.5 through the profile-gated TRX video contract", async 
     duration: 12,
     aspect_ratio: "16:9",
     resolution: "720p",
-    generate_audio: true,
     images: [
       "https://cos.test/private-reference.png?signature=hidden",
       "https://cos.test/second-reference.png?signature=hidden",
@@ -99,7 +99,7 @@ test("submits Seedance 2.5 through the profile-gated TRX video contract", async 
   assert.doesNotMatch(serialized, /private prompt|private-reference|private-api-key|signature/i);
   assert.deepEqual(
     diagnostics.map((event) => [event.phase, event.classification]),
-    [["profile", "profile-available"], ["submit", "accepted"], ["status", "status"]],
+    [["models", "models-available"], ["submit", "accepted"], ["status", "status"]],
   );
   assert.deepEqual(diagnostics[1].responseKeys, ["task_id"]);
 });
@@ -110,7 +110,7 @@ test("uses text2video without an empty images field", async () => {
     { baseUrl: "https://trx.example.test", apiKey: "key" },
     async (url, init = {}) => {
       calls.push({ url, init });
-      if (url.endsWith("/profile")) return jsonResponse({ data: { models: [TRX_VIDEO_MODEL] } });
+      if (url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: TRX_VIDEO_MODEL }] });
       return jsonResponse({ task_id: "task-empty" });
     },
   );
@@ -121,13 +121,13 @@ test("uses text2video without an empty images field", async () => {
   assert.equal("images" in body, false);
 });
 
-test("never resolves references when the profile does not enable Seedance 2.5", async () => {
+test("never resolves references when the model list does not include Seedance 2.5", async () => {
   let resolves = 0;
   let submits = 0;
   const client = createTrxVideoClient(
     { baseUrl: "https://trx.example.test", apiKey: "key" },
     async (url) => {
-      if (url.endsWith("/profile")) return jsonResponse({ models: ["seedance-2.0"] });
+      if (url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: "seedance-2.0" }] });
       submits += 1;
       return jsonResponse({ task_id: "unexpected" });
     },
@@ -135,7 +135,7 @@ test("never resolves references when the profile does not enable Seedance 2.5", 
 
   await assert.rejects(
     client.generate(videoRequest([referenceAssetId]), {
-      attemptId: "attempt-profile",
+      attemptId: "attempt-models",
       resolveReferenceUrls: async () => {
         resolves += 1;
         return ["https://cos.test/reference.png"];
@@ -147,14 +147,14 @@ test("never resolves references when the profile does not enable Seedance 2.5", 
   assert.equal(submits, 0);
 });
 
-test("does not mistake another profile model for Seedance 2.5", async () => {
+test("does not mistake a similarly named model list entry for Seedance 2.5", async () => {
   let resolves = 0;
   let submits = 0;
   const client = createTrxVideoClient(
     { baseUrl: "https://trx.example.test", apiKey: "key" },
     async (url) => {
-      if (url.endsWith("/profile")) {
-        return jsonResponse({ models: { "other-model": true, "seedance-2.5": false } });
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse({ data: [{ id: "other-model" }, { id: "seedance-2.5-preview" }] });
       }
       submits += 1;
       return jsonResponse({ task_id: "unexpected" });
@@ -175,15 +175,15 @@ test("does not mistake another profile model for Seedance 2.5", async () => {
   assert.equal(submits, 0);
 });
 
-test("requires an exact Seedance 2.5 profile entry instead of scanning model-map values", async () => {
+test("requires an exact data[].id Seedance 2.5 entry", async () => {
   let resolves = 0;
   let submits = 0;
   const client = createTrxVideoClient(
     { baseUrl: "https://trx.example.test", apiKey: "key" },
     async (url) => {
-      if (url.endsWith("/profile")) {
+      if (url.endsWith("/v1/models")) {
         return jsonResponse({
-          models: { "other-model": { model: TRX_VIDEO_MODEL, enabled: true } },
+          data: [{ model: TRX_VIDEO_MODEL, id: "other-model" }],
         });
       }
       submits += 1;
@@ -215,7 +215,7 @@ test("treats reference resolution failures as explicit failures before video sub
       onDiagnostic: (event) => diagnostics.push(event),
     },
     async (url) => {
-      if (url.endsWith("/profile")) return jsonResponse({ models: [TRX_VIDEO_MODEL] });
+      if (url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: TRX_VIDEO_MODEL }] });
       submits += 1;
       return jsonResponse({ task_id: "unexpected" });
     },
@@ -236,7 +236,7 @@ test("treats reference resolution failures as explicit failures before video sub
   assert.equal(submits, 0);
   assert.deepEqual(
     diagnostics.map((event) => [event.phase, event.classification]),
-    [["profile", "profile-available"], ["reference-resolve", "reference-resolution-failed"]],
+    [["models", "models-available"], ["reference-resolve", "reference-resolution-failed"]],
   );
 });
 
@@ -244,7 +244,21 @@ test("classifies only ambiguous TRX submissions as submission-unknown", async ()
   const cases = [
     { name: "missing root task id", response: jsonResponse({ data: { task_id: "nested" } }), unknown: true },
     { name: "non-json response", response: new Response("not-json", { status: 200 }), unknown: true },
-    { name: "server failure", response: jsonResponse({ detail: "temporary" }, 503), unknown: true },
+    { name: "gateway failure", response: jsonResponse({ detail: "temporary" }, 502), unknown: true },
+    {
+      name: "service unavailable",
+      response: jsonResponse({ detail: "temporary" }, 503),
+      unknown: false,
+      message: "视频平台暂不可用，本次未创建任务。",
+      status: 503,
+    },
+    {
+      name: "balance or access denied",
+      response: jsonResponse({ detail: "private upstream message" }, 403),
+      unknown: false,
+      message: "视频平台余额不足或无权访问。",
+      status: 403,
+    },
     { name: "business envelope", response: jsonResponse({ code: 400, message: "参数无效" }), unknown: false },
     { name: "rate limited", response: jsonResponse({ message: "slow" }, 429), unknown: false },
   ];
@@ -253,7 +267,7 @@ test("classifies only ambiguous TRX submissions as submission-unknown", async ()
     const client = createTrxVideoClient(
       { baseUrl: "https://trx.example.test", apiKey: "key" },
       async (url) => {
-        if (url.endsWith("/profile")) return jsonResponse({ models: [TRX_VIDEO_MODEL] });
+        if (url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: TRX_VIDEO_MODEL }] });
         return item.response;
       },
     );
@@ -262,6 +276,8 @@ test("classifies only ambiguous TRX submissions as submission-unknown", async ()
       (error) => {
         assert.ok(error instanceof LingkeRequestError);
         assert.equal(error.code === "submission-unknown", item.unknown);
+        if (item.message) assert.equal(error.message, item.message);
+        if (item.status) assert.equal(error.status, item.status);
         if (item.unknown) {
           assert.deepEqual(toSafeRequestErrorPayload(error), {
             error: error.message,
@@ -276,7 +292,7 @@ test("classifies only ambiguous TRX submissions as submission-unknown", async ()
   const networkClient = createTrxVideoClient(
     { baseUrl: "https://trx.example.test", apiKey: "key" },
     async (url) => {
-      if (url.endsWith("/profile")) return jsonResponse({ models: [TRX_VIDEO_MODEL] });
+      if (url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: TRX_VIDEO_MODEL }] });
       throw new TypeError("failed to fetch");
     },
   );

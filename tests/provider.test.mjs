@@ -431,6 +431,22 @@ test("supports SD 2.5 multi-reference videos without relaxing other model limits
     validateGenerateRequest({ ...baseRequest, duration: "30" }).duration,
     "30",
   );
+  assert.deepEqual(
+    validateGenerateRequest({
+      ...baseRequest,
+      aspectRatio: "21:9",
+      duration: "12",
+      resolution: "1080p",
+    }),
+    {
+      ...baseRequest,
+      duration: "12",
+      aspectRatio: "21:9",
+      resolution: "1080p",
+      projectId: undefined,
+      referenceAssetIds: [],
+    },
+  );
   assert.throws(
     () => validateGenerateRequest({ ...baseRequest, duration: "3" }),
     /所选视频时长不受当前模型支持/,
@@ -465,6 +481,34 @@ test("supports SD 2.5 multi-reference videos without relaxing other model limits
   await assert.rejects(
     client.generate({ ...baseRequest, duration: "12" }),
     /专用视频服务/,
+  );
+});
+
+test("caps SD 2.5 prompts by Unicode code point without limiting other models", () => {
+  const emoji = "😀";
+  const request = {
+    mode: "video",
+    model: "doubao-seedance-2-5-quannengcankao",
+    aspectRatio: "16:9",
+    duration: "12",
+    resolution: "720p",
+  };
+
+  assert.equal(
+    validateGenerateRequest({ ...request, prompt: emoji.repeat(5_000) }).prompt,
+    emoji.repeat(5_000),
+  );
+  assert.throws(
+    () => validateGenerateRequest({ ...request, prompt: emoji.repeat(5_001) }),
+    /最多支持 5000 个 Unicode 码点/,
+  );
+  assert.equal(
+    validateGenerateRequest({
+      mode: "text",
+      model: "gpt-5.6-sol",
+      prompt: emoji.repeat(5_001),
+    }).prompt,
+    emoji.repeat(5_001),
   );
 });
 

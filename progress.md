@@ -2039,3 +2039,32 @@
 - `tests/trx-video-references.test.mjs`、`tests/trx-video-provider.test.mjs`、`tests/provider.test.mjs`、`tests/workflow-projects.test.mjs`、`tests/workflow-project-import-ui.test.mjs`：覆盖本轮协议与迁移路径。
 - `progress.md`：记录本轮实现和验证；上一条“临时 COS”记录保留为历史，已被本条原图直签实现替代。
 - 回滚方式：发布提交生成后执行 `git revert <本轮发布提交哈希>`。该回退不会删除当前桶内已有原图、云端项目或未知视频提交证据。
+
+## 2026-08-27 - Task: 按 TRX 企业文档修复 SD 2.5 视频接入
+
+### What was done
+- SD 2.5 视频改为使用独立的 TRX 企业 API 地址和密钥；普通 Lingke 文本、图片及其他视频模型继续使用原有配置与接口。
+- 将不存在的能力查询改为带企业 Key 的 `GET /v1/models`，仅在列表中精确存在 `seedance-2.5` 时，才读取云端项目的既有图片原对象并签发私有读地址。
+- 原生视频提交保持 `POST /v1/video/generate`：有图时发送有序 `images` 和 `reference` 模式，无图时使用 `text2video` 且不发送空数组；移除了未在企业文档声明的音频字段，并限制 SD 2.5 提示词最多 5,000 个 Unicode 码点。
+- 同步开放企业文档允许的 SD 2.5 比例与 480p、720p、1080p 清晰度。HTTP 502、网络中断、2xx 非 JSON 或无顶层任务号继续保护为“提交状态未知”；503 和 403 改为可判断的普通失败，不会自动重试。
+
+### Testing
+- `node --import tsx --test tests/trx-video-provider.test.mjs tests/trx-video-references.test.mjs tests/models.test.mjs tests/provider.test.mjs tests/workflow.test.mjs tests/tvc-domain.test.mjs tests/tvc-ui.test.mjs`：68/68 通过，覆盖模型列表门禁、原生请求体、有序参考图、无图模式、任务状态查询、错误分类与 TVC 工作流兼容。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，207/207 测试通过；仅保留既有客户端包体积提示。
+- 使用无敏感信息的占位环境执行 `docker compose -f deploy/canvas/compose.production.yml config --quiet`：通过，确认生产 app 接收独立 TRX 环境变量。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍由本轮开始前已有的 Agent、画布、资产响应与 Worker 类型诊断阻断。新增 TRX 适配器、路由和模型文件未出现独有诊断。
+- 本轮未提交图片、视频或轮询请求；`segment-002` 继续保持未知提交，需后续再次明确确认才可重提。
+
+### Notes
+- `app/ai/models.ts`：同步 SD 2.5 的企业文档比例、清晰度和时长能力。
+- `app/ai/provider.ts`：对 SD 2.5 提示词执行 5,000 Unicode 码点预检，并保留专用接口排除。
+- `app/ai/trx-video-provider.ts`：实现企业 Key 模型列表门禁、原生提交/查询、顶层任务号与文档化错误分类。
+- `app/api/ai/generate/route.ts`：为 SD 2.5 使用独立 TRX 配置并保留安全提交诊断。
+- `app/api/ai/status/route.ts`：为 `trx-video:` 任务使用独立 TRX 配置查询状态。
+- `deploy/canvas/compose.production.yml`：向 app 注入 `TRX_VIDEO_BASE_URL` 和 `TRX_VIDEO_API_KEY`。
+- `docs/canvas.md`、`docs/deployment.md`：记录企业原生协议、独立配置、非幂等提交边界与部署后的免费模型列表检查。
+- `tests/models.test.mjs`、`tests/provider.test.mjs`、`tests/trx-video-provider.test.mjs`：覆盖新能力范围、提示词限制、模型列表门禁、原生请求与状态分类。
+- `progress.md`：记录本轮企业文档对齐、验证与回滚边界。
+- 回滚方式：发布后执行 `git revert <本轮发布提交哈希>`，随后仅重建 app 容器。该回退不会删除桶内原图、云端项目或 `segment-002` 的未知提交证据。

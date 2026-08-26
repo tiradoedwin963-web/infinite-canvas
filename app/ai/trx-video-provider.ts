@@ -21,14 +21,14 @@ export type TrxVideoClientConfig = {
 export type TrxVideoDiagnostic = {
   attemptId?: string;
   model: typeof TRX_VIDEO_MODEL;
-  phase: "profile" | "reference-resolve" | "submit" | "status";
+  phase: "models" | "reference-resolve" | "submit" | "status";
   httpStatus?: number;
   elapsedMs: number;
   responseKeys: string[];
   dataKeys: string[];
   classification:
-    | "profile-available"
-    | "profile-unavailable"
+    | "models-available"
+    | "models-unavailable"
     | "provider-rejected"
     | "reference-resolution-failed"
     | "network-error"
@@ -106,8 +106,11 @@ function isExplicitStatusLookupRejection(payload: Record<string, unknown>): bool
 
 function providerError(status: number, payload: Record<string, unknown>): LingkeRequestErrorType {
   const serialized = JSON.stringify(payload).toLowerCase();
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return new LingkeRequestError("视频平台鉴权失败，请检查服务端密钥。", 502);
+  }
+  if (status === 403) {
+    return new LingkeRequestError("视频平台余额不足或无权访问。", 403);
   }
   if (status === 402 || serialized.includes("余额") || serialized.includes("balance")) {
     return new LingkeRequestError("视频平台账户余额不足。", 402);
@@ -120,6 +123,9 @@ function providerError(status: number, payload: Record<string, unknown>): Lingke
       readSafeMessage(payload) || "视频平台拒绝了请求。",
       status,
     );
+  }
+  if (status === 503) {
+    return new LingkeRequestError("视频平台暂不可用，本次未创建任务。", 503);
   }
   return new LingkeRequestError("视频平台暂时不可用，请稍后重试。", 502);
 }
@@ -159,40 +165,11 @@ function responseShape(payload: Record<string, unknown> | undefined) {
   };
 }
 
-function profileEntryAvailable(value: unknown): boolean {
-  if (typeof value === "string") return value === TRX_VIDEO_MODEL;
-  if (!isRecord(value)) return false;
-  const model = readString(value.model || value.id || value.name);
-  if (model !== TRX_VIDEO_MODEL) return false;
-  if (value.enabled === false || value.available === false || value.active === false) {
-    return false;
-  }
-  return !["disabled", "unavailable", "inactive"].includes(
-    readString(value.status).toLowerCase(),
+function modelsSupportTrxVideo(payload: Record<string, unknown>): boolean {
+  const models = payload.data;
+  return Array.isArray(models) && models.some(
+    (model) => isRecord(model) && readString(model.id) === TRX_VIDEO_MODEL,
   );
-}
-
-function profileModelsInclude(container: Record<string, unknown>): boolean {
-  const models = container.models;
-  if (Array.isArray(models)) return models.some(profileEntryAvailable);
-  if (!isRecord(models)) return false;
-  const entry = models[TRX_VIDEO_MODEL];
-  if (entry === true) return true;
-  if (entry === TRX_VIDEO_MODEL) return true;
-  if (isRecord(entry)) {
-    if (entry.enabled === false || entry.available === false || entry.active === false) {
-      return false;
-    }
-    return !["disabled", "unavailable", "inactive"].includes(
-      readString(entry.status).toLowerCase(),
-    );
-  }
-  return false;
-}
-
-function profileSupportsModel(payload: Record<string, unknown>): boolean {
-  return profileModelsInclude(payload) ||
-    (isRecord(payload.data) && profileModelsInclude(payload.data));
 }
 
 function validateReferenceUrls(
@@ -278,15 +255,15 @@ export function createTrxVideoClient(
     }
   }
 
-  async function profile(attemptId?: string): Promise<void> {
+  async function models(attemptId?: string): Promise<void> {
     const startedAt = Date.now();
     let response: Response;
     try {
-      response = await fetcher(`${baseUrl}/v1/video/profile`, { headers: authHeaders });
+      response = await fetcher(`${baseUrl}/v1/models`, { headers: authHeaders });
     } catch {
       diagnostic({
         attemptId,
-        phase: "profile",
+        phase: "models",
         elapsedMs: Date.now() - startedAt,
         classification: "network-error",
       });
@@ -296,7 +273,7 @@ export function createTrxVideoClient(
     if (!response.ok) {
       diagnostic({
         attemptId,
-        phase: "profile",
+        phase: "models",
         httpStatus: response.status,
         elapsedMs: Date.now() - startedAt,
         classification: "provider-rejected",
@@ -306,7 +283,7 @@ export function createTrxVideoClient(
     if (!payload || isExplicitBusinessRejection(payload)) {
       diagnostic({
         attemptId,
-        phase: "profile",
+        phase: "models",
         httpStatus: response.status,
         elapsedMs: Date.now() - startedAt,
         classification: "provider-rejected",
@@ -315,27 +292,27 @@ export function createTrxVideoClient(
         ? businessRejection(payload)
         : new LingkeRequestError("视频平台能力信息无法识别。", 502);
     }
-    if (!profileSupportsModel(payload)) {
+    if (!modelsSupportTrxVideo(payload)) {
       diagnostic({
         attemptId,
-        phase: "profile",
+        phase: "models",
         httpStatus: response.status,
         elapsedMs: Date.now() - startedAt,
-        classification: "profile-unavailable",
+        classification: "models-unavailable",
       }, payload);
       throw new LingkeRequestError("当前视频平台未开通 Seedance 2.5。", 400);
     }
     diagnostic({
       attemptId,
-      phase: "profile",
+      phase: "models",
       httpStatus: response.status,
       elapsedMs: Date.now() - startedAt,
-      classification: "profile-available",
+      classification: "models-available",
     }, payload);
   }
 
   return {
-    profile,
+    models,
 
     async generate(
       request: GenerateRequest,
@@ -347,7 +324,7 @@ export function createTrxVideoClient(
       const attemptId = options.attemptId.trim();
       if (!attemptId) throw new LingkeRequestError("视频提交记录无效。", 400);
 
-      await profile(attemptId);
+      await models(attemptId);
 
       const referenceAssetIds = request.referenceAssetIds ?? [];
       let referenceUrls: string[];
@@ -388,7 +365,6 @@ export function createTrxVideoClient(
             duration: Number(request.duration),
             aspect_ratio: request.aspectRatio,
             resolution: request.resolution,
-            generate_audio: true,
             ...(referenceUrls.length ? { images: referenceUrls } : {}),
           }),
         });
@@ -405,7 +381,7 @@ export function createTrxVideoClient(
       }
       const payload = await readJsonRecord(response);
       if (!response.ok) {
-        if (response.status >= 500) {
+        if (response.status === 502) {
           diagnostic({
             attemptId,
             phase: "submit",

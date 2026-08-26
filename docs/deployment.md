@@ -40,6 +40,8 @@ git -C /opt/infinite-canvas switch main
 ```text
 LINGKE_BASE_URL=服务端模型地址
 LINGKE_API_KEY=服务端模型密钥
+TRX_VIDEO_BASE_URL=https://trxdoc.xin
+TRX_VIDEO_API_KEY=TRX 企业 API Key（ek- 前缀）
 CANVAS_BASIC_AUTH_HASH='Caddy bcrypt 哈希'
 CANVAS_DATABASE_PASSWORD=随机数据库强密码
 CANVAS_ADMIN_PASSWORD_HASH='scrypt 管理员密码哈希'
@@ -65,6 +67,8 @@ sudo docker compose --env-file .env.production \
 
 应用启动前会执行 `npm run db:migrate`，迁移脚本使用 PostgreSQL advisory lock 和迁移记录表，多个容器同时启动也不会重复执行。数据库与 Caddy 卷不得通过 `down -v` 删除。
 登录等写请求会根据 Caddy 传入的 `X-Forwarded-Proto` 和 `X-Forwarded-Host` 校验公网同源；应用容器的 `3000` 端口必须继续只存在于 Compose 内网，不得直接发布到宿主机或公网。
+
+SD 2.5 只使用 TRX 原生视频接口：应用会先查询 `GET /v1/models`，再按需调用 `/v1/video/generate`。TRX 视频提交不幂等，部署或健康检查不得提交视频；部署后只允许进行无费用模型列表查询。
 
 未通过 Basic Auth 的请求应返回 `401`；通过 Basic Auth 后首页返回 `200` 并显示应用登录页：
 
