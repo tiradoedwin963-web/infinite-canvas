@@ -183,6 +183,42 @@ test("runs ready image layers in parallel then releases only their matching vide
   assert.equal(readyVideo.shotRef, "shot-02");
 });
 
+test("marks batches partial and stops downstream work when a video submission is unknown", () => {
+  const created = storyGraph();
+  const batch = createWorkflowBatchRun(created.graph, {
+    type: "run_story_workflow",
+    storyId: created.storyId,
+    shotRefs: [],
+  }, () => "batch-submission-unknown");
+  const imageResults = created.graph.nodes.filter((node) => node.storyRole === "storyboard");
+  const clip = created.graph.nodes.find((node) => node.storyRole === "clip");
+  let graph = created.graph;
+  imageResults.forEach((node) => {
+    graph = updateWorkflowResult(graph, node.id, {
+      status: "success",
+      resultUrl: `https://example.com/${node.id}.png`,
+      progress: "",
+    });
+  });
+  graph = updateWorkflowResult(graph, clip.id, {
+    status: "submission-unknown",
+    progress: "提交状态未知",
+    error: "未收到任务编号。",
+    taskId: undefined,
+  });
+  graph = {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.storyRole === "clip" && node.id !== clip.id
+        ? { ...node, status: "success", progress: "" }
+        : node,
+    ),
+  };
+  const advanced = advanceWorkflowBatch(graph, batch);
+  assert.deepEqual(advanced.readySchedulerIds, []);
+  assert.equal(advanced.batch.status, "partial-failure");
+});
+
 test("validates selected shots and rejects malformed persisted queues", () => {
   const created = storyGraph();
   const selected = createWorkflowBatchRun(created.graph, {

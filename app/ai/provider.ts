@@ -1,4 +1,8 @@
-import { getModelConfig, isComposerMode } from "./models.ts";
+import {
+  getModelConfig,
+  isComposerMode,
+  TRX_SEEDANCE_25_MODEL,
+} from "./models.ts";
 import type {
   GenerateReferenceImage,
   GenerateRequest,
@@ -16,13 +20,27 @@ export type LingkeClientConfig = {
   apiKey: string;
 };
 
+export type LingkeRequestErrorCode = "submission-unknown";
+
 export class LingkeRequestError extends Error {
   readonly status: number;
+  readonly code?: LingkeRequestErrorCode;
 
-  constructor(message: string, status = 502) {
+  constructor(
+    message: string,
+    status = 502,
+    code?: LingkeRequestErrorCode,
+  ) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+export function toSafeRequestErrorPayload(error: LingkeRequestError) {
+  return error.code
+    ? { error: error.message, code: error.code }
+    : { error: error.message };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -82,7 +100,7 @@ function validateImages(
   images: GenerateReferenceImage[],
   maxReferenceImages: number,
 ): GenerateReferenceImage[] {
-  if (images.length > 5 || images.length > maxReferenceImages) {
+  if (images.length > maxReferenceImages) {
     throw new LingkeRequestError(
       `当前模型最多支持 ${maxReferenceImages} 张参考图。`,
       400,
@@ -146,6 +164,21 @@ export function validateGenerateRequest(value: unknown): GenerateRequest {
   });
   validateImages(images, config.maxReferenceImages);
 
+  if (value.referenceAssetIds !== undefined && !Array.isArray(value.referenceAssetIds)) {
+    throw new LingkeRequestError("参考素材编号无效。", 400);
+  }
+  const referenceAssetIds = (value.referenceAssetIds ?? []).map((assetId) => {
+    const id = readString(assetId).trim();
+    if (!id) throw new LingkeRequestError("参考素材编号无效。", 400);
+    return id;
+  });
+  const projectId = value.projectId === undefined
+    ? ""
+    : readString(value.projectId).trim();
+  if (value.projectId !== undefined && !projectId) {
+    throw new LingkeRequestError("云端项目编号无效。", 400);
+  }
+
   const aspectRatio = readString(value.aspectRatio);
   if (
     config.aspectRatios.length > 0 &&
@@ -172,6 +205,8 @@ export function validateGenerateRequest(value: unknown): GenerateRequest {
     model,
     prompt,
     images,
+    projectId: projectId || undefined,
+    referenceAssetIds,
     aspectRatio: aspectRatio || undefined,
     duration: duration || undefined,
     resolution: config.resolutions.length > 0 ? resolution : undefined,
@@ -342,7 +377,7 @@ function createMediaParams(request: GenerateRequest): Record<string, unknown> {
   }
   if (images.length && config.referenceImagesParam) {
     params[config.referenceImagesParam] =
-      config.referenceImagesParam === "images" ? images : images[0];
+      config.referenceImagesParam === "input_reference" ? images[0] : images;
   }
   return params;
 }
@@ -450,6 +485,16 @@ export function createLingkeClient(
           throw new LingkeRequestError("模型未返回可显示的文本。", 502);
         }
         return { kind: "text", content };
+      }
+
+      if (
+        request.mode === "video" &&
+        request.model === TRX_SEEDANCE_25_MODEL
+      ) {
+        throw new LingkeRequestError(
+          "SD 2.5 视频必须通过专用视频服务提交。",
+          500,
+        );
       }
 
       const payload = await post("/v1/media/generate", {

@@ -14,6 +14,12 @@
 - 工作流画布使用 COS 派生的 640px WebP 缩略图；详情、Agent 读图和生成参考仍读取原图
 - 模型密钥、Basic Auth 哈希、数据库密码、管理员哈希和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
 
+## TRX 视频原图直签
+
+SD 2.5 视频提交只使用当前账号、当前云端项目中已经归档且校验完成的图片原图。应用按调度器连线顺序校验素材归属、类型和大小，确认 COS 原对象存在后，直接为该对象签发 24 小时私有读 URL 交给 TRX 视频网关。
+
+此流程不会复制、写入或删除视频参考对象，也不需要 `temporary/` 前缀或 COS 生命周期规则。原图和缩略图继续沿用既有私有桶、对象键和删除策略，禁止将桶或对象改为公开读。
+
 浏览器首次访问会提示证书不受信任；备案和域名准备完成后，应切换到可信域名证书和标准 443 入口。
 
 ## 首次部署
@@ -102,15 +108,9 @@ sudo docker compose --env-file .env.production \
 
 ## 项目与素材迁移
 
-本地旧项目先从工作流项目菜单导出为 `*.canvas.json`。正式迁移必须同时提供完整素材清单；把迁移目录复制到应用容器后执行导入工具：
+本地项目从工作流项目菜单导出为完整 `*.canvas.json` 后，可在已登录的云端项目菜单选择“导入本地项目到云端”。导入会创建一个新的同账号项目，逐张通过现有上传票据写入同一私有 COS 桶并完成大小、类型校验，再将图中的本地素材 ID 重写为云端资产 ID。
 
-```bash
-docker cp /opt/infinite-canvas-migration infinite-canvas-app-1:/migration
-docker compose --env-file .env.production -f deploy/canvas/compose.production.yml exec -T app \
-  node scripts/import-workflow-project.mjs /migration/project.canvas.json /migration/manifest.json
-```
-
-导入工具先校验节点和素材映射，再逐张上传并通过 COS `HeadObject` 校验大小与类型，最后用单个数据库事务写入管理员项目；任一图片缺失或数据库写入失败会删除本次已上传对象，不留下半套项目。迁移时会清除旧任务 ID、批量队列及提交中状态，避免刷新后重复生成或计费。
+导入要求文件携带全部被图引用的图片；TVC 分镜、锁稿、手动覆盖及 `submission-unknown` 证据会保留，批量队列不会恢复，也不会自动提交或轮询媒体。任一上传、素材重写、项目图或对话保存失败时，只删除本次新建的云端项目及其对象，本地原项目保持不变。
 
 ## 备份与健康检查
 

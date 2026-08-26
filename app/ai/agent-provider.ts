@@ -2,11 +2,15 @@ import {
   AGENT_MODEL,
   MAX_AGENT_IMAGE_BYTES,
   MAX_AGENT_IMAGE_TOTAL_BYTES,
+  isTvcAgentOperation,
   parseAgentModelResponse,
+  validateAgentOperationsForSurface,
   type AgentInspectedImage,
   type AgentRequest,
   type AgentResponse,
   type AgentSurfaceSnapshot,
+  type AgentTvcPromptPlanSegment,
+  type AgentTvcSnapshot,
 } from "./agent.ts";
 import {
   extractProgressSummary,
@@ -30,6 +34,123 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function validateTvcPromptPlan(value: unknown): AgentTvcPromptPlanSegment[] {
+  if (!Array.isArray(value) || !value.length) {
+    throw new CanvasAgentError("TVC 30 秒提示词段计划无效。", 400);
+  }
+  const refs = new Set<string>();
+  const shotNumbers = new Set<string>();
+  let cursor = 0;
+  return value.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new CanvasAgentError(`TVC 提示词段计划第 ${index + 1} 项无效。`, 400);
+    }
+    const ref = typeof item.ref === "string" ? item.ref.trim() : "";
+    const startSecond = typeof item.startSecond === "number"
+      ? item.startSecond
+      : null;
+    const endSecond = typeof item.endSecond === "number"
+      ? item.endSecond
+      : null;
+    const nextShotNumbers = Array.isArray(item.shotNumbers)
+      ? item.shotNumbers.map((shotNumber) =>
+        typeof shotNumber === "string" ? shotNumber.trim() : ""
+      )
+      : [];
+    const referenceNodeIds = Array.isArray(item.referenceNodeIds)
+      ? item.referenceNodeIds.map((nodeId) =>
+        typeof nodeId === "string" ? nodeId.trim() : ""
+      )
+      : [];
+    const duration = startSecond !== null && endSecond !== null
+      ? endSecond - startSecond
+      : 0;
+    if (
+      !ref || refs.has(ref) ||
+      startSecond === null || endSecond === null ||
+      !Number.isInteger(startSecond) || !Number.isInteger(endSecond) ||
+      startSecond !== cursor || endSecond <= startSecond ||
+      duration < 4 || duration > 30 ||
+      !nextShotNumbers.length || nextShotNumbers.some((shotNumber) => !shotNumber) ||
+      new Set(nextShotNumbers).size !== nextShotNumbers.length ||
+      nextShotNumbers.some((shotNumber) => shotNumbers.has(shotNumber)) ||
+      referenceNodeIds.some((nodeId) => !nodeId) ||
+      new Set(referenceNodeIds).size !== referenceNodeIds.length
+    ) {
+      throw new CanvasAgentError(`TVC 提示词段计划第 ${index + 1} 项无效。`, 400);
+    }
+    refs.add(ref);
+    nextShotNumbers.forEach((shotNumber) => shotNumbers.add(shotNumber));
+    cursor = endSecond;
+    return { ref, startSecond, endSecond, shotNumbers: nextShotNumbers, referenceNodeIds };
+  });
+}
+
+function validateTvcSnapshot(value: unknown): AgentTvcSnapshot | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new CanvasAgentError("TVC 项目状态无效。", 400);
+  const stage = value.stage;
+  if (
+    stage !== "intake" &&
+    stage !== "script-draft" &&
+    stage !== "script-locked" &&
+    stage !== "prompt-final"
+  ) {
+    throw new CanvasAgentError("TVC 项目阶段无效。", 400);
+  }
+  const projectId = typeof value.projectId === "string"
+    ? value.projectId.trim()
+    : "";
+  if (!projectId) {
+    throw new CanvasAgentError("TVC 项目标识无效。", 400);
+  }
+  const revision = typeof value.revision === "number" ? value.revision : undefined;
+  if (revision === undefined || !Number.isInteger(revision) || revision < 0) {
+    throw new CanvasAgentError("TVC 项目修订号无效。", 400);
+  }
+  const lockedRevision = typeof value.lockedRevision === "number"
+    ? value.lockedRevision
+    : undefined;
+  if (
+    lockedRevision !== undefined &&
+    (!Number.isInteger(lockedRevision) || lockedRevision < 0 || lockedRevision > revision)
+  ) {
+    throw new CanvasAgentError("TVC 锁稿修订号无效。", 400);
+  }
+  if (
+    (stage === "script-locked" || stage === "prompt-final") &&
+    lockedRevision === undefined
+  ) {
+    throw new CanvasAgentError("TVC 锁稿修订号无效。", 400);
+  }
+  const title = typeof value.title === "string" ? value.title.trim() : "";
+  const targetModel = typeof value.targetModel === "string"
+    ? value.targetModel.trim()
+    : "";
+  const targetMaxDuration = typeof value.targetMaxDuration === "number"
+    ? value.targetMaxDuration
+    : undefined;
+  if (
+    targetMaxDuration !== undefined &&
+    (!Number.isInteger(targetMaxDuration) || targetMaxDuration <= 0)
+  ) {
+    throw new CanvasAgentError("TVC 单段时长无效。", 400);
+  }
+  const promptPlan = value.promptPlan === undefined
+    ? undefined
+    : validateTvcPromptPlan(value.promptPlan);
+  return {
+    projectId,
+    stage,
+    revision,
+    ...(lockedRevision !== undefined ? { lockedRevision } : {}),
+    ...(title ? { title } : {}),
+    ...(targetModel ? { targetModel } : {}),
+    ...(targetMaxDuration !== undefined ? { targetMaxDuration } : {}),
+    ...(promptPlan ? { promptPlan } : {}),
+  };
+}
+
 function validateCanvas(value: unknown): AgentSurfaceSnapshot {
   if (!isRecord(value) || !isRecord(value.viewport)) {
     throw new CanvasAgentError("画布快照无效。", 400);
@@ -43,7 +164,15 @@ function validateCanvas(value: unknown): AgentSurfaceSnapshot {
     throw new CanvasAgentError("画布内容无效。", 400);
   }
   const mode = value.mode === "workflow" ? "workflow" : "creation";
-  return { ...value, mode } as unknown as AgentSurfaceSnapshot;
+  const tvc = validateTvcSnapshot(value.tvc);
+  if (mode === "creation" && tvc) {
+    throw new CanvasAgentError("TVC 项目只能在工作流画布使用。", 400);
+  }
+  return {
+    ...value,
+    mode,
+    ...(tvc ? { tvc } : {}),
+  } as unknown as AgentSurfaceSnapshot;
 }
 
 function validatePhase(value: unknown) {
@@ -122,13 +251,45 @@ export function validateAgentRequest(value: unknown): AgentRequest {
   };
 }
 
+type TvcDirectorManuals = {
+  core: string;
+  intake: string;
+  storyboard: string;
+  promptPackage: string;
+};
+
+function tvcStageManual(
+  manuals: TvcDirectorManuals,
+  stage: AgentTvcSnapshot["stage"],
+) {
+  if (stage === "intake") return manuals.intake;
+  if (stage === "script-draft") return manuals.storyboard;
+  return manuals.promptPackage;
+}
+
+function workflowManualSection(
+  workflowToolManual: string,
+  storyAssetToolManual: string,
+  tvcDirectorManuals: TvcDirectorManuals | undefined,
+  tvc: AgentTvcSnapshot | undefined,
+) {
+  if (!tvc) {
+    return `工作流短剧 Tool 手册：\n${workflowToolManual.trim()}\n\n剧本分析与资产库 Tool 手册：\n${storyAssetToolManual.trim()}`;
+  }
+  if (!tvcDirectorManuals) {
+    return "当前项目为 TVC。不得使用短剧工作流、剧本资产库或媒体生成 operation；只可返回当前 TVC 阶段允许的受限操作。";
+  }
+  return `当前项目为 TVC，TVC 能力包优先于通用工作流指令。不得使用短剧工作流、剧本资产库或媒体生成 operation。\n\nTVC 导演核心手册：\n${tvcDirectorManuals.core.trim()}\n\nTVC 当前阶段手册（${tvc.stage}）：\n${tvcStageManual(tvcDirectorManuals, tvc.stage).trim()}`;
+}
+
 function systemPrompt(
   instructions: string,
   toolManual: string,
   workflowToolManual: string,
   storyAssetToolManual: string,
+  tvcDirectorManuals: TvcDirectorManuals | undefined,
   phase: AgentRequest["phase"],
-  canvasMode: AgentRequest["canvas"]["mode"],
+  canvas: AgentRequest["canvas"],
 ) {
   const models = JSON.stringify(
     ALL_MODELS.map((model) => ({ mode: model.mode, model: model.value })),
@@ -157,7 +318,10 @@ function systemPrompt(
   return `${instructions.trim()}
 
 当前会话阶段：${phase}。
-当前画布类型：${canvasMode}。
+当前画布类型：${canvas.mode}。
+${canvas.mode === "workflow" && canvas.tvc
+  ? `当前 TVC 项目 ID：${canvas.tvc.projectId}。当前 TVC 阶段：${canvas.tvc.stage}。当前 TVC 修订号：${canvas.tvc.revision}。${canvas.tvc.lockedRevision !== undefined ? `当前锁定分镜修订号：${canvas.tvc.lockedRevision}。` : ""}${canvas.tvc.title ? `项目名称：${canvas.tvc.title}。` : ""}${canvas.tvc.targetModel ? `目标视频平台：${canvas.tvc.targetModel}。` : ""}${canvas.tvc.promptPlan ? `\n当前已持久化的 30 秒提示词段计划（唯一权威，必须逐段原样复制 ref、全片起止秒、镜头顺序与参考资产顺序；只补写每段 prompt）：${JSON.stringify(canvas.tvc.promptPlan)}。` : ""}`
+  : ""}
 可用于 generate_content 的 mode/model 组合：${models}。model 字段只能填写 model 值，不得添加 mode 前缀。
 
 图片生成 Tool 手册：
@@ -165,11 +329,12 @@ ${toolManual.trim()}
 
 图片模型运行时能力表（与手册冲突时以此表为准）：${imageCapabilities}。
 
-工作流短剧 Tool 手册：
-${workflowToolManual.trim()}
-
-剧本分析与资产库 Tool 手册：
-${storyAssetToolManual.trim()}
+${workflowManualSection(
+  workflowToolManual,
+  storyAssetToolManual,
+  tvcDirectorManuals,
+  canvas.mode === "workflow" ? canvas.tvc : undefined,
+)}
 
 视频模型运行时能力表（与手册冲突时以此表为准）：${videoCapabilities}。`;
 }
@@ -286,6 +451,91 @@ function upstreamFailure(response: Response, payload: unknown) {
 
 const FALLBACK_PROGRESS_SUMMARY = "已完成当前阶段处理，正在校验可应用结果。";
 
+function hasSameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function localPromptTimecode(endSecond: number) {
+  return `00:00–00:${String(endSecond).padStart(2, "0")}`;
+}
+
+function validateTvcPromptPackageAgainstPlan(
+  tvc: AgentTvcSnapshot,
+  operation: Extract<AgentResponse["operations"][number], {
+    type: "create_tvc_prompt_package";
+  }>,
+) {
+  if (!tvc.promptPlan?.length) {
+    throw new Error("TVC 30 秒提示词段计划缺失。");
+  }
+  if (operation.units.length !== tvc.promptPlan.length) {
+    throw new Error("TVC 最终提示词必须为每个已计划片段返回且仅返回一个单元。");
+  }
+  operation.units.forEach((unit, index) => {
+    const planned = tvc.promptPlan![index];
+    if (
+      unit.ref !== planned.ref ||
+      unit.startSecond !== planned.startSecond ||
+      unit.endSecond !== planned.endSecond ||
+      !hasSameStrings(unit.shotNumbers, planned.shotNumbers) ||
+      !hasSameStrings(unit.referenceNodeIds, planned.referenceNodeIds)
+    ) {
+      throw new Error(`TVC 提示词单元 ${unit.ref || `第 ${index + 1} 项`} 与已持久化的 30 秒片段计划不匹配。`);
+    }
+    const duration = unit.endSecond - unit.startSecond;
+    if (
+      !unit.prompt.includes(localPromptTimecode(duration)) ||
+      /\b[JL][ -]?cut\b/i.test(unit.prompt)
+    ) {
+      throw new Error(`TVC 提示词单元 ${unit.ref} 必须使用本段 0 至 ${duration} 秒时间轴，且不得包含 J-cut 或 L-cut。`);
+    }
+  });
+}
+
+export function validateTvcAgentOperations(
+  tvc: AgentTvcSnapshot,
+  operations: AgentResponse["operations"],
+) {
+  for (const operation of operations) {
+    if (!isTvcAgentOperation(operation)) {
+      throw new Error("TVC 项目只能返回当前阶段的 TVC 操作。");
+    }
+    if (operation.type !== "create_tvc_brief" && operation.projectId !== tvc.projectId) {
+      throw new Error("TVC 操作引用的项目标识不匹配。");
+    }
+  }
+  const allowed = tvc.stage === "intake"
+    ? new Set(["create_tvc_brief"])
+    : tvc.stage === "script-draft"
+      ? new Set([
+          "update_tvc_brief",
+          "create_tvc_asset_plan",
+          "write_tvc_storyboard_draft",
+        ])
+      : new Set(["create_tvc_prompt_package"]);
+  if (operations.some((operation) => !allowed.has(operation.type))) {
+    throw new Error("TVC 操作与当前项目阶段不匹配。");
+  }
+  if (
+    (tvc.stage === "script-locked" || tvc.stage === "prompt-final") &&
+    operations.length > 0 && operations.length !== 1
+  ) {
+    throw new Error("TVC 锁稿后每次只能返回一个最终提示词包操作。");
+  }
+  for (const operation of operations) {
+    if (
+      operation.type === "create_tvc_prompt_package" &&
+      (operation.sourceRevision !== tvc.revision ||
+        operation.sourceRevision !== tvc.lockedRevision)
+    ) {
+      throw new Error("TVC 最终提示词必须使用当前锁定分镜修订号。");
+    }
+    if (operation.type === "create_tvc_prompt_package") {
+      validateTvcPromptPackageAgainstPlan(tvc, operation);
+    }
+  }
+}
+
 export function createCanvasAgentClient(
   config: {
     baseUrl: string;
@@ -294,6 +544,7 @@ export function createCanvasAgentClient(
     toolManual: string;
     workflowToolManual?: string;
     storyAssetToolManual?: string;
+    tvcDirectorManuals?: TvcDirectorManuals;
   },
   fetcher: Fetcher = fetch,
 ) {
@@ -323,8 +574,9 @@ export function createCanvasAgentClient(
             config.toolManual,
             config.workflowToolManual ?? "",
             config.storyAssetToolManual ?? "",
+            config.tvcDirectorManuals,
             request.phase,
-            request.canvas.mode,
+            request.canvas,
           ),
         },
         ...request.messages,
@@ -417,6 +669,15 @@ export function createCanvasAgentClient(
         ) {
           throw new Error("完整剧本必须先进行剧本分析和资产规划。");
         }
+        if (request.canvas.mode === "workflow" && request.canvas.tvc) {
+          validateTvcAgentOperations(
+            request.canvas.tvc,
+            parsed.operations,
+          );
+        } else if (parsed.operations.some(isTvcAgentOperation)) {
+          throw new Error("TVC 操作只能在 TVC 项目中执行。");
+        }
+        validateAgentOperationsForSurface(request.canvas.mode, parsed.operations);
         return normalizeAgentImageResponse({ ...parsed, progressSummary });
       } catch (error) {
         throw new CanvasAgentError(

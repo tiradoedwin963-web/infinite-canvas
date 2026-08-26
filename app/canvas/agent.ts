@@ -3,6 +3,7 @@ import type {
   AgentCanvasSnapshot,
   AgentOperation,
 } from "../ai/agent.ts";
+import { isTvcAgentOperation } from "../ai/agent.ts";
 import {
   connectNodes,
   getNodeSize,
@@ -108,6 +109,14 @@ export function applyAgentOperations(
   const results: AgentOperationResult[] = [];
 
   for (const operation of operations) {
+    if (isTvcAgentOperation(operation)) {
+      results.push({
+        operation,
+        applied: false,
+        message: "TVC 操作只能在 TVC 工作流项目执行。",
+      });
+      continue;
+    }
     if (
       operation.type === "create_story_workflow" ||
       operation.type === "run_story_workflow"

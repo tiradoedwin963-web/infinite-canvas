@@ -10,9 +10,9 @@ import {
 test("configures only models with selectable resolutions for media modes", () => {
   assert.equal(MODEL_CONFIGS.text.length, 5);
   assert.equal(MODEL_CONFIGS.image.length, 4);
-  assert.equal(MODEL_CONFIGS.video.length, 2);
-  assert.equal(ALL_MODELS.length, 11);
-  assert.equal(new Set(ALL_MODELS.map((model) => model.value)).size, 11);
+  assert.equal(MODEL_CONFIGS.video.length, 3);
+  assert.equal(ALL_MODELS.length, 12);
+  assert.equal(new Set(ALL_MODELS.map((model) => model.value)).size, 12);
   assert.ok(
     [...MODEL_CONFIGS.image, ...MODEL_CONFIGS.video].every(
       (model) => model.resolutions.length >= 2,
@@ -49,6 +49,46 @@ test("keeps media capabilities scoped to the selected model", () => {
   assert.equal(
     getModelConfig("video", "viduq3")?.defaultResolution,
     "720p",
+  );
+  assert.deepEqual(
+    getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.durations,
+    [
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15",
+      "16",
+      "17",
+      "18",
+      "19",
+      "20",
+      "21",
+      "22",
+      "23",
+      "24",
+      "25",
+      "26",
+      "27",
+      "28",
+      "29",
+      "30",
+    ],
+  );
+  assert.equal(
+    getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.maxReferenceImages,
+    30,
+  );
+  assert.equal(
+    getModelConfig("video", "doubao-seedance-2-5-quannengcankao")?.referenceImagesParam,
+    "image_url",
   );
   assert.equal(getModelConfig("image", "qwen-image"), undefined);
   assert.equal(getModelConfig("video", "sora-2"), undefined);

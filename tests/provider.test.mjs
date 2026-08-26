@@ -407,6 +407,136 @@ test("maps selectable video resolutions to the provider contract", async () => {
   ]);
 });
 
+test("supports SD 2.5 multi-reference videos without relaxing other model limits", async () => {
+  const references = Array.from({ length: 3 }, (_, index) => ({
+    name: `reference-${index + 1}.png`,
+    mimeType: "image/png",
+    dataUrl: `data:image/png;base64,${Buffer.from(`image-${index + 1}`).toString("base64")}`,
+    size: 7,
+  }));
+  const baseRequest = {
+    mode: "video",
+    model: "doubao-seedance-2-5-quannengcankao",
+    prompt: "red sports car",
+    aspectRatio: "16:9",
+    resolution: "720p",
+    images: references,
+  };
+
+  assert.equal(
+    validateGenerateRequest({ ...baseRequest, duration: "4" }).duration,
+    "4",
+  );
+  assert.equal(
+    validateGenerateRequest({ ...baseRequest, duration: "30" }).duration,
+    "30",
+  );
+  assert.throws(
+    () => validateGenerateRequest({ ...baseRequest, duration: "3" }),
+    /所选视频时长不受当前模型支持/,
+  );
+  assert.throws(
+    () =>
+      validateGenerateRequest({
+        ...baseRequest,
+        duration: "12",
+        images: Array.from({ length: 31 }, () => references[0]),
+      }),
+    /最多支持 30 张/,
+  );
+  assert.throws(
+    () =>
+      validateGenerateRequest({
+        mode: "video",
+        model: "doubao-seedance-1-5-pro-251215",
+        prompt: "red sports car",
+        aspectRatio: "16:9",
+        duration: "5",
+        resolution: "720p",
+        images: references,
+      }),
+    /最多支持 1 张/,
+  );
+
+  const client = createLingkeClient(
+    { baseUrl: "https://example.test", apiKey: "secret" },
+    async () => jsonResponse({ task_id: "sd-25-task" }),
+  );
+  await assert.rejects(
+    client.generate({ ...baseRequest, duration: "12" }),
+    /专用视频服务/,
+  );
+});
+
+test("keeps cloud reference asset IDs ordered in a validated SD 2.5 request", () => {
+  const request = validateGenerateRequest({
+    mode: "video",
+    model: "doubao-seedance-2-5-quannengcankao",
+    prompt: "cloud asset references",
+    projectId: "11111111-1111-4111-8111-111111111111",
+    referenceAssetIds: [
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ],
+    aspectRatio: "16:9",
+    duration: "12",
+    resolution: "720p",
+  });
+  assert.equal(request.projectId, "11111111-1111-4111-8111-111111111111");
+  assert.deepEqual(request.referenceAssetIds, [
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+  ]);
+  assert.deepEqual(request.images, []);
+  assert.throws(
+    () => validateGenerateRequest({
+      ...request,
+      referenceAssetIds: "not-an-array",
+    }),
+    /参考素材编号无效/,
+  );
+});
+
+test("keeps the reference image byte safeguards for SD 2.5", () => {
+  const eightMegabyteImage = {
+    name: "large.png",
+    mimeType: "image/png",
+    dataUrl: `data:image/png;base64,${Buffer.alloc(8 * 1024 * 1024).toString("base64")}`,
+    size: 8 * 1024 * 1024,
+  };
+  const elevenMegabyteImage = {
+    ...eightMegabyteImage,
+    dataUrl: `data:image/png;base64,${Buffer.alloc(11 * 1024 * 1024).toString("base64")}`,
+    size: 11 * 1024 * 1024,
+  };
+  const baseRequest = {
+    mode: "video",
+    model: "doubao-seedance-2-5-quannengcankao",
+    prompt: "red sports car",
+    aspectRatio: "16:9",
+    duration: "12",
+    resolution: "720p",
+  };
+
+  assert.throws(
+    () => validateGenerateRequest({ ...baseRequest, images: [elevenMegabyteImage] }),
+    /单张参考图不能超过 10MB/,
+  );
+  assert.throws(
+    () =>
+      validateGenerateRequest({
+        ...baseRequest,
+        images: [
+          eightMegabyteImage,
+          eightMegabyteImage,
+          eightMegabyteImage,
+          eightMegabyteImage,
+        ],
+      }),
+    /参考图总大小不能超过 30MB/,
+  );
+});
+
 test("normalizes nested media task states and task result images", async () => {
   const client = createLingkeClient(
     { baseUrl: "https://example.test", apiKey: "secret" },

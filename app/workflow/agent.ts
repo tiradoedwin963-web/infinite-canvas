@@ -25,6 +25,12 @@ import {
   resetStoryFoundationApproval,
   runnableAssetSchedulers,
 } from "./story-assets.ts";
+import {
+  applyTvcOperation,
+  isTvcOperation,
+  isTvcProject,
+  tvcAgentSummary,
+} from "./tvc.ts";
 
 export const WORKFLOW_BATCH_STORAGE_KEY = "lingke-workflow-batch-v1";
 
@@ -44,6 +50,7 @@ export function createWorkflowAgentSnapshot(
   viewport: Viewport,
   viewportSize: { width: number; height: number },
 ): AgentWorkflowSnapshot {
+  const tvc = tvcAgentSummary(graph);
   const availableAssetRefs = new Set(
     graph.nodes.flatMap((node) =>
       node.type === "result" &&
@@ -112,6 +119,7 @@ export function createWorkflowAgentSnapshot(
       };
     }),
     edges: graph.edges.map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+    ...(tvc ? { tvc } : {}),
   };
 }
 
@@ -160,6 +168,24 @@ export function applyWorkflowAgentOperations(
   let next = graph;
   const messages: string[] = [];
   operations.forEach((operation) => {
+    if (isTvcOperation(operation)) {
+      const created = applyTvcOperation(next, operation);
+      next = created.graph;
+      const message = operation.type === "create_tvc_brief"
+        ? `已创建 TVC“${operation.title}”的资料梳理节点。`
+        : operation.type === "update_tvc_brief"
+          ? "已更新 TVC 资料梳理；分镜稿已回到待修订状态。"
+          : operation.type === "create_tvc_asset_plan"
+            ? `已添加 ${operation.assets.length} 项 TVC 资产计划。`
+            : operation.type === "write_tvc_storyboard_draft"
+              ? `已写入 ${operation.rows.length} 镜 TVC 分镜表草案。`
+              : `已基于锁定分镜写入 ${operation.units.length} 个 TVC 最终提示词单元。`;
+      messages.push(message, ...(operation.adjustments ?? []));
+      return;
+    }
+    if (isTvcProject(next)) {
+      throw new Error("TVC 项目不能执行短剧工作流操作。");
+    }
     if (operation.type === "create_story_analysis") {
       const created = createStoryAnalysis(next, operation);
       next = created.graph;
@@ -320,16 +346,25 @@ export function advanceWorkflowBatch(
     const failedUpstream = [...inputs.images, ...inputs.videos].find(
       (node) =>
         node.type === "result" &&
-        (node.status === "failed" || node.status === "paused"),
+        (node.status === "failed" ||
+          node.status === "paused" ||
+          node.status === "submission-unknown"),
     );
     if (failedUpstream) {
+      const upstreamSubmissionUnknown =
+        failedUpstream.type === "result" &&
+        failedUpstream.status === "submission-unknown";
       next = updateWorkflowNode(next, schedulerId, {
-        error: "上游分镜生成失败，已停止当前分支。",
+        error: upstreamSubmissionUnknown
+          ? "上游任务提交状态未知，已停止当前分支。"
+          : "上游分镜生成失败，已停止当前分支。",
       });
       next = updateWorkflowResult(next, result.id, {
         status: "failed",
         progress: "",
-        error: "上游分镜生成失败，未提交当前任务。",
+        error: upstreamSubmissionUnknown
+          ? "上游任务提交状态未知，未提交当前任务。"
+          : "上游分镜生成失败，未提交当前任务。",
       });
       return;
     }
@@ -344,10 +379,13 @@ export function advanceWorkflowBatch(
   const finished =
     results.length === batch.schedulerIds.length &&
     results.every((node) =>
-      ["success", "failed", "paused"].includes(node.status),
+      ["success", "failed", "paused", "submission-unknown"].includes(node.status),
     );
   const failed = results.some(
-    (node) => node.status === "failed" || node.status === "paused",
+    (node) =>
+      node.status === "failed" ||
+      node.status === "paused" ||
+      node.status === "submission-unknown",
   );
   return {
     graph: next,

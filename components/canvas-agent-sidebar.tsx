@@ -92,6 +92,25 @@ type CanvasAgentSidebarProps = {
   onBusyChange?: (busy: boolean) => void;
   loadConversationStore?: () => Promise<AgentConversationStore>;
   saveConversationStore?: (store: AgentConversationStore) => Promise<void>;
+  autoRequest?: CanvasAgentAutoRequest | null;
+  onAutoRequestComplete?: (
+    requestId: string,
+    outcome: CanvasAgentAutoRequestOutcome,
+  ) => void;
+};
+
+export type CanvasAgentAutoRequest = {
+  id: string;
+  content: string;
+  textOnly?: boolean;
+};
+
+export type CanvasAgentAutoRequestOutcome =
+  | { succeeded: true }
+  | { succeeded: false; error: string };
+
+type AgentSubmitOptions = {
+  textOnly?: boolean;
 };
 
 async function readApiError(response: Response) {
@@ -125,6 +144,8 @@ export function CanvasAgentSidebar({
   onBusyChange,
   loadConversationStore,
   saveConversationStore,
+  autoRequest,
+  onAutoRequestComplete,
 }: CanvasAgentSidebarProps) {
   const [conversationStore, setConversationStore] = useState<AgentConversationStore>(
     EMPTY_CONVERSATION_STORE,
@@ -150,6 +171,11 @@ export function CanvasAgentSidebar({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const planningAbortRef = useRef<AbortController | null>(null);
+  const autoRequestHandledRef = useRef("");
+  const submitRef = useRef<((
+    contentOverride?: string,
+    options?: AgentSubmitOptions,
+  ) => Promise<CanvasAgentAutoRequestOutcome | undefined>) | null>(null);
   const activeConversation = conversationStore.conversations.find(
     (conversation) => conversation.id === conversationStore.activeConversationId,
   );
@@ -256,16 +282,18 @@ export function CanvasAgentSidebar({
         cancelled = true;
       };
     }
-    setConversationStore(
-      parseAgentConversationStore(
-        window.localStorage.getItem(conversationStorageKey),
-        legacyStorageKey
-          ? window.localStorage.getItem(legacyStorageKey)
-          : null,
-        () => crypto.randomUUID(),
-      ),
+    const restored = parseAgentConversationStore(
+      window.localStorage.getItem(conversationStorageKey),
+      legacyStorageKey
+        ? window.localStorage.getItem(legacyStorageKey)
+        : null,
+      () => crypto.randomUUID(),
     );
-    setIsHydrated(true);
+    const timer = window.setTimeout(() => {
+      setConversationStore(restored);
+      setIsHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [conversationStorageKey, legacyStorageKey, loadConversationStore]);
 
   useEffect(() => {
@@ -330,11 +358,14 @@ export function CanvasAgentSidebar({
     if (!activeConversation) return;
     const normalizedMessages = expireIncompleteAgentConfirmations(messages);
     if (normalizedMessages === messages) return;
-    updateConversation(activeConversation.id, (conversation) => ({
-      ...conversation,
-      messages: normalizedMessages,
-      updatedAt: Date.now(),
-    }));
+    const timer = window.setTimeout(() => {
+      updateConversation(activeConversation.id, (conversation) => ({
+        ...conversation,
+        messages: normalizedMessages,
+        updatedAt: Date.now(),
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [activeConversation, messages]);
 
   async function requestAgent(
@@ -373,9 +404,17 @@ export function CanvasAgentSidebar({
     }, signal);
   }
 
-  async function submit(contentOverride?: string) {
+  async function submit(
+    contentOverride?: string,
+    options?: AgentSubmitOptions,
+  ): Promise<CanvasAgentAutoRequestOutcome | undefined> {
     const content = (contentOverride ?? draft).trim();
-    if (!content || isSending || isConfirmationBusy || !activeConversation) return;
+    if (!content || isSending || isConfirmationBusy || !activeConversation) {
+      return {
+        succeeded: false,
+        error: "画布 Agent 当前不可用，请稍后重试。",
+      };
+    }
     const conversationId = activeConversation.id;
     const phase = activeConversation.phase;
     const userMessage: AgentMessage = {
@@ -417,6 +456,9 @@ export function CanvasAgentSidebar({
       );
       rememberSummary(response);
       if (response.inspectImageNodeIds.length) {
+        if (options?.textOnly) {
+          throw new Error("自动重建最终提示词只能使用已锁定的文字分镜，不能读取图片。");
+        }
         const images = await onReadImages(response.inspectImageNodeIds);
         if (!images.length) throw new Error("Agent 无法读取请求的画布图片。");
         response = await requestAgent(
@@ -729,6 +771,7 @@ export function CanvasAgentSidebar({
         ),
         updatedAt: Date.now(),
       }));
+      return { succeeded: true };
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
       const timedOut = error instanceof AgentRequestTimeoutError;
@@ -738,6 +781,18 @@ export function CanvasAgentSidebar({
           stopped ? "stopped" : "failed",
         );
       }
+      const errorMessage =
+        stopped
+          ? activeAssetStoryId
+            ? "已停止资产规划，已完成的分析和资产节点已保留。"
+            : "已停止画布 Agent 请求，未应用本轮操作。"
+          : timedOut
+            ? activeAssetStoryId
+              ? `${error.message} 已完成的分析和资产节点已保留，可发送“继续资产规划”恢复。`
+              : `${error.message} 未应用本轮操作。`
+            : error instanceof Error
+              ? error.message
+              : "画布 Agent 请求失败。";
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         messages: [
@@ -745,18 +800,7 @@ export function CanvasAgentSidebar({
           {
             id: crypto.randomUUID(),
             role: "assistant" as const,
-            content:
-              stopped
-                ? activeAssetStoryId
-                  ? "已停止资产规划，已完成的分析和资产节点已保留。"
-                  : "已停止画布 Agent 请求，未应用本轮操作。"
-                : timedOut
-                  ? activeAssetStoryId
-                    ? `${error.message} 已完成的分析和资产节点已保留，可发送“继续资产规划”恢复。`
-                    : `${error.message} 未应用本轮操作。`
-                : error instanceof Error
-                  ? error.message
-                  : "画布 Agent 请求失败。",
+            content: errorMessage,
             createdAt: Date.now(),
             details: planningSummaries.length
               ? planningSummaries.map((summary) => `处理摘要：${summary}`)
@@ -765,6 +809,7 @@ export function CanvasAgentSidebar({
         ].slice(-MAX_AGENT_MESSAGES),
         updatedAt: Date.now(),
       }));
+      return { succeeded: false, error: errorMessage };
     } finally {
       planningAbortRef.current = null;
       setPlanningProgress(null);
@@ -773,6 +818,52 @@ export function CanvasAgentSidebar({
       setIsSending(false);
     }
   }
+
+  useEffect(() => {
+    submitRef.current = submit;
+  });
+
+  useEffect(() => {
+    if (
+      !open ||
+      !autoRequest ||
+      !isHydrated ||
+      !activeConversation ||
+      isSending ||
+      isConfirmationBusy ||
+      autoRequestHandledRef.current === autoRequest.id
+    ) {
+      return;
+    }
+    autoRequestHandledRef.current = autoRequest.id;
+    const submitAutoRequest = submitRef.current;
+    if (!submitAutoRequest) {
+      onAutoRequestComplete?.(autoRequest.id, {
+        succeeded: false,
+        error: "自动请求未能启动。",
+      });
+      return;
+    }
+    void submitAutoRequest(autoRequest.content, {
+      textOnly: autoRequest.textOnly,
+    }).then((outcome) => {
+      onAutoRequestComplete?.(
+        autoRequest.id,
+        outcome ?? {
+          succeeded: false,
+          error: "自动请求未能启动。",
+        },
+      );
+    });
+  }, [
+    activeConversation,
+    autoRequest,
+    isConfirmationBusy,
+    isHydrated,
+    isSending,
+    onAutoRequestComplete,
+    open,
+  ]);
 
   function expireConfirmation(conversationId: string, messageId: string) {
     updateConversation(conversationId, (conversation) => ({

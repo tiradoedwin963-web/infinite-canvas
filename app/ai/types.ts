@@ -12,6 +12,10 @@ export type GenerateRequest = {
   model: string;
   prompt: string;
   images?: GenerateReferenceImage[];
+  /** Cloud workflow project that owns SD 2.5 reference assets. */
+  projectId?: string;
+  /** Ordered cloud asset IDs used as SD 2.5 reference images. */
+  referenceAssetIds?: string[];
   aspectRatio?: string;
   duration?: string;
   resolution?: string;

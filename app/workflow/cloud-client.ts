@@ -3,6 +3,7 @@ import type { Viewport } from "../canvas/viewport.ts";
 import type { WorkflowBatchRun } from "./agent.ts";
 import type { WorkflowGraph } from "./graph.ts";
 import type { WorkflowProjectRegistry } from "./projects.ts";
+import type { WorkflowProjectMode } from "./projects.ts";
 
 type CloudProjectRow = {
   id: string;
@@ -81,10 +82,13 @@ export async function loadCloudProject(projectId: string): Promise<CloudProjectD
   };
 }
 
-export function createCloudProject(name: string) {
+export function createCloudProject(
+  name: string,
+  projectMode: WorkflowProjectMode = "workflow",
+) {
   return requestJson<{ id: string; name: string; revision: number }>(
     "/api/workflow/projects",
-    jsonRequest("POST", { name }),
+    jsonRequest("POST", { name, projectMode }),
   );
 }
 

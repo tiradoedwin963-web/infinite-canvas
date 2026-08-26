@@ -8,11 +8,14 @@ import {
   type WorkflowGraph,
 } from "./graph.ts";
 import { relayoutStoryAssets } from "./story-assets.ts";
+import { emptyTvcWorkflowGraph } from "./tvc.ts";
 
 export const WORKFLOW_PROJECTS_STORAGE_KEY = "lingke-workflow-projects-v1";
 export const WORKFLOW_ASSET_LAYOUT_MIGRATION_KEY =
   "lingke-workflow-asset-kind-layout-v1";
 export const WORKFLOW_PROJECTS_VERSION = 1;
+
+export type WorkflowProjectMode = "workflow" | "tvc";
 
 export type WorkflowProject = {
   id: string;
@@ -27,7 +30,54 @@ export type WorkflowProjectRegistry = {
   projects: WorkflowProject[];
 };
 
+export type ImportedWorkflowProjectAsset = {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+};
+
+export type ImportedWorkflowProject = {
+  project: WorkflowProject;
+  registry: WorkflowProjectRegistry;
+  graph: WorkflowGraph;
+  viewport: Viewport;
+  batch: null;
+  conversation: unknown;
+  assets: ImportedWorkflowProjectAsset[];
+};
+
+export type ImportedWorkflowAssetRemap = {
+  assetId: string;
+  assetUrl?: string;
+};
+
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+const LOCAL_PROJECT_EXPORT_KEYS = new Set([
+  "version",
+  "exportedAt",
+  "project",
+  "graph",
+  "viewport",
+  "batch",
+  "conversation",
+  "assets",
+]);
+const IMPORTABLE_IMAGE_MIME_TYPES = new Set([
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/svg+xml",
+  "image/webp",
+]);
+const MAX_IMPORTED_ASSET_BYTES = 20 * 1024 * 1024;
+const MAX_IMPORTED_ASSET_TOTAL_BYTES = 100 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 export function workflowProjectGraphKey(projectId: string) {
   return `lingke-workflow-project-${projectId}-canvas-v1`;
@@ -43,6 +93,13 @@ export function workflowProjectConversationKey(projectId: string) {
 
 export function workflowProjectViewportKey(projectId: string) {
   return `lingke-workflow-project-${projectId}-viewport-v1`;
+}
+
+export function createWorkflowProjectGraph(
+  mode: WorkflowProjectMode,
+  idFactory: () => string = () => crypto.randomUUID(),
+): WorkflowGraph {
+  return mode === "tvc" ? emptyTvcWorkflowGraph(idFactory) : emptyWorkflowGraph();
 }
 
 function validProject(value: unknown): value is WorkflowProject {
@@ -174,6 +231,241 @@ export function parseWorkflowViewport(raw: string | null): Viewport {
     // Use the default viewport.
   }
   return { x: 0, y: 0, scale: 1 };
+}
+
+function parseImportedGraph(value: unknown): WorkflowGraph {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
+    throw new Error("导入文件中的工作流图无效。");
+  }
+  const graph = parseWorkflowGraph(JSON.stringify(value));
+  const rawNodeIds = value.nodes.map((node) => isRecord(node) ? node.id : undefined);
+  const rawEdgeIds = value.edges.map((edge) => isRecord(edge) ? edge.id : undefined);
+  if (
+    graph.nodes.length !== value.nodes.length ||
+    graph.edges.length !== value.edges.length ||
+    new Set(rawNodeIds).size !== rawNodeIds.length ||
+    new Set(rawEdgeIds).size !== rawEdgeIds.length ||
+    (value.tvc !== undefined && graph.tvc === undefined)
+  ) {
+    throw new Error("导入文件中的工作流图无效。");
+  }
+  return graph;
+}
+
+function referencedImageAssetIds(graph: WorkflowGraph) {
+  const ids = new Set<string>();
+  graph.nodes.forEach((node) => {
+    if (
+      (node.type === "source" || node.type === "result") &&
+      node.kind === "image" &&
+      node.assetId
+    ) {
+      ids.add(node.assetId);
+    }
+  });
+  return ids;
+}
+
+function remapImportedGraphAssets(graph: WorkflowGraph, projectId: string) {
+  const assetIds = referencedImageAssetIds(graph);
+  const remappedAssetIds = new Map<string, string>();
+  [...assetIds].forEach((assetId, index) => {
+    remappedAssetIds.set(assetId, `${projectId}-asset-${index + 1}`);
+  });
+  return {
+    graph: {
+      ...graph,
+      nodes: graph.nodes.map((node) => {
+        if (
+          (node.type !== "source" && node.type !== "result") ||
+          node.kind !== "image" ||
+          !node.assetId
+        ) {
+          return node;
+        }
+        const assetId = remappedAssetIds.get(node.assetId);
+        return assetId ? { ...node, assetId } : node;
+      }),
+    },
+    remappedAssetIds,
+  };
+}
+
+function defaultCloudAssetUrl(assetId: string) {
+  return `/api/workflow/assets/${encodeURIComponent(assetId)}`;
+}
+
+/**
+ * Rebinds an already validated local import to the asset IDs allocated by the
+ * cloud upload-ticket flow. The importer deliberately keeps TVC's logical
+ * project ID untouched: it is part of the locked brief/shot data rather than
+ * the cloud project's database ID.
+ */
+export function rebindImportedWorkflowAssets(
+  graph: WorkflowGraph,
+  uploadedAssets: ReadonlyMap<string, ImportedWorkflowAssetRemap>,
+): WorkflowGraph {
+  const referencedAssetIds = referencedImageAssetIds(graph);
+  for (const assetId of referencedAssetIds) {
+    const uploaded = uploadedAssets.get(assetId);
+    if (!uploaded || !uploaded.assetId.trim()) {
+      throw new Error("导入图片素材未完整上传，无法创建云端项目。");
+    }
+  }
+
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (
+        (node.type !== "source" && node.type !== "result") ||
+        node.kind !== "image" ||
+        !node.assetId
+      ) {
+        return node;
+      }
+      const uploaded = uploadedAssets.get(node.assetId)!;
+      if (node.type === "source") {
+        return { ...node, assetId: uploaded.assetId };
+      }
+      return {
+        ...node,
+        assetId: uploaded.assetId,
+        resultUrl: uploaded.assetUrl || defaultCloudAssetUrl(uploaded.assetId),
+      };
+    }),
+  };
+}
+
+function assetEntries(value: unknown): Array<[string | undefined, unknown]> {
+  if (value === undefined) return [];
+  if (Array.isArray(value)) return value.map((asset) => [undefined, asset]);
+  if (isRecord(value)) return Object.entries(value);
+  throw new Error("导入文件中的图片素材无效。");
+}
+
+function importedAssetSize(dataUrl: string, mimeType: string) {
+  const prefix = `data:${mimeType};base64,`;
+  if (!dataUrl.startsWith(prefix)) throw new Error("导入文件中的图片素材无效。");
+  const encoded = dataUrl.slice(prefix.length);
+  if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+    throw new Error("导入文件中的图片素材无效。");
+  }
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return (encoded.length / 4) * 3 - padding;
+}
+
+function parseImportedAssets(
+  value: unknown,
+  importedGraph: WorkflowGraph,
+  remappedAssetIds: ReadonlyMap<string, string>,
+) {
+  const referenced = referencedImageAssetIds(importedGraph);
+  const seen = new Set<string>();
+  let totalBytes = 0;
+  return assetEntries(value).map(([mapKey, candidate]) => {
+    if (!isRecord(candidate)) throw new Error("导入文件中的图片素材无效。");
+    const id = typeof candidate.id === "string" && candidate.id
+      ? candidate.id
+      : mapKey;
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+    const mimeType = typeof candidate.mimeType === "string" ? candidate.mimeType : "";
+    const dataUrl = typeof candidate.dataUrl === "string" ? candidate.dataUrl : "";
+    if (
+      !id ||
+      (mapKey !== undefined && typeof candidate.id === "string" && candidate.id !== mapKey) ||
+      !name ||
+      !IMPORTABLE_IMAGE_MIME_TYPES.has(mimeType) ||
+      !referenced.has(id) ||
+      seen.has(id)
+    ) {
+      throw new Error("导入文件中的图片素材无效。");
+    }
+    const size = importedAssetSize(dataUrl, mimeType);
+    if (size > MAX_IMPORTED_ASSET_BYTES || totalBytes + size > MAX_IMPORTED_ASSET_TOTAL_BYTES) {
+      throw new Error("导入文件中的图片素材超过大小限制。");
+    }
+    seen.add(id);
+    totalBytes += size;
+    return {
+      id: remappedAssetIds.get(id)!,
+      name,
+      mimeType,
+      dataUrl,
+    } satisfies ImportedWorkflowProjectAsset;
+  });
+}
+
+function importedProjectName(registry: WorkflowProjectRegistry, requestedName: string) {
+  const name = requestedName.trim();
+  if (!registry.projects.some((project) => project.name === name)) return name;
+  const base = `${name}-导入`;
+  if (!registry.projects.some((project) => project.name === base)) return base;
+  let index = 2;
+  while (registry.projects.some((project) => project.name === `${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
+}
+
+function importedProjectId(
+  registry: WorkflowProjectRegistry,
+  idFactory: () => string,
+) {
+  const base = idFactory().trim();
+  if (!base) throw new Error("无法创建导入项目。请重试。");
+  if (!registry.projects.some((project) => project.id === base)) return base;
+  let index = 2;
+  while (registry.projects.some((project) => project.id === `${base}-import-${index}`)) {
+    index += 1;
+  }
+  return `${base}-import-${index}`;
+}
+
+export function importWorkflowProject(
+  registry: WorkflowProjectRegistry,
+  raw: string,
+  idFactory: () => string = () => crypto.randomUUID(),
+  now = Date.now(),
+): ImportedWorkflowProject {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error("导入文件不是有效的 JSON。");
+  }
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !LOCAL_PROJECT_EXPORT_KEYS.has(key)) ||
+    value.version !== 1 ||
+    typeof value.exportedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.exportedAt)) ||
+    !validProject(value.project) ||
+    value.batch !== null ||
+    !isRecord(value.conversation)
+  ) {
+    throw new Error("导入文件不是受支持的 .canvas.json 项目。");
+  }
+  const importedGraph = parseImportedGraph(value.graph);
+  const projectId = importedProjectId(registry, idFactory);
+  const remapped = remapImportedGraphAssets(importedGraph, projectId);
+  const project: WorkflowProject = {
+    id: projectId,
+    name: importedProjectName(registry, value.project.name),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const assets = parseImportedAssets(value.assets, importedGraph, remapped.remappedAssetIds);
+  return {
+    project,
+    registry: {
+      ...registry,
+      activeProjectId: project.id,
+      projects: [...registry.projects, project],
+    },
+    graph: remapped.graph,
+    viewport: parseWorkflowViewport(JSON.stringify(value.viewport)),
+    batch: null,
+    conversation: value.conversation,
+    assets,
+  };
 }
 
 export function ensureWorkflowProjectRegistry(

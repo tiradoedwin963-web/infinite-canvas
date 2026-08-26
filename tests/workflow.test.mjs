@@ -18,6 +18,7 @@ import {
   removeWorkflowNode,
   resizedWorkflowNodeBounds,
   schedulerDefaults,
+  WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS,
   workflowEdgeKinds,
   workflowEdgeGeometry,
   workflowEdgePath,
@@ -103,6 +104,65 @@ test("keeps workflow persistence separate and rejects invalid versions", () => {
   };
   assert.deepEqual(parseWorkflowGraph(JSON.stringify(graph)), graph);
   assert.deepEqual(parseWorkflowGraph(JSON.stringify({ ...graph, version: 2 })), emptyWorkflowGraph());
+});
+
+test("migrates legacy no-task video failures to submission unknown and blocks ordinary reruns", () => {
+  const videoScheduler = {
+    id: "video-scheduler",
+    x: 400,
+    y: 0,
+    type: "scheduler",
+    ...schedulerDefaults("video"),
+    prompt: "雨后山路上的车辆",
+    error: "",
+  };
+  const legacy = {
+    version: 1,
+    nodes: [
+      videoScheduler,
+      {
+        id: "video-result",
+        x: 800,
+        y: 0,
+        type: "result",
+        kind: "video",
+        schedulerId: videoScheduler.id,
+        text: "视频结果",
+        model: videoScheduler.model,
+        status: "failed",
+        progress: "",
+        error: "媒体服务未返回任务编号。",
+      },
+    ],
+    edges: [{ id: "edge", sourceId: videoScheduler.id, targetId: "video-result" }],
+  };
+  const migrated = parseWorkflowGraph(JSON.stringify(legacy));
+  const result = migrated.nodes.find((node) => node.id === "video-result");
+  assert.equal(result.status, "submission-unknown");
+  assert.equal(result.progress, WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS);
+  assert.deepEqual(createWorkflowRun(migrated, videoScheduler.id, 1).resultIds, []);
+
+  const pending = {
+    ...legacy,
+    nodes: legacy.nodes.map((node) => node.id === "video-result"
+      ? { ...node, status: "pending", progress: "等待提交", error: "" }
+      : node),
+  };
+  assert.equal(
+    parseWorkflowGraph(JSON.stringify(pending)).nodes.find((node) => node.id === "video-result").status,
+    "submission-unknown",
+  );
+
+  const interrupted = {
+    ...legacy,
+    nodes: legacy.nodes.map((node) => node.id === "video-result"
+      ? { ...node, error: "Failed to fetch" }
+      : node),
+  };
+  assert.equal(
+    parseWorkflowGraph(JSON.stringify(interrupted)).nodes.find((node) => node.id === "video-result").status,
+    "submission-unknown",
+  );
 });
 
 test("allows only source or result inputs into schedulers and rejects duplicates", () => {

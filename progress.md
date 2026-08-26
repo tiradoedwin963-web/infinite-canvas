@@ -1716,3 +1716,326 @@
 - `progress.md`：记录本轮回退、生产迁移和验证证据。
 - 服务器备份：`/opt/infinite-canvas/backups/canvas-pre-video-20260821T094711Z.dump` 与同名 `.sha256`，权限为 `600`；临时迁移工具位于远端分支 `codex/pre-video-data-migrator`，不会合入 `main`。
 - 回滚方式：若需恢复当前视频开发版本，先在服务器停 App 后使用上述已校验的 PostgreSQL 备份进行受控恢复，再执行 `git revert <本回退提交哈希>` 并重建 App；禁止执行 `docker compose down -v`，不会删除 COS 原图或缩略图。
+
+## 2026-08-26 - Task: 内置通用 TVC 导演能力
+
+### What was done
+- 新增应用内 `tvc-director` 能力包，按“资料梳理 → 分镜草案 → 用户锁稿 → 最终提示词”分阶段加载；不会与短剧工作流或资产库手册混用。
+- 新建工作流项目可选择普通工作流或 TVC 导演。TVC 状态、Brief、参考图映射、13 列分镜表、锁稿信息和提示词单元均作为工作流 `v1` 的可选数据保存，旧项目无需迁移。
+- TVC 只接受项目内文字、图片和成功图片资产作为参考；视频参考和 TVC 内视频任务均被拒绝。缺少参考时只创建可人工确认的图片资产计划，不提交媒体任务。
+- 增加锁稿确认卡、项目级分镜表查看与 Excel 导出。最终提示词仅能由锁定版本转换，保留切点、对白、旁白和环境声，排除 J-cut、L-cut 与跨片段声音延续。
+
+### Testing
+- `node --test tests/tvc-domain.test.mjs tests/tvc-agent.test.mjs tests/tvc-excel.test.mjs tests/tvc-ui.test.mjs`：15/15 通过。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，152/152 测试通过；未调用图片、视频或 Agent 付费接口。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仓库现有独立 TypeScript 配置不允许既有 `.ts` 导入并同时存在多处历史类型错误。TVC 文件未出现在该命令的错误列表，生产构建是本项目当前有效的 TypeScript 编译验证入口。
+
+### Notes
+- `app/ai/agent.ts`：增加受限 TVC operation 的解析、字段校验与工作流快照类型。
+- `app/ai/agent-provider.ts`：按 TVC 项目阶段选择能力手册并拒绝跨阶段或短剧操作。
+- `app/api/ai/agent/route.ts`：将内置 TVC 手册传入 Agent 客户端。
+- `app/api/workflow/projects/route.ts`：支持以 TVC 类型创建云端项目。
+- `app/api/workflow/projects/[id]/tvc/storyboard/route.ts`：提供按账号和项目所有权过滤的 TVC Excel 下载接口。
+- `app/canvas/agent.ts`：拒绝在创作画布错误应用 TVC 工作流操作。
+- `app/globals.css`：增加 TVC 项目选择、锁稿确认和可滚动分镜表样式。
+- `app/workflow/agent.ts`：在工作流 Agent 快照和操作应用中接入 TVC 状态。
+- `app/workflow/cloud-client.ts`：创建云端项目时传递项目类型。
+- `app/workflow/graph.ts`：在不升级 `v1` 的前提下识别 TVC 节点角色和项目状态。
+- `app/workflow/projects.ts`：创建本地 TVC 项目图。
+- `app/workflow/tvc.ts`：实现 TVC Brief、资产计划、分镜表、锁稿和最终提示词的纯领域校验与落图。
+- `app/workflow/tvc-excel.ts`：生成固定 13 列、含汇总公式和冻结表头的 Excel 工作簿。
+- `components/workflow/workflow-canvas.tsx`：提供 TVC 新建入口、参考限制、锁稿、分镜表和本地导出交互。
+- `tvc-director/core.md`：定义通用 TVC 导演核心规则。
+- `tvc-director/intake.md`：定义资料梳理、参考映射和资产计划规则。
+- `tvc-director/storyboard.md`：定义 13 列分镜草案和连续时间码规则。
+- `tvc-director/prompt-package.md`：定义锁稿后的提示词转换与禁用音频切换规则。
+- `assets/tvc-storyboard-template.xlsx`：保留用户提供的分镜表视觉模板作为项目资产。
+- `tests/tvc-agent.test.mjs`：覆盖 TVC Agent 操作、阶段手册隔离和媒体阻断。
+- `tests/tvc-domain.test.mjs`：覆盖 `v1` 兼容、原子校验、锁稿与提示词阶段门禁。
+- `tests/tvc-excel.test.mjs`：覆盖 Excel 表头、公式、换行、冻结和无媒体导出。
+- `tests/tvc-ui.test.mjs`：覆盖 TVC 项目选择、锁稿、导出及视频参考/任务阻断接线。
+- `docs/canvas.md`：记录 TVC 导演工作流、锁稿门禁、参考边界与 Excel 导出。
+- `package.json`：增加 Excel 导出依赖 `exceljs`。
+- `package-lock.json`：锁定 Excel 导出依赖树。
+- `progress.md`：记录本轮实现、验证与回滚说明。
+- 回滚方式：本轮尚未提交；提交后可执行 `git revert <TVC 导演能力提交哈希>` 回退代码，不会删除 PostgreSQL、COS 或图片资产。旧代码不认识 TVC 节点角色，因此生产回退前必须先迁移或停用已有 TVC 项目，不能把含 TVC 节点的项目直接交给旧版读取。
+
+## 2026-08-26 - Task: 稳定 TVC 资产计划 Agent 解析
+
+### What was done
+- 在 TVC 剧本草案手册中补齐 `create_tvc_asset_plan` 的完整字段契约，确保该阶段可直接创建缺失资产计划，不再依赖未加载的资料梳理手册猜测字段。
+- TVC 资产解析兼容 `asset_kind`、`assetKind`，并将上游常见的 `product` 窄化归一为既有 `prop`；其余类型仍严格拒绝。
+- 将资产计划解析失败从笼统的“不受支持操作”细化为缺失或非法的具体字段提示，且保持原子拒绝，不会创建半套节点。
+
+### Testing
+- `node --test tests/tvc-agent.test.mjs tests/tvc-domain.test.mjs tests/tvc-excel.test.mjs tests/tvc-ui.test.mjs`：18/18 通过，覆盖草案阶段契约注入、`product`、`asset_kind`、`assetKind` 兼容、字段级 Provider 错误与既有 TVC 领域、导出和 UI 行为。
+- `npm run lint`：通过。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/agent.ts`：为 TVC 资产计划增加字段级解析错误和受限别名归一化。
+- `tvc-director/storyboard.md`：在草案阶段增加完整资产计划 operation 契约。
+- `tests/tvc-agent.test.mjs`：覆盖阶段手册、别名和字段级错误回归。
+- `docs/canvas.md`：记录草案阶段的资产计划字段契约。
+- `progress.md`：记录本轮稳定性修复与验证结果。
+- 回滚方式：本轮尚未提交；提交后执行 `git revert <本轮提交哈希>` 即可回退代码，不影响已有工作流图、图片资产、PostgreSQL 或 COS 数据。
+
+## 2026-08-26 - Task: 稳定 TVC 最终提示词转换并完成占位验收
+
+### What was done
+- 将锁稿修订号和当前项目修订号纳入 TVC Agent 快照与提示词转换校验，避免模型猜测 `source_revision`；仅当二者一致时才写入最终提示词包。
+- 对齐锁稿阶段手册与全局 Agent JSON 外壳，要求只返回一个完整操作。对于上游在唯一 JSON 外包裹说明或代码围栏的情况，增加保守的单对象提取；截断、畸形或多个对象仍拒绝，不会落下未校验节点。
+- 在本地完成“红色意式超级跑车｜占位TVC验收”：Brief、3 组非付费资产计划、6 镜/24 秒分镜表、人工锁稿、2 个 12 秒最终提示词单元及 Excel 导出均已验证；没有运行图片或视频任务。
+
+### Testing
+- 浏览器验收：项目阶段到达“提示词完成”；最终提示词单元为 `00:00–00:12`（001–003）与 `00:12–00:24`（004–006），第二单元保留 18 秒 HARD CUT；未点击任何媒体调度器。
+- Excel 验收：`红色意式超级跑车｜占位TVC验收-分镜表.xlsx` 含项目汇总、6 行连续时间码、13 列表头、公式、冻结表头和换行。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，158/158 测试通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍被仓库已有的 `.ts` 扩展名配置与历史类型错误阻断。生产构建通过，且本轮 TVC 验收不依赖该独立命令。
+
+### Notes
+- `app/ai/agent.ts`：增加唯一完整 JSON 的保守提取，并校验 TVC 最终提示词的锁稿修订号。
+- `app/ai/agent-provider.ts`：向 TVC 提示词阶段传递并验证当前与锁稿修订号。
+- `app/workflow/tvc.ts`：在 Agent 快照中提供 TVC 修订信息。
+- `tvc-director/core.md`、`tvc-director/prompt-package.md`：对齐锁稿阶段和完整 JSON 外壳合同。
+- `tests/agent.test.mjs`、`tests/tvc-agent.test.mjs`、`tests/tvc-domain.test.mjs`：覆盖单对象提取、修订号和提示词转换合同。
+- `docs/canvas.md`：记录锁稿修订号与安全 JSON 解析规则。
+- `progress.md`：记录本轮稳定性修复和本地占位验收。
+- 回滚方式：本轮尚未提交；提交后可执行 `git revert <本轮提交哈希>` 回退代码。该回退不会删除本地测试项目、Excel 文件、数据库、COS 或媒体资产。
+
+## 2026-08-26 - Task: TVC 项目数据归档与画布内可编辑分镜表
+
+### What was done
+- 将 TVC 分镜数据继续收敛在工作流图的 TVC 项目状态中，Excel 保持为按已保存分镜数据即时导出的交付物，不成为第二份可编辑数据。
+- 将项目级 TVC 分镜表升级为专用画布节点：默认展示阶段、镜头数、总时长、校验状态与前三行摘要；展开后在画布世界内提供完整 13 列表格及最终提示词页签。
+- 接入现有分镜草案领域校验实现直接编辑。时间码根据时长连续重算；有效保存会回到草案、递增修订并作废锁稿/最终提示词，取消或校验失败不会修改项目数据。
+- 完成本地“红色意式超级跑车｜占位TVC验收”浏览器验收：在不发起媒体请求的前提下，确认画布表格展开、提示词页签、取消编辑和有效保存的完整行为。
+
+### Testing
+- 浏览器验收：画布内表格显示 13 列及两个锁稿提示词单元；时长从 4 秒编辑为 5 秒后，时间码自动变为 `00:00–00:05`、下一镜为 `00:05–00:09`；取消编辑恢复原锁稿数据；随后将前两镜调整为 5 秒/3 秒并保存，总时长仍为 24 秒，项目退回“分镜草案”，旧最终提示词节点被移除。全程未点击图片或视频运行按钮。
+- `node --test tests/tvc-domain.test.mjs tests/tvc-ui.test.mjs tests/tvc-table-canvas.test.mjs`：12/12 通过。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，164/164 测试通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍受仓库既有 `.ts` 扩展名配置、历史联合类型与 Worker 类型错误阻断。生产构建及本轮相关测试均通过。
+
+### Notes
+- `app/workflow/tvc.ts`：新增画布表格保存入口，自动推导时间码并复用既有 TVC 草案校验、锁稿失效和提示词清理规则。
+- `components/workflow/workflow-canvas.tsx`：渲染 TVC 分镜表/最终提示词专用节点预览和画布内可编辑表格面板。
+- `app/globals.css`：增加表格节点、内部横纵滚动和画布交互隔离样式。
+- `tests/tvc-domain.test.mjs`：覆盖可编辑表格保存、时间码推导和无效编辑的原子性。
+- `tests/tvc-table-canvas.test.mjs`：覆盖画布表格、13 列、页签、双击入口与滚动隔离。
+- `tests/tvc-ui.test.mjs`：更新 TVC UI 断言以覆盖新的画布内分镜表实现。
+- `docs/canvas.md`：记录 TVC 数据归档、画布内分镜表、编辑规则与 Excel 数据来源。
+- `progress.md`：记录本轮实现与验证证据。
+- 回滚方式：本轮尚未提交；提交后执行 `git revert <本轮提交哈希>` 可恢复旧 UI/保存入口。该回退不删除工作流图、PostgreSQL、COS、图片素材或 Excel 文件。
+
+## 2026-08-26 - Task: 本地项目导出导入与 Chrome 迁移
+
+### What was done
+- 本地工作流项目导出改为随 `.canvas.json` 一并带出当前图中图片素材和图片结果引用的本地 Blob，支持将独立浏览器配置中的完整项目迁移到另一浏览器。
+- 新增本地导入入口：先严格校验 `v1` 项目图、对话、视口和内嵌图片，再创建独立项目副本并重映射图片素材 ID；导入不会覆盖已有项目或 IndexedDB 图片。
+- 导入时始终清空批量队列，不恢复轮询、不创建图片或视频请求；旧版未携带图片的导出文件仍可导入，并提示需要重新上传缺失素材。
+
+### Testing
+- `node --test tests/workflow-projects.test.mjs tests/workflow-project-import-ui.test.mjs`：11/11 通过。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，171/171 测试通过。
+- `npm run build`：通过；仅保留现有客户端包体积提示。
+- `git diff --check`：通过。
+
+### Notes
+- `app/workflow/projects.ts`：增加本地项目导入校验、项目/素材 ID 重映射及旧导出兼容。
+- `components/workflow/workflow-canvas.tsx`：导出内嵌图片素材，提供本地导入、素材恢复和错误提示。
+- `app/globals.css`：增加本地导入错误状态，并将删除按钮悬停样式限定到删除操作。
+- `tests/workflow-projects.test.mjs`：覆盖 TVC/旧版导出、素材映射、冲突规避和无效文件拒绝。
+- `tests/workflow-project-import-ui.test.mjs`：覆盖导入入口、图片恢复、运行中/远端拒绝及旧文件提示。
+- `docs/canvas.md`：记录本地项目导入导出、素材大小限制与不触发媒体任务的边界。
+- `progress.md`：记录本轮迁移能力、验证与回滚说明。
+- 回滚方式：本轮尚未提交；提交后执行 `git revert <本轮提交哈希>` 可移除导入入口。该回退不会删除已经导入的本地项目或 IndexedDB 图片；如需移除副本，可在画布项目列表中单独删除该项目。
+
+## 2026-08-26 - Task: TVC 分镜表固定阅读层与五主题真实图片验收
+
+### What was done
+- 将 TVC 分镜表的展开态移出缩放中的画布世界层，改为固定工作流视口的阅读/编辑层；预览节点仍留在画布内。25% 缩放时不会再把 13 列表格、字体和列宽一起压缩到难以阅读。
+- TVC 资产计划新建的图片调度器及结果占位默认统一为 GPT Image 2、16:9、1K；规划本身仍只创建节点，未改变日常的人工运行入口。
+- 本地完成五个独立 TVC 的真实验收：东方茶器·雨后茶室、极简护肤瓶·晨光、宠物友好公园·午后、独立书店·夜读各 30 秒，山地生态度假村·一日 60 秒。所有初始氛围图和资产图均由 GPT Image 2 实际生成，共 21 张；没有上传 SVG、占位图或代码绘图。
+- 每个项目均完成 Brief、成功资产引用、13 列分镜表、一次有效表格编辑、Excel 导出、人工锁稿和最终提示词包。四个 30 秒项目各生成 3 个不超过 12 秒的提示词单元；60 秒项目生成 5 个单元。没有提交图片以外的媒体任务，未提交任何视频任务。
+- 本地图片状态查询延迟加载云端 COS 结果转存模块，避免普通本地轮询被 COS SDK 的 CommonJS 兼容问题中断；真实图片状态查询已恢复成功。
+
+### Testing
+- 浏览器真实验收（所有图片均为 `success`）：
+  - 东方茶器·雨后茶室：雨后茶室初始氛围视觉、茶艺角色、雨后茶室空间、陶瓷茶器细节（4/4）；6 镜 / 30 秒 / 3 个提示词单元。
+  - 极简护肤瓶·晨光：晨光护肤初始氛围视觉、无标识护肤瓶、晨光玻璃空间、水滴玻璃托盘（4/4）；6 镜 / 30 秒 / 3 个提示词单元。
+  - 宠物友好公园·午后：午后公园初始氛围视觉、原创人物与宠物、宠物友好公园场景、无文字互动道具（4/4）；7 镜 / 30 秒 / 3 个提示词单元。
+  - 独立书店·夜读：夜读书店初始氛围视觉、书店主理人、夜间书店空间、书与台灯细节（4/4）；6 镜 / 30 秒 / 3 个提示词单元。
+  - 山地生态度假村·一日：山地度假村初始氛围视觉、度假村接待角色、山地木石建筑、山林步道场景、无文字旅行道具（5/5）；14 镜 / 60 秒 / 5 个提示词单元。
+- 60 秒最终提示词面板核验：5 个单元、面板 1217×721px、16px 字号、无 `J-cut` / `L-cut`、无跨片段声音表述、无视频运行入口。首次 Agent 请求因 120 秒无流式内容而未应用操作；重启本地开发服务后，以新对话重发同一纯文本请求成功，未生成任何媒体。
+- Excel 核验：五份 `.xlsx` 均可打开，均含 `TVC分镜表`、13 列、镜头数与时长公式、冻结表头和长文本换行；茶器项目另保留一份重复导出。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，172/172 测试通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍被仓库既有的 `.ts` 扩展名配置（TS5097）及历史 agent/cloud/canvas 类型诊断阻断。本轮 TVC 模块和生产构建均通过。
+
+### Notes
+- `components/workflow/workflow-canvas.tsx`：将 TVC 展开表格渲染到画布世界层外，保持交互隔离与表格编辑、Excel、提示词页签入口。
+- `app/globals.css`：为固定视口的 TVC 表格阅读层增加居中尺寸、层级和内部滚动样式。
+- `app/workflow/tvc.ts`：将 TVC 资产计划默认模型改为 GPT Image 2 / 16:9 / 1K。
+- `app/api/ai/status/route.ts`：本地状态查询仅在云端成功结果分支动态加载 COS 结果入库逻辑。
+- `tvc-director/storyboard.md`、`app/ai/agent.ts`：补齐剧本草案阶段的资产计划字段契约、TVC 产品资产别名和字段级错误反馈。
+- `tests/tvc-domain.test.mjs`、`tests/tvc-table-canvas.test.mjs`、`tests/tvc-five-theme.test.mjs`、`tests/tvc-agent.test.mjs`：覆盖固定面板、默认模型、五主题时码/锁稿/提示词包及 TVC 资产解析。
+- `docs/canvas.md`：记录固定阅读层、默认模型和本地状态恢复边界。
+- `progress.md`：记录本轮真实图片验收与验证证据。
+- 回滚方式：本轮尚未提交。代码可在未来提交后使用 `git revert <本轮提交哈希>` 回退；五个本地测试项目、21 张已生成图片和导出的 Excel 会继续保留，若不再需要可在项目选择器中逐个删除。
+
+## 2026-08-26 - Task: TVC 最终提示词视频调度工作流
+
+### What was done
+- 将锁稿后的每个 TVC 最终提示词单元确定性落成“最终提示词节点 → 单元视频调度器 → 视频结果占位”，并将该单元实际引用的成功图片资产按原有数组顺序连入调度器。
+- 新增 SD 2.5 全能参考视频配置：4–30 秒、720p、16:9/9:16/1:1、最多 30 张参考图片。多张参考图会作为同一个 `image_url` 数组提交；普通工作流默认视频模型和原有限制保持不变。
+- TVC 项目只允许当前锁稿修订自动创建的调度器运行；手工 TVC 视频节点和历史调度器继续被阻止。修改 Brief、分镜表或同锁稿修订下的已提交提示词时，会清除未提交占位，保留已提交、运行或成功的视频作为不可再次运行的历史记录。
+- 通过本地加载时的幂等同步，为五个既有 TVC 验收项目无费用回填 17 个可运行的视频调度器及 17 个视频结果占位；没有提交、轮询或重试任何真实视频任务。
+
+### Testing
+- `node --test tests/tvc-domain.test.mjs tests/tvc-ui.test.mjs tests/tvc-five-theme.test.mjs tests/models.test.mjs tests/provider.test.mjs`：28/28 通过，覆盖单元落图、边顺序、历史保留、4–30 秒、30 张图片上限、完整 `image_url` 数组及字节限制。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，178/178 测试通过；仅保留既有客户端包体积提示。
+- `git diff --check`：通过。
+- Chrome 本地验收：东方茶器、极简护肤瓶、宠物友好公园、独立书店各回填 3 个单元；山地生态度假村回填 5 个单元。共 17 个调度器/17 个待生成结果，均显示 SD 2.5 全能参考、16:9、720p、4–30 秒及成功图片输入；未点击运行按钮，未产生视频请求。
+- `npx tsc --noEmit`：未通过；仍被仓库既有 `.ts` 扩展名配置 TS5097、历史 Agent/画布类型与 Worker 类型诊断阻断。本轮 TVC 文件未出现新增类型诊断，生产构建通过。
+
+### Notes
+- `app/workflow/tvc.ts`：创建与幂等回填单元视频调度器、资产输入边、历史归档及当前锁稿调度器判定。
+- `app/workflow/graph.ts`：保存 TVC 视频节点元数据、解析 v1 图、隔离单元提示词并复用预置结果占位。
+- `app/ai/models.ts`：新增 SD 2.5 全能参考模型能力表。
+- `app/ai/provider.ts`：按模型参考图上限校验，并为 `image_url` 传递完整多图数组。
+- `components/workflow/workflow-canvas.tsx`：只放行当前锁稿的 TVC 自动视频调度器，并在加载时无费用回填缺失节点。
+- `tests/tvc-domain.test.mjs`、`tests/tvc-five-theme.test.mjs`、`tests/tvc-table-canvas.test.mjs`、`tests/tvc-ui.test.mjs`：覆盖 TVC 单元落图、资产归属、历史任务保护与画布门禁。
+- `tests/models.test.mjs`、`tests/provider.test.mjs`：覆盖 SD 2.5 时长、图片数量、请求参数和字节限制。
+- `docs/canvas.md`：说明 TVC 单元视频节点、模型限制、运行门禁和历史结果规则。
+- `progress.md`：记录本轮实现、无费用回填和验证证据。
+- 回滚方式：本轮尚未提交；提交后可执行 `git revert <本轮提交哈希>` 回退代码。该回退不会删除已存在的本地 TVC 项目、图片资产、历史视频节点或任何远端媒体任务。
+
+## 2026-08-26 - Task: TVC 30 秒直出提示词调度
+
+### What was done
+- 将锁稿后的 TVC 最终提示词段统一改为 SD 2.5 支持的 `4–30` 秒实际视频段：按完整镜头边界贪心拆分、尽量接近 30 秒，并在末段不足 4 秒时回调前一段的完整镜头；无法形成合法段时明确拒绝。
+- 持久化 `promptPlan` 作为唯一段计划。Agent 只能为计划中的每一段填写最终提示词，段编号、全片范围、镜头顺序和资产顺序必须精确匹配；调度器使用本段精确时长，并在请求提示词前确定性写入本地 `0–时长` 秒级时间轴。
+- 新增“按30秒重新输出”和“调整镜头段”入口。用户只能在已锁定镜头之后切分；保存边界会清除未提交的旧提示词/调度器并自动发起一次纯文字 Agent 重建，不调用图片或视频接口。已有任务证据的视频保留为不可再次运行的历史记录。
+- 完成五个本地 TVC 项目的显式无费用重建：四个 30 秒项目各得到 1 个视频调度器/结果占位，60 秒山地项目得到 2 个，合计由旧的 17 个待生成单元收敛为 6 个 30 秒直出单元。所有成功图片资产、分镜表和锁稿内容均保留，未点击视频运行按钮。
+
+### Testing
+- `node --test tests/tvc-agent.test.mjs tests/tvc-domain.test.mjs tests/tvc-five-theme.test.mjs tests/tvc-ui.test.mjs tests/tvc-table-canvas.test.mjs`：33/33 通过。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，184/184 测试通过；仅保留既有客户端包体积提示。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍被仓库既有 `.ts` 扩展名配置 TS5097、历史 Agent/画布联合类型及 Worker 类型诊断阻断。本轮 `tvc.ts` / 图协议未出现新增诊断。
+- Chrome 本地验收：东方茶器、极简护肤瓶、宠物友好公园、独立书店均为 `1` 个 `segment-001` 调度器/结果，占用 30 秒；山地生态度假村为 `2` 个 30 秒 `segment` 调度器/结果。6 条调度器提示词均以“本视频片段仅生成 0 至 30 秒内的画面与动作”开头，旧 `unit-*` 调度器为 0。开发服务日志仅记录 5 次 `POST /api/ai/agent`，未记录 `/api/ai/generate`。
+
+### Notes
+- `app/ai/agent.ts`：保存并校验 TVC 30 秒段计划及其与 Agent 提示词单元的精确对应关系。
+- `app/ai/agent-provider.ts`：将已锁定段计划传入当前 TVC 提示词阶段，并拒绝不匹配的模型输出。
+- `app/workflow/tvc.ts`：建立、编辑和验证完整镜头边界的段计划；生成具有本地时间轴的 SD 2.5 直出调度器并保护历史任务。
+- `app/workflow/graph.ts`：保留工作流 `v1` 中的 TVC 段计划和调度器元数据。
+- `components/workflow/workflow-canvas.tsx`：提供段边界编辑、30 秒重建、文本 Agent 自动重建及当前段调度器展示。
+- `components/canvas-agent-sidebar.tsx`：支持受限的自动纯文字 TVC 提示词请求，并禁止该路径读取图片或提交媒体。
+- `app/globals.css`：补充镜头段编辑器与重建状态的画布内样式。
+- `tvc-director/storyboard.md`：将阶段示例同步为 30 秒上限，并说明锁稿后才建立实际视频段。
+- `tvc-director/prompt-package.md`：规定提示词单元只能复制持久化段计划并使用本地时间轴。
+- `tests/tvc-agent.test.mjs`：覆盖段计划快照、精确单元匹配和提示词协议。
+- `tests/tvc-domain.test.mjs`：覆盖贪心拆分、短尾回调、边界编辑、历史视频保护和直出调度器。
+- `tests/tvc-five-theme.test.mjs`：覆盖五主题从 17 个旧单元重建为 6 个 30 秒直出单元。
+- `tests/tvc-ui.test.mjs`：覆盖段编辑器、文本自动重建与 TVC 运行门禁。
+- `tests/tvc-table-canvas.test.mjs`：覆盖画布内段切点、时长/镜头边界限制和交互隔离。
+- `docs/canvas.md`：记录 30 秒段计划、本地时间轴、调度器直出与边界调整规则。
+- `progress.md`：记录本轮实现、验证和本地项目回填证据。
+- 回滚方式：本轮尚未提交；提交后执行 `git revert <本轮提交哈希>` 可恢复旧的短单元提示词逻辑。该回退不会删除五个本地项目、21 张图片或任何已归档的视频历史结果；如需撤销本地重建，可从浏览器项目备份恢复相应工作流图。
+
+## 2026-08-26 - Task: 开放 TVC 视频调度器手工编辑
+
+### What was done
+- TVC 最终提示词调度器仍固定输出视频，但已开放提示词、模型、比例、清晰度、时长、数量及图片参考资产的添加、移除和顺序调整。
+- 首次实际修改会保存手动覆盖来源快照；未修改的自动节点继续严格对应锁稿段，手动覆盖节点则可按所选视频模型和现有参考图限制独立运行，不会改写 Brief、分镜表或锁稿提示词。
+- 手动覆盖仅允许引用当前 TVC 项目已成功的图片资产，并保留当前最终提示词文本输入；历史节点保持只读。
+- Brief、分镜表、锁稿或镜头段重新规划时，所有旧手动覆盖节点（包括待生成节点）会归档为不可运行的历史版本；有任务证据的旧结果继续保留。
+- 修正手动覆盖节点将数量调为 2–4 时的结果占位：运行前会补齐对应数量的 TVC 视频结果节点，不会只提交首个占位。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，187/187 测试通过；仅保留既有客户端包体积提示。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过；仍由仓库既有 TS5097、历史 Agent/画布类型及 Worker 类型诊断阻断。本轮 TVC 手动覆盖文件未出现新增诊断。
+- 未点击视频运行按钮，未发起图片、视频、Agent 或轮询请求。
+
+### Notes
+- `app/workflow/graph.ts`：保存并校验 TVC 手动覆盖来源元数据，并为手动多任务视频补齐结果占位。
+- `app/workflow/tvc.ts`：区分锁稿自动节点、可运行的手动覆盖节点和不可运行的历史节点；重规划时归档旧覆盖版本。
+- `components/workflow/workflow-canvas.tsx`：开放 TVC 视频参数与当前项目成功图片参考的增删排序，显示覆盖/历史状态并使用详细运行校验。
+- `app/globals.css`：补充调度器图片参考操作与 TVC 覆盖状态样式。
+- `tests/tvc-domain.test.mjs`、`tests/tvc-ui.test.mjs`：覆盖手动覆盖持久化、资产归属、重规划归档、界面可编辑性及运行门禁。
+- `docs/canvas.md`：说明 TVC 手动覆盖的编辑范围、运行限制与重规划归档规则。
+- `progress.md`：记录本轮行为、验证与回滚信息。
+- 回滚方式：本轮尚未提交；提交后执行 `git revert <本轮提交哈希>` 可恢复 TVC 视频调度器的锁稿只读行为。该回退不会删除已有项目、图片资产或任何已提交的视频结果。
+
+## 2026-08-26 - Task: 修复 TRX 视频提交协议并保护未知提交
+
+### What was done
+- 为 SD 2.5 全能参考接入独立的 TRX 视频协议：先读取 `/v1/video/profile` 并只接受明确开通的 `seedance-2.5`，再按画布连线顺序暂存成功图片资产，最后以扁平视频参数提交到 `/v1/video/generate`；轮询改为 `/v1/video/tasks/{taskId}`，内部任务 ID 使用 `trx-video:` 前缀。
+- 参考图不会再把浏览器 data URL 直接交给第三方。服务端将它们写入私有 COS 临时前缀、生成 24 小时签名读地址，并在中途失败时删除已写入的临时对象；临时参考对象的 48 小时生命周期规则已写入部署说明，应用不会改写整个桶的生命周期配置。
+- 引入持久化 `submission-unknown`：视频网络中断、视频平台 5xx、2xx 非 JSON 或没有顶层 `task_id` 时，不轮询、不批量重排、不自动重提；旧“媒体服务未返回任务编号。”和 `Failed to fetch` 无任务 ID 结果会在加载时保护为未知提交。只有结果节点的“确认重新提交”卡可再次外发一个任务。
+- 视频外发前会先保存“等待提交”状态，本地或云端保存失败时不外发；拿到任务 ID 后会立即再次保存。诊断日志只含 attempt ID、模型、阶段、HTTP 状态、耗时和响应键名，不记录提示词、图片、签名 URL 或密钥。
+- 收紧了 Profile 门禁：其他模型的可用标记不能再误判为 SD 2.5 已开通，避免在模型未开通时写 COS 或提交视频。为支持仓库既有显式 `.ts` 导入，TypeScript 校验配置启用 `allowImportingTsExtensions`，不影响运行时构建或产物。
+
+### Testing
+- `node --test tests/trx-video-provider.test.mjs tests/trx-video-references.test.mjs`：9/9 通过，覆盖 Profile 门禁、官方视频请求体、图片顺序、无图 text2video、其他模型误判、COS 暂存回滚、2xx/5xx/网络未知提交分类和专用状态查询。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，198/198 测试通过；仅保留既有客户端包体积提示。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：仍被既有 Agent/画布联合类型、资产响应类型和 Worker 环境类型诊断阻断；本轮 TRX 适配器、临时参考存储和生成路由未出现新增诊断。
+- 本地接口冒烟：空的 `/api/ai/generate` 请求返回预期 `400 生成模式无效`，未再因 COS SDK 加载失败而返回 500。
+- Chrome 本地验收：山地生态度假村项目的 `segment-002` 已从旧“媒体服务未返回任务编号。”显示为“提交状态未知”，仅显示“确认重新提交”卡；未点击确认，未提交、轮询或重试任何视频。
+- 真实重提未执行：本机 `.env.local` 缺少 `COS_REGION`、`COS_BUCKET`、`COS_SECRET_ID` 和 `COS_SECRET_KEY`，无法先生成所需的私有临时参考 URL。为避免违反新协议或造成重复计费，保持该任务为未知提交并停止在确认卡前。
+
+### Notes
+- `app/ai/models.ts`：保留 SD 2.5 全能参考的 4–30 秒、720p 和多图能力配置。
+- `app/ai/provider.ts`：为可能已被上游接收的提交提供安全 `submission-unknown` 错误码，并阻止 SD 2.5 回落到旧媒体接口。
+- `app/ai/trx-video-provider.ts`：实现 Profile→参考图暂存→视频提交、专用状态查询、顶层 `task_id` 契约和脱敏诊断。
+- `app/api/ai/generate/route.ts`：路由 SD 2.5 到 TRX 适配器，创建安全 attempt ID 并返回安全错误码。
+- `app/api/ai/status/route.ts`：按 `trx-video:` 前缀使用 TRX 视频状态接口。
+- `app/server/object-storage.ts`：延迟加载 COS SDK，并提供私有对象的签名读 URL。
+- `app/server/trx-video-references.ts`：按输入顺序暂存/签名/失败回滚视频参考图。
+- `app/workflow/graph.ts`、`app/workflow/agent.ts`、`app/workflow/tvc.ts`、`components/workflow/workflow-canvas.tsx`、`app/globals.css`：持久化未知提交、阻止自动轮询/批量重试，并提供独立确认重提入口和提交前保存门禁。
+- `tests/trx-video-provider.test.mjs`、`tests/trx-video-references.test.mjs`、`tests/provider.test.mjs`、`tests/workflow.test.mjs`、`tests/workflow-agent.test.mjs`、`tests/tvc-domain.test.mjs`、`tests/tvc-ui.test.mjs`：覆盖协议、暂存、未知状态迁移、确认门禁和 TVC 兼容性。
+- `docs/canvas.md`、`docs/deployment.md`：说明 TRX 视频路径、未知状态行为与 COS 临时对象生命周期要求。
+- `tsconfig.json`：启用仓库既有显式 `.ts` 导入的类型校验支持。
+- `progress.md`：记录本轮实现、验证、未执行的真实重提及配置阻塞。
+- 回滚方式：本轮尚未提交；提交后可执行 `git revert <本轮提交哈希>` 回退代码。回退不会删除本地项目、已有资产、临时 COS 对象或未知视频证据；如需清理临时对象，应等待 COS 生命周期规则过期或由对象存储管理员按本任务前缀执行受控清理。
+
+## 2026-08-26 - Task: 既有腾讯云桶原图直签与 TVC 视频发布
+
+### What was done
+- 回退上一轮的临时参考图复制方案。SD 2.5 视频现在只对当前账号、当前云端项目中已经归档的原始图片资产签发 24 小时私有读地址；不创建临时对象、不写入新前缀，也不配置生命周期规则。
+- TRX 视频路径保留“Profile 校验 → 原图地址解析 → 视频提交”的顺序，只接受顶层 `task_id`，并继续将网络、5xx、非 JSON 或缺任务号的提交保护为“提交状态未知”。
+- 增加本地 `.canvas.json` 到云端的新建项目导入：文件内嵌图片逐张走既有上传票据进入当前腾讯云桶，再重写图中的资产 ID 和结果地址；分镜、锁稿、手动覆盖与 `segment-002` 的未知提交状态都会保留。导入失败只删除这次新建的云端项目。
+- 修复本地真实生图只有结果地址、没有本地资产编号时的导出：导出副本会读取并嵌入成功图片，确保云端导入后可变成可直签的桶内原图；本地项目图不被改写。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，206/206 测试通过；仅保留既有客户端包体积提示。
+- `node --test tests/trx-video-references.test.mjs tests/trx-video-provider.test.mjs tests/provider.test.mjs tests/workflow-projects.test.mjs tests/workflow-project-import-ui.test.mjs`：通过，覆盖原图直签顺序、项目隔离、Profile 门禁、未知提交、生成结果导出和云端资产重绑。
+- `npx tsc --noEmit`：仍被提交前已存在的 Agent/画布/Worker 类型诊断阻断；本轮原图直签、导入和画布导出文件未出现新增诊断。
+- `git diff --check`：通过。
+
+### Notes
+- `app/ai/types.ts`、`app/ai/provider.ts`：承载 SD 2.5 的云端项目和有序资产引用参数，并阻止其回落到旧媒体接口。
+- `app/ai/trx-video-provider.ts`、`app/api/ai/generate/route.ts`、`app/api/ai/status/route.ts`：使用 TRX 视频专用提交/查询协议、Profile 门禁、顶层任务编号和安全诊断。
+- `app/server/trx-video-references.ts`：校验既有云端图片资产及原对象后直接签发读地址，不复制或删除对象。
+- `app/workflow/projects.ts`、`components/workflow/workflow-canvas.tsx`：导出完整本地图片、创建云端项目、上传嵌入素材并重写资产引用。
+- `docs/canvas.md`、`docs/deployment.md`：说明原图直签、云端导入和未知提交保护的运行边界。
+- `tests/trx-video-references.test.mjs`、`tests/trx-video-provider.test.mjs`、`tests/provider.test.mjs`、`tests/workflow-projects.test.mjs`、`tests/workflow-project-import-ui.test.mjs`：覆盖本轮协议与迁移路径。
+- `progress.md`：记录本轮实现和验证；上一条“临时 COS”记录保留为历史，已被本条原图直签实现替代。
+- 回滚方式：发布提交生成后执行 `git revert <本轮发布提交哈希>`。该回退不会删除当前桶内已有原图、云端项目或未知视频提交证据。

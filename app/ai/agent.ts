@@ -137,6 +137,7 @@ export type AgentWorkflowSnapshot = {
   viewport: { x: number; y: number; scale: number; width: number; height: number };
   nodes: AgentWorkflowNodeSnapshot[];
   edges: Array<{ sourceId: string; targetId: string }>;
+  tvc?: AgentTvcSnapshot;
 };
 
 export type AgentSurfaceSnapshot = AgentCanvasSnapshot | AgentWorkflowSnapshot;
@@ -216,6 +217,125 @@ export type AgentStoryAnalysis = {
 
 export type AgentStoryFoundationRole = "lead" | "support";
 
+export type AgentTvcStage =
+  | "intake"
+  | "script-draft"
+  | "script-locked"
+  | "prompt-final";
+
+export type AgentTvcPromptPlanSegment = {
+  ref: string;
+  startSecond: number;
+  endSecond: number;
+  shotNumbers: string[];
+  referenceNodeIds: string[];
+};
+
+export type AgentTvcSnapshot = {
+  projectId: string;
+  stage: AgentTvcStage;
+  revision: number;
+  lockedRevision?: number;
+  title?: string;
+  targetModel?: string;
+  targetMaxDuration?: number;
+  promptPlan?: AgentTvcPromptPlanSegment[];
+};
+
+export type AgentTvcReferenceRole =
+  | "character-identity"
+  | "character-anatomy"
+  | "scene-geometry"
+  | "lighting-color"
+  | "wardrobe"
+  | "prop-product"
+  | "first-frame"
+  | "last-frame";
+
+export type AgentTvcReferenceMapping = {
+  nodeId: string;
+  roles: AgentTvcReferenceRole[];
+  note: string;
+};
+
+export type AgentTvcBrief = {
+  goal: string;
+  audience: string;
+  targetDuration: number;
+  aspectRatio: string;
+  platform: string;
+  maxDuration: number;
+  style: string;
+  narrativeMode: string;
+  audioPolicy: string;
+  copy: string;
+  referenceMap: AgentTvcReferenceMapping[];
+};
+
+export type AgentTvcAssetPlan = {
+  ref: string;
+  name: string;
+  kind: AgentStoryAssetKind;
+  description: string;
+  reason: string;
+  imagePrompt: string;
+};
+
+export type AgentTvcStoryboardRow = {
+  shotNumber: string;
+  startSecond: number;
+  endSecond: number;
+  durationSeconds: number;
+  referenceScene: string;
+  sceneTime: string;
+  shotSizeLens: string;
+  camera: string;
+  composition: string;
+  performance: string;
+  narration: string;
+  sound: string;
+  transition: string;
+  constraints: string;
+  referenceNodeIds: string[];
+};
+
+export type AgentTvcPromptUnit = AgentTvcPromptPlanSegment & {
+  prompt: string;
+};
+
+export type AgentCreateTvcBriefOperation = {
+  type: "create_tvc_brief";
+  ref: string;
+  title: string;
+  brief: AgentTvcBrief;
+};
+
+export type AgentUpdateTvcBriefOperation = {
+  type: "update_tvc_brief";
+  projectId: string;
+  title?: string;
+  brief: AgentTvcBrief;
+};
+
+export type AgentCreateTvcAssetPlanOperation = {
+  type: "create_tvc_asset_plan";
+  projectId: string;
+  assets: AgentTvcAssetPlan[];
+};
+
+export type AgentWriteTvcStoryboardDraftOperation = {
+  type: "write_tvc_storyboard_draft";
+  projectId: string;
+  rows: AgentTvcStoryboardRow[];
+};
+
+export type AgentCreateTvcPromptPackageOperation = {
+  type: "create_tvc_prompt_package";
+  projectId: string;
+  sourceRevision: number;
+  units: AgentTvcPromptUnit[];
+};
+
 export type AgentCreateStoryAnalysisOperation = {
   type: "create_story_analysis";
   ref: string;
@@ -267,6 +387,11 @@ export type AgentOperation =
   | AgentRunStoryAssetsOperation
   | AgentCreateStoryWorkflowOperation
   | AgentRunStoryWorkflowOperation
+  | AgentCreateTvcBriefOperation
+  | AgentUpdateTvcBriefOperation
+  | AgentCreateTvcAssetPlanOperation
+  | AgentWriteTvcStoryboardDraftOperation
+  | AgentCreateTvcPromptPackageOperation
   | {
       type: "generate_content";
       mode: ComposerMode;
@@ -351,6 +476,209 @@ function readAssetKind(value: unknown): AgentStoryAssetKind | null {
 
 function readFoundationRole(value: unknown): AgentStoryFoundationRole | null {
   return value === "lead" || value === "support" ? value : null;
+}
+
+function readTvcReferenceRole(value: unknown): AgentTvcReferenceRole | null {
+  return value === "character-identity" ||
+      value === "character-anatomy" ||
+      value === "scene-geometry" ||
+      value === "lighting-color" ||
+      value === "wardrobe" ||
+      value === "prop-product" ||
+      value === "first-frame" ||
+      value === "last-frame"
+    ? value
+    : null;
+}
+
+function parseTvcReferenceMap(value: unknown): AgentTvcReferenceMapping[] | null {
+  if (!Array.isArray(value)) return null;
+  const mappings = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const nodeId = readString(item.node_id ?? item.nodeId).trim();
+    const roles = Array.isArray(item.roles)
+      ? item.roles.map(readTvcReferenceRole)
+      : [];
+    const note = readString(item.note).trim();
+    if (!nodeId || !roles.length || roles.some((role) => !role)) {
+      return null;
+    }
+    const parsedRoles = roles as AgentTvcReferenceRole[];
+    return new Set(parsedRoles).size === parsedRoles.length
+      ? { nodeId, roles: parsedRoles, note }
+      : null;
+  });
+  if (mappings.some((mapping) => mapping === null)) return null;
+  const parsed = mappings as AgentTvcReferenceMapping[];
+  return new Set(parsed.map((mapping) => mapping.nodeId)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function parseTvcBrief(value: unknown): AgentTvcBrief | null {
+  if (!isRecord(value)) return null;
+  const maxDuration = readFinite(value.max_duration ?? value.maxDuration);
+  const referenceMap = parseTvcReferenceMap(
+    value.reference_map ?? value.referenceMap,
+  );
+  const brief = {
+    goal: readString(value.goal).trim(),
+    audience: readString(value.audience).trim(),
+    targetDuration: readFinite(
+      value.target_duration ?? value.targetDuration,
+    ),
+    aspectRatio: readString(value.aspect_ratio ?? value.aspectRatio).trim(),
+    platform: readString(value.platform).trim(),
+    maxDuration,
+    style: readString(value.style).trim(),
+    narrativeMode: readString(
+      value.narrative_mode ?? value.narrativeMode,
+    ).trim(),
+    audioPolicy: readString(value.audio_policy ?? value.audioPolicy).trim(),
+    copy: readString(value.copy).trim(),
+    referenceMap,
+  };
+  return brief.goal && brief.audience && brief.targetDuration !== null &&
+      Number.isInteger(brief.targetDuration) && brief.targetDuration > 0 &&
+      brief.aspectRatio && brief.platform &&
+      brief.maxDuration !== null && Number.isInteger(brief.maxDuration) &&
+      brief.maxDuration > 0 && brief.style && brief.narrativeMode &&
+      brief.audioPolicy && brief.referenceMap
+    ? {
+        ...brief,
+        targetDuration: brief.targetDuration,
+        maxDuration: brief.maxDuration,
+        referenceMap: brief.referenceMap,
+      }
+    : null;
+}
+
+function parseTvcAssetPlans(value: unknown): AgentTvcAssetPlan[] {
+  if (!Array.isArray(value) || !value.length) {
+    throw new Error("create_tvc_asset_plan 缺少至少一项 assets。");
+  }
+  const refs = new Set<string>();
+  return value.map((item, index) => {
+    const prefix = `create_tvc_asset_plan 第 ${index + 1} 项资产`;
+    if (!isRecord(item)) throw new Error(`${prefix} 格式无效。`);
+    const ref = readString(item.ref).trim();
+    const name = readString(item.name).trim();
+    const rawKind = item.kind ?? item.asset_kind ?? item.assetKind;
+    const kind = rawKind === "product" ? "prop" : readAssetKind(rawKind);
+    const description = readString(item.description).trim();
+    const reason = readString(item.reason).trim();
+    const imagePrompt = readString(item.image_prompt ?? item.imagePrompt).trim();
+    if (!ref) throw new Error(`${prefix}缺少 ref。`);
+    if (refs.has(ref)) throw new Error(`${prefix}的 ref 重复。`);
+    if (!name) throw new Error(`${prefix}缺少 name。`);
+    if (!kind) {
+      throw new Error(`${prefix}的 kind 必须为 character、scene 或 prop。`);
+    }
+    if (!description) throw new Error(`${prefix}缺少 description。`);
+    if (!reason) throw new Error(`${prefix}缺少 reason。`);
+    if (!imagePrompt) throw new Error(`${prefix}缺少 image_prompt。`);
+    refs.add(ref);
+    return { ref, name, kind, description, reason, imagePrompt };
+  });
+}
+
+function parseTvcStoryboardRows(value: unknown): AgentTvcStoryboardRow[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const rows = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const shotNumber = readString(item.shot_number ?? item.shotNumber).trim();
+    const startSecond = readFinite(item.start_second ?? item.startSecond);
+    const endSecond = readFinite(item.end_second ?? item.endSecond);
+    const durationSeconds = readFinite(
+      item.duration_seconds ?? item.durationSeconds,
+    );
+    const row = {
+      shotNumber,
+      startSecond,
+      endSecond,
+      durationSeconds,
+      referenceScene: readString(
+        item.reference_scene ?? item.referenceScene,
+      ).trim(),
+      sceneTime: readString(item.scene_time ?? item.sceneTime).trim(),
+      shotSizeLens: readString(
+        item.shot_size_lens ?? item.shotSizeLens,
+      ).trim(),
+      camera: readString(item.camera).trim(),
+      composition: readString(item.composition).trim(),
+      performance: readString(item.performance).trim(),
+      narration: readString(item.narration).trim(),
+      sound: readString(item.sound).trim(),
+      transition: readString(item.transition).trim(),
+      constraints: readString(item.constraints).trim(),
+      referenceNodeIds: readNodeIds(
+        item.reference_node_ids ?? item.referenceNodeIds,
+      ),
+    };
+    const timeValues = [
+      row.startSecond,
+      row.endSecond,
+      row.durationSeconds,
+    ];
+    return row.shotNumber && timeValues.every(
+      (entry) => entry !== null && Number.isInteger(entry),
+    ) &&
+        row.startSecond! >= 0 &&
+        row.endSecond! > row.startSecond! &&
+        row.durationSeconds! === row.endSecond! - row.startSecond! &&
+        row.referenceScene && row.sceneTime && row.shotSizeLens && row.camera &&
+        row.composition && row.performance && row.narration && row.sound &&
+        row.transition && row.constraints
+      ? row as AgentTvcStoryboardRow
+      : null;
+  });
+  if (rows.some((row) => row === null)) return null;
+  const parsed = rows as AgentTvcStoryboardRow[];
+  return new Set(parsed.map((row) => row.shotNumber)).size === parsed.length
+    ? parsed
+    : null;
+}
+
+function parseTvcPromptUnits(value: unknown): AgentTvcPromptUnit[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const units = value.map((item) => {
+    if (!isRecord(item)) return null;
+    const startSecond = readFinite(item.start_second ?? item.startSecond);
+    const endSecond = readFinite(item.end_second ?? item.endSecond);
+    const rawShotNumbers = item.shot_numbers ?? item.shotNumbers;
+    const shotNumbers = Array.isArray(rawShotNumbers)
+      ? rawShotNumbers.map((shotNumber) => readString(shotNumber).trim())
+      : [];
+    const unit = {
+      ref: readString(item.ref).trim(),
+      startSecond,
+      endSecond,
+      shotNumbers,
+      referenceNodeIds: readNodeIds(
+        item.reference_node_ids ?? item.referenceNodeIds,
+      ),
+      prompt: readString(item.prompt).trim(),
+    };
+    const validShotNumbers = unit.shotNumbers.every(Boolean);
+    return unit.ref && unit.startSecond !== null &&
+        Number.isInteger(unit.startSecond) && unit.startSecond >= 0 &&
+        unit.endSecond !== null && Number.isInteger(unit.endSecond) &&
+        unit.endSecond > unit.startSecond && validShotNumbers &&
+        unit.shotNumbers.length &&
+        new Set(unit.shotNumbers).size === unit.shotNumbers.length && unit.prompt
+      ? {
+          ...unit,
+          startSecond: unit.startSecond,
+          endSecond: unit.endSecond,
+          shotNumbers: unit.shotNumbers,
+        }
+      : null;
+  });
+  if (units.some((unit) => unit === null)) return null;
+  const parsed = units as AgentTvcPromptUnit[];
+  return new Set(parsed.map((unit) => unit.ref)).size === parsed.length
+    ? parsed
+    : null;
 }
 
 function parseStoryAnalysis(value: unknown): AgentStoryAnalysis | null {
@@ -591,6 +919,47 @@ function parseOperation(value: unknown): AgentOperation | null {
       : null;
   }
 
+  if (type === "create_tvc_brief") {
+    const ref = readString(value.ref).trim();
+    const title = readString(value.title).trim();
+    const brief = parseTvcBrief(value.brief);
+    return ref && title && brief ? { type, ref, title, brief } : null;
+  }
+
+  if (type === "update_tvc_brief") {
+    const projectId = readString(value.project_id ?? value.projectId).trim();
+    const title = readString(value.title).trim();
+    const brief = parseTvcBrief(value.brief);
+    return projectId && brief
+      ? { type, projectId, ...(title ? { title } : {}), brief }
+      : null;
+  }
+
+  if (type === "create_tvc_asset_plan") {
+    const projectId = readString(value.project_id ?? value.projectId).trim();
+    const assets = parseTvcAssetPlans(value.assets);
+    if (!projectId) throw new Error("create_tvc_asset_plan 缺少 project_id。");
+    return { type, projectId, assets };
+  }
+
+  if (type === "write_tvc_storyboard_draft") {
+    const projectId = readString(value.project_id ?? value.projectId).trim();
+    const rows = parseTvcStoryboardRows(value.rows);
+    return projectId && rows ? { type, projectId, rows } : null;
+  }
+
+  if (type === "create_tvc_prompt_package") {
+    const projectId = readString(value.project_id ?? value.projectId).trim();
+    const sourceRevision = readFinite(
+      value.source_revision ?? value.sourceRevision,
+    );
+    const units = parseTvcPromptUnits(value.units);
+    return projectId && sourceRevision !== null &&
+        Number.isInteger(sourceRevision) && sourceRevision >= 0 && units
+      ? { type, projectId, sourceRevision, units }
+      : null;
+  }
+
   if (type === "generate_content") {
     const mode = readMode(value.mode);
     const model = mode
@@ -621,17 +990,75 @@ function parseOperation(value: unknown): AgentOperation | null {
   return null;
 }
 
-export function parseAgentModelResponse(raw: string): AgentResponse {
+function extractSingleCompleteJsonObject(raw: string): string | null {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (depth === 0) {
+      if (character === "{") {
+        start = index;
+        depth = 1;
+        inString = false;
+        escaped = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        candidates.push(raw.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return depth === 0 && candidates.length === 1 ? candidates[0] : null;
+}
+
+function parseAgentResponseJson(raw: string): unknown {
   const cleaned = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/, "");
-  let value: unknown;
+
   try {
-    value = JSON.parse(cleaned);
+    return JSON.parse(cleaned);
   } catch {
-    throw new Error("Agent 返回了无法识别的操作格式。");
+    const embeddedJson = extractSingleCompleteJsonObject(raw);
+    if (!embeddedJson) {
+      throw new Error("Agent 返回了无法识别的操作格式。");
+    }
+    try {
+      return JSON.parse(embeddedJson);
+    } catch {
+      throw new Error("Agent 返回了无法识别的操作格式。");
+    }
   }
+}
+
+export function parseAgentModelResponse(raw: string): AgentResponse {
+  const value = parseAgentResponseJson(raw);
   if (!isRecord(value)) throw new Error("Agent 返回了无法识别的操作格式。");
   const message = readString(value.message).trim();
   if (!message) throw new Error("Agent 未返回可显示的回复。");
@@ -681,6 +1108,26 @@ export function isDangerousAgentOperation(
   );
 }
 
+export function isTvcAgentOperation(
+  operation: AgentOperation,
+): operation is Extract<
+  AgentOperation,
+  {
+    type:
+      | "create_tvc_brief"
+      | "update_tvc_brief"
+      | "create_tvc_asset_plan"
+      | "write_tvc_storyboard_draft"
+      | "create_tvc_prompt_package";
+  }
+> {
+  return operation.type === "create_tvc_brief" ||
+    operation.type === "update_tvc_brief" ||
+    operation.type === "create_tvc_asset_plan" ||
+    operation.type === "write_tvc_storyboard_draft" ||
+    operation.type === "create_tvc_prompt_package";
+}
+
 export function validateAgentOperationsForSurface(
   mode: AgentSurfaceSnapshot["mode"],
   operations: AgentOperation[],
@@ -693,11 +1140,16 @@ export function validateAgentOperationsForSurface(
       operation.type === "create_story_workflow" ||
       operation.type === "run_story_workflow",
   );
-  if (mode === "creation" && storyOperations.length) {
-    throw new Error("短剧工作流操作不能在创作画布执行。");
+  const tvcOperations = operations.filter(isTvcAgentOperation);
+  const workflowOperations = [...storyOperations, ...tvcOperations];
+  if (mode === "creation" && workflowOperations.length) {
+    throw new Error("工作流操作不能在创作画布执行。");
   }
-  if (mode === "workflow" && storyOperations.length !== operations.length) {
+  if (mode === "workflow" && workflowOperations.length !== operations.length) {
     throw new Error("普通创作画布操作不能在工作流画布执行。");
+  }
+  if (storyOperations.length && tvcOperations.length) {
+    throw new Error("TVC 操作不能与短剧工作流操作混用。");
   }
   if (
     operations.some((operation) =>

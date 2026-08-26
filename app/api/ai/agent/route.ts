@@ -8,6 +8,10 @@ import agentInstructions from "@/agent.md?raw";
 import toolManual from "@/tools.md?raw";
 import workflowToolManual from "@/workflow-tools.md?raw";
 import storyAssetToolManual from "@/story-asset-tools.md?raw";
+import tvcCoreManual from "@/tvc-director/core.md?raw";
+import tvcIntakeManual from "@/tvc-director/intake.md?raw";
+import tvcStoryboardManual from "@/tvc-director/storyboard.md?raw";
+import tvcPromptPackageManual from "@/tvc-director/prompt-package.md?raw";
 import { assertSameOrigin, requireSessionWhenCloud, responseFromError } from "@/app/server/auth";
 
 const AGENT_ACTIVITY_EVENT_INTERVAL_MS = 5_000;
@@ -25,6 +29,12 @@ function getClient() {
     toolManual,
     workflowToolManual,
     storyAssetToolManual,
+    tvcDirectorManuals: {
+      core: tvcCoreManual,
+      intake: tvcIntakeManual,
+      storyboard: tvcStoryboardManual,
+      promptPackage: tvcPromptPackageManual,
+    },
   });
 }
 

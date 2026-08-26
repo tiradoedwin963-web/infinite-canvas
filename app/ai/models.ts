@@ -26,6 +26,36 @@ export type ModelConfig = {
 
 const IMAGE_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16"] as const;
 const VIDEO_RATIOS = ["16:9", "9:16", "1:1"] as const;
+export const TRX_SEEDANCE_25_MODEL = "doubao-seedance-2-5-quannengcankao";
+const SD_25_DURATIONS = [
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15",
+  "16",
+  "17",
+  "18",
+  "19",
+  "20",
+  "21",
+  "22",
+  "23",
+  "24",
+  "25",
+  "26",
+  "27",
+  "28",
+  "29",
+  "30",
+] as const;
 
 export const MODEL_CONFIGS = {
   text: [
@@ -176,6 +206,19 @@ export const MODEL_CONFIGS = {
       resolutions: ["540p", "720p", "1080p"],
       defaultResolution: "720p",
       referenceImagesParam: "images",
+      videoResolutionParam: "resolution",
+    },
+    {
+      value: TRX_SEEDANCE_25_MODEL,
+      label: "SD 2.5 全能参考",
+      mode: "video",
+      protocol: "media",
+      maxReferenceImages: 30,
+      aspectRatios: VIDEO_RATIOS,
+      durations: SD_25_DURATIONS,
+      resolutions: ["480p", "720p"],
+      defaultResolution: "720p",
+      referenceImagesParam: "image_url",
       videoResolutionParam: "resolution",
     },
   ],

@@ -149,6 +149,48 @@ test("parses the strict agent response and all operation names", () => {
   assert.match(describeDangerousOperation(response.operations.at(-1)), /资产/);
 });
 
+test("accepts one complete JSON object wrapped in prose or a JSON fence", () => {
+  const payload = {
+    message: "字符串中的 { 花括号 } 和 \\\"转义引号\\\" 不影响解析。",
+    workflow_state: "active",
+    operations: [],
+  };
+  const wrapped = [
+    "已完成规划，以下是受控结果：",
+    "```json",
+    JSON.stringify(payload),
+    "```",
+    "请按上述结果继续。",
+  ].join("\n");
+
+  const response = parseAgentModelResponse(wrapped);
+
+  assert.equal(response.message, payload.message);
+  assert.equal(response.workflowState, "active");
+  assert.deepEqual(response.operations, []);
+});
+
+test("rejects malformed, truncated, or multiple JSON envelopes", () => {
+  const payload = JSON.stringify({
+    message: "完整响应",
+    workflow_state: "active",
+    operations: [],
+  });
+
+  assert.throws(
+    () => parseAgentModelResponse(`说明\n\`\`\`json\n${payload.slice(0, -1)}\n\`\`\``),
+    /无法识别/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse('说明\n```json\n{"message":"错误","workflow_state":"active","operations":[}\n```'),
+    /无法识别/,
+  );
+  assert.throws(
+    () => parseAgentModelResponse(`${payload}\n${payload}`),
+    /无法识别/,
+  );
+});
+
 test("rejects unknown or malformed model operations without partial application", () => {
   assert.throws(
     () => parseAgentModelResponse('{"message":"ok","workflow_state":"active","operations":[{"type":"eval"}]}'),

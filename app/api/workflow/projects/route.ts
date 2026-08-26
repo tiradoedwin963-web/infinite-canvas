@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { emptyWorkflowGraph } from "@/app/workflow/graph";
+import { createWorkflowProjectGraph, type WorkflowProjectMode } from "@/app/workflow/projects";
 import { assertSameOrigin, requireSessionUser, responseFromError } from "@/app/server/auth";
 import { getDatabase } from "@/app/server/database";
 import {
@@ -36,16 +37,29 @@ export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
     const user = await requireSessionUser(request);
-    const input = await request.json() as { name?: unknown };
+    const input = await request.json() as { name?: unknown; projectMode?: unknown };
     const name = cleanProjectName(input.name);
+    if (
+      input.projectMode !== undefined &&
+      input.projectMode !== "workflow" &&
+      input.projectMode !== "tvc"
+    ) {
+      throw new Error("项目类型无效。");
+    }
+    const projectMode: WorkflowProjectMode = input.projectMode === "tvc"
+      ? "tvc"
+      : "workflow";
     const id = randomUUID();
+    const graph = projectMode === "tvc"
+      ? createWorkflowProjectGraph("tvc", () => id)
+      : emptyWorkflowGraph();
     const sql = getDatabase();
     await sql.begin(async (transaction) => {
       await transaction`
         INSERT INTO canvas_projects (id, owner_id, name, graph, viewport)
         VALUES (
           ${id}, ${user.id}, ${name},
-          ${transaction.json(emptyWorkflowGraph())},
+          ${transaction.json(graph)},
           ${transaction.json({ x: 0, y: 0, scale: 1 })}
         )
       `;

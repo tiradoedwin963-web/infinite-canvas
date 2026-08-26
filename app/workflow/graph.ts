@@ -6,6 +6,7 @@ import {
 } from "../ai/models.ts";
 import type { TaskStatusResponse } from "../ai/types";
 import type { AgentCreateStoryWorkflowOperation } from "../ai/agent.ts";
+import { isTvcWorkflowState, type TvcWorkflowState } from "./tvc.ts";
 
 export const WORKFLOW_STORAGE_KEY = "lingke-workflow-canvas-v1";
 export const WORKFLOW_VERSION = 1;
@@ -25,7 +26,14 @@ export type WorkflowNodeStatus =
   | "running"
   | "success"
   | "failed"
-  | "paused";
+  | "paused"
+  | "submission-unknown";
+
+export const WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS = "提交状态未知";
+export const WORKFLOW_SUBMISSION_UNKNOWN_ERROR =
+  "未收到任务编号，无法确认媒体平台是否已接收请求；为避免重复计费，系统不会自动重试。";
+const LEGACY_SUBMISSION_UNKNOWN_ERROR = "媒体服务未返回任务编号。";
+const LEGACY_SUBMISSION_UNKNOWN_FETCH_ERROR = "Failed to fetch";
 
 export type WorkflowStoryRole =
   | "project"
@@ -37,7 +45,15 @@ export type WorkflowStoryRole =
   | "storyboard-scheduler"
   | "storyboard"
   | "video-scheduler"
-  | "clip";
+  | "clip"
+  | "tvc-brief"
+  | "tvc-asset-spec"
+  | "tvc-asset-scheduler"
+  | "tvc-asset-result"
+  | "tvc-storyboard"
+  | "tvc-prompt"
+  | "tvc-video-scheduler"
+  | "tvc-video-result";
 
 export type WorkflowAssetKind = "character" | "scene" | "prop";
 export type WorkflowAssetRole = "spec" | "scheduler" | "result";
@@ -54,6 +70,14 @@ export type WorkflowAssetPlanningStatus =
   | "failed"
   | "complete";
 
+export type TvcVideoManualOverride = {
+  sourceRevision: number;
+  sourceUnitRef: string;
+  sourceStartSecond: number;
+  sourceEndSecond: number;
+  sourcePrompt: string;
+};
+
 type WorkflowNodeBase = {
   id: string;
   x: number;
@@ -62,6 +86,11 @@ type WorkflowNodeBase = {
   height?: number;
   label?: string;
   storyId?: string;
+  tvcProjectId?: string;
+  tvcUnitRef?: string;
+  tvcPromptRevision?: number;
+  tvcVideoHistorical?: boolean;
+  tvcVideoManualOverride?: TvcVideoManualOverride;
   shotRef?: string;
   storyRole?: WorkflowStoryRole;
   assetRef?: string;
@@ -142,6 +171,7 @@ export type WorkflowGraph = {
   version: 1;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  tvc?: TvcWorkflowState;
 };
 
 export type WorkflowBounds = {
@@ -185,6 +215,25 @@ function validBase(node: Partial<WorkflowNode>) {
         node.height > 0)) &&
     (node.label === undefined || typeof node.label === "string") &&
     (node.storyId === undefined || typeof node.storyId === "string") &&
+    (node.tvcProjectId === undefined || typeof node.tvcProjectId === "string") &&
+    (node.tvcUnitRef === undefined || typeof node.tvcUnitRef === "string") &&
+    (node.tvcPromptRevision === undefined ||
+      (Number.isInteger(node.tvcPromptRevision) && node.tvcPromptRevision >= 0)) &&
+    (node.tvcVideoHistorical === undefined || typeof node.tvcVideoHistorical === "boolean") &&
+    (node.tvcVideoManualOverride === undefined ||
+      (typeof node.tvcVideoManualOverride.sourceRevision === "number" &&
+        Number.isInteger(node.tvcVideoManualOverride.sourceRevision) &&
+        node.tvcVideoManualOverride.sourceRevision >= 0 &&
+        typeof node.tvcVideoManualOverride.sourceUnitRef === "string" &&
+        Boolean(node.tvcVideoManualOverride.sourceUnitRef.trim()) &&
+        typeof node.tvcVideoManualOverride.sourceStartSecond === "number" &&
+        Number.isInteger(node.tvcVideoManualOverride.sourceStartSecond) &&
+        node.tvcVideoManualOverride.sourceStartSecond >= 0 &&
+        typeof node.tvcVideoManualOverride.sourceEndSecond === "number" &&
+        Number.isInteger(node.tvcVideoManualOverride.sourceEndSecond) &&
+        node.tvcVideoManualOverride.sourceEndSecond > node.tvcVideoManualOverride.sourceStartSecond &&
+        typeof node.tvcVideoManualOverride.sourcePrompt === "string" &&
+        Boolean(node.tvcVideoManualOverride.sourcePrompt.trim()))) &&
     (node.shotRef === undefined || typeof node.shotRef === "string") &&
     (node.storyRole === undefined ||
       [
@@ -198,6 +247,14 @@ function validBase(node: Partial<WorkflowNode>) {
         "storyboard",
         "video-scheduler",
         "clip",
+        "tvc-brief",
+        "tvc-asset-spec",
+        "tvc-asset-scheduler",
+        "tvc-asset-result",
+        "tvc-storyboard",
+        "tvc-prompt",
+        "tvc-video-scheduler",
+        "tvc-video-result",
       ].includes(node.storyRole)) &&
     (node.assetRef === undefined || typeof node.assetRef === "string") &&
     (node.assetKind === undefined ||
@@ -264,7 +321,15 @@ function isWorkflowNode(value: unknown): value is WorkflowNode {
       typeof node.schedulerId === "string" &&
       typeof node.text === "string" &&
       typeof node.model === "string" &&
-      ["ready", "pending", "running", "success", "failed", "paused"].includes(
+      [
+        "ready",
+        "pending",
+        "running",
+        "success",
+        "failed",
+        "paused",
+        "submission-unknown",
+      ].includes(
         String(node.status),
       ) &&
       typeof node.progress === "string" &&
@@ -296,18 +361,20 @@ export function parseWorkflowGraph(raw: string | null): WorkflowGraph {
       !Array.isArray(value.nodes) ||
       !value.nodes.every(isWorkflowNode) ||
       !Array.isArray(value.edges) ||
-      !value.edges.every(isWorkflowEdge)
+      !value.edges.every(isWorkflowEdge) ||
+      (value.tvc !== undefined && !isTvcWorkflowState(value.tvc))
     ) {
       return emptyWorkflowGraph();
     }
     const ids = new Set(value.nodes.map((node) => node.id));
-    return {
+    return migrateWorkflowSubmissionUnknown({
       version: WORKFLOW_VERSION,
       nodes: value.nodes,
       edges: value.edges.filter(
         (edge) => ids.has(edge.sourceId) && ids.has(edge.targetId),
       ),
-    };
+      ...(value.tvc ? { tvc: value.tvc } : {}),
+    });
   } catch {
     return emptyWorkflowGraph();
   }
@@ -847,6 +914,8 @@ export function buildWorkflowGenerationPrompt(
 ): string {
   if (
     scheduler.storyRole === "asset-scheduler" ||
+    scheduler.storyRole === "tvc-asset-scheduler" ||
+    scheduler.storyRole === "tvc-video-scheduler" ||
     scheduler.storyRole === "storyboard-scheduler" ||
     scheduler.storyRole === "video-scheduler"
   ) {
@@ -890,15 +959,26 @@ export function createWorkflowRun(
       node.id === schedulerId && node.type === "scheduler",
   );
   if (!scheduler) return { graph, resultIds: [] };
+  if (
+    scheduler.outputKind === "video" &&
+    schedulerHasSubmissionUnknownResult(graph, scheduler.id)
+  ) {
+    return { graph, resultIds: [] };
+  }
   const count = scheduler.outputKind === "text" ? 1 : scheduler.outputCount;
   const storyResults = graph.nodes.filter(
     (node): node is WorkflowResultNode =>
       node.type === "result" &&
       node.schedulerId === scheduler.id &&
-      Boolean(node.storyId) &&
-      (node.storyRole === "storyboard" ||
-        node.storyRole === "clip" ||
-        node.storyRole === "asset-result"),
+      (
+        (Boolean(node.storyId) &&
+          (node.storyRole === "storyboard" ||
+            node.storyRole === "clip" ||
+            node.storyRole === "asset-result")) ||
+        (Boolean(node.tvcProjectId) &&
+          (node.storyRole === "tvc-asset-result" ||
+            node.storyRole === "tvc-video-result"))
+      ),
   );
   if (storyResults.length) {
     if (
@@ -909,28 +989,66 @@ export function createWorkflowRun(
       return { graph, resultIds: [] };
     }
     const reusable = storyResults.slice(0, count);
+    let next: WorkflowGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        reusable.some((candidate) => candidate.id === node.id)
+          ? {
+              ...node,
+              ...(node.type === "result" && node.kind === "image"
+                ? { width: undefined, height: undefined }
+                : {}),
+              status: "pending" as const,
+              progress: "等待提交",
+              error: "",
+              model: scheduler.model,
+              resultUrl: undefined,
+              taskId: undefined,
+              startedAt: now,
+            }
+          : node,
+      ),
+    };
+    const resultIds = reusable.map((node) => node.id);
+    if (
+      scheduler.storyRole === "tvc-video-scheduler" &&
+      scheduler.tvcVideoManualOverride &&
+      reusable.length < count
+    ) {
+      const template = reusable[0];
+      if (template) {
+        for (let index = reusable.length; index < count; index += 1) {
+          const id = idFactory();
+          const point = availableResultPosition(next, scheduler, index);
+          const result: WorkflowResultNode = {
+            ...template,
+            id,
+            ...point,
+            kind: "video",
+            schedulerId,
+            model: scheduler.model,
+            status: "pending",
+            progress: "等待提交",
+            error: "",
+            resultUrl: undefined,
+            taskId: undefined,
+            startedAt: now,
+          };
+          next = {
+            ...next,
+            nodes: [...next.nodes, result],
+            edges: [
+              ...next.edges,
+              { id: idFactory(), sourceId: schedulerId, targetId: id },
+            ],
+          };
+          resultIds.push(id);
+        }
+      }
+    }
     return {
-      resultIds: reusable.map((node) => node.id),
-      graph: {
-        ...graph,
-        nodes: graph.nodes.map((node) =>
-          reusable.some((candidate) => candidate.id === node.id)
-            ? {
-                ...node,
-                ...(node.type === "result" && node.kind === "image"
-                  ? { width: undefined, height: undefined }
-                  : {}),
-                status: "pending" as const,
-                progress: "等待提交",
-                error: "",
-                model: scheduler.model,
-                resultUrl: undefined,
-                taskId: undefined,
-                startedAt: now,
-              }
-            : node,
-        ),
-      },
+      resultIds,
+      graph: next,
     };
   }
   let next = graph;
@@ -977,6 +1095,68 @@ export function updateWorkflowResult(
         : node,
     ),
   };
+}
+
+export function isWorkflowSubmissionUnknownResult(
+  node: WorkflowNode,
+): node is WorkflowResultNode {
+  return node.type === "result" && node.status === "submission-unknown";
+}
+
+export function schedulerHasSubmissionUnknownResult(
+  graph: WorkflowGraph,
+  schedulerId: string,
+) {
+  return graph.nodes.some(
+    (node) =>
+      isWorkflowSubmissionUnknownResult(node) && node.schedulerId === schedulerId,
+  );
+}
+
+export function markWorkflowResultSubmissionUnknown(
+  graph: WorkflowGraph,
+  resultId: string,
+  error = WORKFLOW_SUBMISSION_UNKNOWN_ERROR,
+): WorkflowGraph {
+  return updateWorkflowResult(graph, resultId, {
+    status: "submission-unknown",
+    progress: WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS,
+    error,
+    taskId: undefined,
+  });
+}
+
+export function migrateWorkflowSubmissionUnknown(
+  graph: WorkflowGraph,
+): WorkflowGraph {
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    if (
+      node.type !== "result" ||
+      node.kind !== "video" ||
+      node.taskId ||
+      node.status === "submission-unknown"
+    ) {
+      return node;
+    }
+    const legacyNoTaskId =
+      node.status === "pending" ||
+      (node.status === "paused" &&
+        node.progress === WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS) ||
+      (node.status === "failed" &&
+        (node.error === LEGACY_SUBMISSION_UNKNOWN_ERROR ||
+          node.error === LEGACY_SUBMISSION_UNKNOWN_FETCH_ERROR));
+    if (!legacyNoTaskId) return node;
+    changed = true;
+    return {
+      ...node,
+      status: "submission-unknown" as const,
+      progress: WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS,
+      error: node.error || WORKFLOW_SUBMISSION_UNKNOWN_ERROR,
+      taskId: undefined,
+    };
+  });
+  return changed ? { ...graph, nodes } : graph;
 }
 
 export function applyWorkflowTaskStatus(

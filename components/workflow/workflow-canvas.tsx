@@ -2,6 +2,8 @@
 
 import {
   Bot,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileText,
   Image as ImageIcon,
@@ -11,11 +13,12 @@ import {
   Plus,
   RotateCcw,
   Trash2,
+  Upload,
   Video,
   Workflow,
   X,
 } from "lucide-react";
-import type { CSSProperties, PointerEvent } from "react";
+import type { ChangeEvent, CSSProperties, PointerEvent } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   describeDangerousOperation,
@@ -26,6 +29,7 @@ import {
 import {
   MODEL_CONFIGS,
   getModelConfig,
+  TRX_SEEDANCE_25_MODEL,
   type ComposerMode,
 } from "@/app/ai/models";
 import type {
@@ -56,16 +60,21 @@ import {
   emptyWorkflowGraph,
   fitWorkflowImageNode,
   getWorkflowNodeSize,
+  markWorkflowResultSubmissionUnknown,
+  migrateWorkflowSubmissionUnknown,
   moveWorkflowNodes,
   parseWorkflowGraph,
   readWorkflowInputs,
   removeWorkflowEdge,
   removeWorkflowNode,
   resizedWorkflowNodeBounds,
+  schedulerHasSubmissionUnknownResult,
   resizeWorkflowNode,
   schedulerDefaults,
   updateWorkflowNode,
   updateWorkflowResult,
+  WORKFLOW_SUBMISSION_UNKNOWN_ERROR,
+  WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS,
   workflowAutoPollDeadline,
   workflowDraftPath,
   workflowEdgeGeometry,
@@ -109,20 +118,50 @@ import {
 } from "@/app/workflow/performance";
 import {
   WORKFLOW_PROJECTS_STORAGE_KEY,
+  createWorkflowProjectGraph,
   createWorkflowProject,
   ensureWorkflowProjectRegistry,
+  importWorkflowProject,
   migrateActiveWorkflowAssetLayout,
   parseWorkflowViewport,
   projectSourceAssetIds,
+  rebindImportedWorkflowAssets,
   removeWorkflowProject,
   renameWorkflowProject,
   workflowProjectBatchKey,
   workflowProjectConversationKey,
   workflowProjectGraphKey,
   workflowProjectViewportKey,
+  type WorkflowProjectMode,
   type WorkflowProjectRegistry,
 } from "@/app/workflow/projects";
-import { CanvasAgentSidebar } from "@/components/canvas-agent-sidebar";
+import {
+  createTvcStoryboardWorkbook,
+  tvcStoryboardFilename,
+} from "@/app/workflow/tvc-excel";
+import {
+  isTvcProject,
+  isRunnableTvcVideoScheduler,
+  isTvcVideoManualOverride,
+  lockTvcScript,
+  markTvcVideoSchedulerManualOverride,
+  prepareTvcPromptPlan,
+  readTvcProject,
+  saveTvcPromptPlanBoundaries,
+  saveTvcStoryboardTableDraft,
+  syncTvcVideoWorkflow,
+  tvcVideoSchedulerRunError,
+  type TvcPromptPlanBoundary,
+  type TvcPromptPlanSegment,
+  type TvcPromptUnit,
+  type TvcStoryboard,
+  type TvcStoryboardTableDraftRow,
+} from "@/app/workflow/tvc";
+import {
+  CanvasAgentSidebar,
+  type CanvasAgentAutoRequest,
+  type CanvasAgentAutoRequestOutcome,
+} from "@/components/canvas-agent-sidebar";
 import { useCloudSession } from "@/components/cloud-session-gate";
 import {
   activateCloudProject,
@@ -198,8 +237,36 @@ type ConnectionState = {
 type ProjectEditorState = {
   mode: "create" | "rename";
   value: string;
+  projectMode: WorkflowProjectMode;
   error: string;
 };
+type TvcStoryboardCanvasView = {
+  tab: "storyboard" | "prompt";
+  editing: boolean;
+  segmentEditing?: boolean;
+} | null;
+type TvcPromptRegenerationState = {
+  projectId: string;
+  requestId?: string;
+  state: "awaiting" | "saved" | "error";
+  message: string;
+} | null;
+type SubmissionRetryConfirmation = {
+  resultId: string;
+  schedulerId: string;
+} | null;
+
+type GenerateApiFailure = {
+  message: string;
+  code?: string;
+};
+
+class SubmissionUnknownError extends Error {
+  constructor(message = WORKFLOW_SUBMISSION_UNKNOWN_ERROR) {
+    super(message);
+    this.name = "SubmissionUnknownError";
+  }
+}
 
 function screenToWorld(viewport: Viewport, point: { x: number; y: number }) {
   return {
@@ -229,6 +296,41 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读取项目图片失败。"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function projectImageAssets(graph: WorkflowGraph) {
+  const assets = new Map<string, { id: string; name: string }>();
+  graph.nodes.forEach((node) => {
+    if (
+      (node.type === "source" || node.type === "result") &&
+      node.kind === "image" &&
+      node.assetId
+    ) {
+      assets.set(node.assetId, {
+        id: node.assetId,
+        name: node.assetName || `${node.label || node.id}.png`,
+      });
+    }
+  });
+  return [...assets.values()];
+}
+
+async function imageBlobFromDataUrl(dataUrl: string, mimeType: string) {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  if (!response.ok || !blob.type.startsWith("image/") || blob.type !== mimeType) {
+    throw new Error("导入文件中的图片数据无效。");
+  }
+  return blob;
+}
+
 async function readApiError(response: Response) {
   try {
     const payload = (await response.json()) as { error?: unknown };
@@ -237,6 +339,20 @@ async function readApiError(response: Response) {
     // Use the safe local fallback below.
   }
   return "生成请求失败，请稍后重试。";
+}
+
+async function readGenerateApiFailure(response: Response): Promise<GenerateApiFailure> {
+  try {
+    const payload = (await response.json()) as { error?: unknown; code?: unknown };
+    return {
+      message: typeof payload.error === "string"
+        ? payload.error
+        : "生成请求失败，请稍后重试。",
+      ...(typeof payload.code === "string" ? { code: payload.code } : {}),
+    };
+  } catch {
+    return { message: "生成请求失败，请稍后重试。" };
+  }
 }
 
 async function workflowImageToFile(
@@ -268,6 +384,97 @@ async function workflowImageToFile(
   return new File([blob], name, { type: blob.type });
 }
 
+type ExportedWorkflowImageAsset = {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+};
+
+/**
+ * Builds an export-only graph copy. Local generated image results normally
+ * retain their provider result URL instead of an IndexedDB asset ID, so give
+ * each successful result an ephemeral ID and embed its fetched image in the
+ * export. The live local graph is never changed.
+ */
+async function prepareWorkflowProjectExport(
+  graph: WorkflowGraph,
+  readStoredAsset: (assetId: string) => Promise<Blob | undefined>,
+): Promise<{ graph: WorkflowGraph; assets: ExportedWorkflowImageAsset[] }> {
+  const exportGraph: WorkflowGraph = {
+    ...graph,
+    nodes: graph.nodes.map((node) => ({ ...node })),
+    edges: graph.edges.map((edge) => ({ ...edge })),
+  };
+  const assets: ExportedWorkflowImageAsset[] = [];
+  const exportedAssetIds = new Set<string>();
+
+  for (const asset of projectImageAssets(graph)) {
+    const node = graph.nodes.find((candidate): candidate is WorkflowSourceNode | WorkflowResultNode =>
+      (candidate.type === "source" || candidate.type === "result") &&
+      candidate.kind === "image" &&
+      candidate.assetId === asset.id
+    );
+    if (!node) continue;
+    let file: File;
+    try {
+      file = await workflowImageToFile(node, readStoredAsset);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "图片素材无法读取。";
+      throw new Error(`图片素材“${asset.name}”无法完整导出：${message}`);
+    }
+    assets.push({
+      id: asset.id,
+      name: file.name,
+      mimeType: file.type,
+      dataUrl: await blobToDataUrl(file),
+    });
+    exportedAssetIds.add(asset.id);
+  }
+
+  for (const [index, node] of graph.nodes.entries()) {
+    if (
+      node.type !== "result" ||
+      node.kind !== "image" ||
+      node.status !== "success" ||
+      node.assetId ||
+      !node.resultUrl
+    ) {
+      continue;
+    }
+    let exportAssetId = `export-result-${node.id}`;
+    let suffix = 2;
+    while (exportedAssetIds.has(exportAssetId)) {
+      exportAssetId = `export-result-${node.id}-${suffix}`;
+      suffix += 1;
+    }
+    let file: File;
+    try {
+      file = await workflowImageToFile(node, readStoredAsset);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "图片素材无法读取。";
+      throw new Error(`生成图片“${node.label || node.id}”无法完整导出：${message}`);
+    }
+    exportedAssetIds.add(exportAssetId);
+    const exportedNode = exportGraph.nodes[index];
+    if (!exportedNode || exportedNode.type !== "result") continue;
+    exportGraph.nodes[index] = {
+      ...exportedNode,
+      assetId: exportAssetId,
+      assetName: file.name,
+      assetMimeType: file.type,
+    };
+    assets.push({
+      id: exportAssetId,
+      name: file.name,
+      mimeType: file.type,
+      dataUrl: await blobToDataUrl(file),
+    });
+  }
+
+  return { graph: exportGraph, assets };
+}
+
 export function WorkflowCanvas() {
   const { remote, user } = useCloudSession();
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
@@ -291,6 +498,16 @@ export function WorkflowCanvas() {
   const [projects, setProjects] = useState<WorkflowProjectRegistry | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
+  const [projectImportError, setProjectImportError] = useState("");
+  const [projectImporting, setProjectImporting] = useState(false);
+  const [tvcStoryboardView, setTvcStoryboardView] = useState<TvcStoryboardCanvasView>(null);
+  const [isTvcLockConfirming, setIsTvcLockConfirming] = useState(false);
+  const [tvcPromptAutoRequest, setTvcPromptAutoRequest] =
+    useState<CanvasAgentAutoRequest | null>(null);
+  const [tvcPromptRegeneration, setTvcPromptRegeneration] =
+    useState<TvcPromptRegenerationState>(null);
+  const [submissionRetryConfirmation, setSubmissionRetryConfirmation] =
+    useState<SubmissionRetryConfirmation>(null);
   const [cloudSyncState, setCloudSyncState] = useState<
     "idle" | "saving" | "unsynced" | "conflict"
   >("idle");
@@ -340,6 +557,7 @@ export function WorkflowCanvas() {
   const cloudSaveTimerRef = useRef<number | null>(null);
   const cloudLastSavedRef = useRef("");
   const cloudPendingSerializedRef = useRef("");
+  const projectImportInputRef = useRef<HTMLInputElement>(null);
 
   graphRef.current = graph;
   selectedIdsRef.current = selectedIds;
@@ -353,19 +571,7 @@ export function WorkflowCanvas() {
     restoredBatch: WorkflowBatchRun | null,
     restoredAssetVersions: Record<string, string> = {},
   ) => {
-    const safeRestored = {
-      ...restored,
-      nodes: restored.nodes.map((node) =>
-        node.type === "result" && node.status === "pending" && !node.taskId
-          ? {
-              ...node,
-              status: "paused" as const,
-              progress: "提交状态未知",
-              error: "页面在任务 ID 保存前中断，已停止自动重试以避免重复计费。",
-            }
-          : node,
-      ),
-    };
+    const safeRestored = migrateWorkflowSubmissionUnknown(restored);
     Object.values(assetUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     assetUrlsRef.current = {};
     loadedAssets.current.clear();
@@ -384,6 +590,11 @@ export function WorkflowCanvas() {
     setHoveredEdgeId(null);
     setDetailId(null);
     setAgentContextNodeId(null);
+    setTvcStoryboardView(null);
+    setIsTvcLockConfirming(false);
+    setTvcPromptAutoRequest(null);
+    setTvcPromptRegeneration(null);
+    setSubmissionRetryConfirmation(null);
     setBatchRun(restoredBatch);
     viewportRef.current = restoredViewport;
     setViewport(restoredViewport);
@@ -539,6 +750,14 @@ export function WorkflowCanvas() {
     if (synced === graph) return;
     graphRef.current = synced;
     setGraph(synced);
+  }, [graph, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !isTvcProject(graph)) return;
+    const synced = syncTvcVideoWorkflow(graph);
+    if (synced.graph === graph) return;
+    graphRef.current = synced.graph;
+    setGraph(synced.graph);
   }, [graph, hydrated]);
 
   useEffect(() => {
@@ -848,6 +1067,8 @@ export function WorkflowCanvas() {
       setCreationMenu(null);
       setSchedulerMenu(null);
       setDetailId(null);
+      setTvcStoryboardView(null);
+      setSubmissionRetryConfirmation(null);
       connectionRef.current = null;
       setConnection(null);
     }
@@ -926,7 +1147,11 @@ export function WorkflowCanvas() {
   }, []);
 
   const pollTask = useCallback(async (node: WorkflowResultNode) => {
-    if (!node.taskId || pollingTasks.current.has(node.taskId)) return;
+    if (
+      node.status === "submission-unknown" ||
+      !node.taskId ||
+      pollingTasks.current.has(node.taskId)
+    ) return;
     const projectId = activeProjectIdRef.current;
     if (Date.now() > workflowAutoPollDeadline(node)) {
       setGraph((current) => updateWorkflowResult(current, node.id, {
@@ -1011,6 +1236,10 @@ export function WorkflowCanvas() {
 
   function createNode(type: ComposerMode | "scheduler") {
     if (!creationMenu) return;
+    if (isTvcProject(graphRef.current) && (type === "video" || type === "scheduler")) {
+      window.alert("TVC 项目只接收文字和图片参考；资产图片请从素材节点的右侧加号创建。");
+      return;
+    }
     const created = createWorkflowNode(graph, type, {
       x: creationMenu.x - 144,
       y: creationMenu.y - (type === "scheduler" ? 180 : 100),
@@ -1262,7 +1491,45 @@ export function WorkflowCanvas() {
       connectionRef.current = null;
       setConnection(null);
     } else if (current.moved && current.targetId) {
-      setGraph((value) => connectWorkflowNodes(value, current.nodeId, current.targetId!));
+      setGraph((value) => {
+        const source = value.nodes.find((node) => node.id === current.nodeId);
+        const target = value.nodes.find(
+          (node): node is WorkflowSchedulerNode =>
+            node.id === current.targetId && node.type === "scheduler",
+        );
+        if (target?.storyRole === "tvc-video-scheduler") {
+          if (target.tvcVideoHistorical === true) {
+            const next = updateWorkflowNode(value, target.id, {
+              error: "历史 TVC 视频版本仅保留查看，不能修改参考资产。",
+            });
+            graphRef.current = next;
+            return next;
+          }
+          const validTvcImage = source?.type === "result" &&
+            source.kind === "image" &&
+            source.status === "success" &&
+            Boolean(source.assetId) &&
+            source.tvcProjectId === target.tvcProjectId;
+          if (!validTvcImage) {
+            const next = updateWorkflowNode(value, target.id, {
+              error: "TVC 视频仅可添加本项目已成功生成的图片资产作为参考图。",
+            });
+            graphRef.current = next;
+            return next;
+          }
+          const connected = connectWorkflowNodes(value, current.nodeId, target.id);
+          if (connected === value) return value;
+          const next = markTvcVideoSchedulerManualOverride(
+            updateWorkflowNode(connected, target.id, { error: "" }),
+            target.id,
+          );
+          graphRef.current = next;
+          return next;
+        }
+        const next = connectWorkflowNodes(value, current.nodeId, current.targetId!);
+        graphRef.current = next;
+        return next;
+      });
     } else if (!current.moved) {
       const node = graphRef.current.nodes.find(
         (candidate) => candidate.id === current.nodeId,
@@ -1287,6 +1554,10 @@ export function WorkflowCanvas() {
 
   function createSchedulerFromMenu(outputKind: ComposerMode) {
     if (!schedulerMenu) return;
+    if (isTvcProject(graphRef.current) && outputKind === "video") {
+      window.alert("TVC 视频任务由锁稿后的最终提示词自动建立，不能手动新建。");
+      return;
+    }
     const created = createConnectedScheduler(
       graphRef.current,
       schedulerMenu.nodeId,
@@ -1299,6 +1570,13 @@ export function WorkflowCanvas() {
 
   async function uploadSource(node: WorkflowSourceNode, file: File | undefined) {
     if (!file) return;
+    if (isTvcProject(graphRef.current) && node.kind === "video") {
+      setAssetErrors((current) => ({
+        ...current,
+        [node.id]: "TVC 项目暂不接收视频参考，请上传图片或补充文字资料。",
+      }));
+      return;
+    }
     const maximum = node.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
     if (file.size > maximum) {
       setAssetErrors((current) => ({
@@ -1359,6 +1637,18 @@ export function WorkflowCanvas() {
   }
 
   function updateSchedulerKind(node: WorkflowSchedulerNode, outputKind: ComposerMode) {
+    if (node.storyRole === "tvc-video-scheduler") {
+      setGraph((current) => updateWorkflowNode(current, node.id, {
+        error: "TVC 最终提示词调度器固定输出视频，可调整其余视频参数。",
+      }));
+      return;
+    }
+    if (isTvcProject(graphRef.current) && outputKind === "video") {
+      setGraph((current) => updateWorkflowNode(current, node.id, {
+        error: "TVC 视频任务由锁稿后的最终提示词自动建立，不能手动转换。",
+      }));
+      return;
+    }
     setGraph((current) => updateWorkflowNode(current, node.id, {
       ...schedulerDefaults(outputKind),
       error: "",
@@ -1368,13 +1658,13 @@ export function WorkflowCanvas() {
   function updateSchedulerModel(node: WorkflowSchedulerNode, model: string) {
     const config = getModelConfig(node.outputKind, model);
     if (!config) return;
-    setGraph((current) => updateWorkflowNode(current, node.id, {
+    updateSchedulerFields(node, {
       model,
       aspectRatio: config.aspectRatios[0] ?? "",
       resolution: config.defaultResolution ?? config.resolutions[0] ?? "",
       duration: config.durations[0] ?? "",
       error: "",
-    }));
+    });
   }
 
   const commitGraph = useCallback(
@@ -1388,13 +1678,340 @@ export function WorkflowCanvas() {
     [],
   );
 
-  const runScheduler = useCallback(async (schedulerId: string) => {
+  const persistMediaSubmissionGraph = useCallback(async (nextGraph: WorkflowGraph) => {
+    const projectId = activeProjectIdRef.current;
+    if (!projectId) throw new Error("当前项目不存在，未提交媒体任务。");
+    if (!remote) {
+      const persistence = persistenceRef.current;
+      if (persistence) {
+        persistence.schedule(nextGraph);
+        persistence.flush();
+      } else {
+        window.localStorage.setItem(
+          workflowProjectGraphKey(projectId),
+          JSON.stringify(nextGraph),
+        );
+      }
+      return;
+    }
+    if (cloudSyncState !== "idle") {
+      throw new Error("当前项目尚未同步完成，未提交媒体任务。");
+    }
+    const name = projects?.projects.find((project) => project.id === projectId)?.name;
+    if (!name) throw new Error("当前项目不存在，未提交媒体任务。");
+    if (cloudSaveTimerRef.current !== null) {
+      window.clearTimeout(cloudSaveTimerRef.current);
+      cloudSaveTimerRef.current = null;
+    }
+    const payload = {
+      name,
+      graph: nextGraph,
+      viewport: viewportRef.current,
+      batch: batchRun,
+    };
+    const serialized = JSON.stringify(payload);
+    cloudPendingSerializedRef.current = serialized;
+    setCloudSyncState("saving");
+    const save = cloudSaveRef.current.then(() => saveCloudProject({
+      id: projectId,
+      ...payload,
+      revision: cloudRevisionRef.current,
+    }));
+    cloudSaveRef.current = save.then(() => undefined, () => undefined);
+    try {
+      const saved = await save;
+      if (activeProjectIdRef.current !== projectId) {
+        throw new Error("项目已切换，未提交媒体任务。");
+      }
+      cloudRevisionRef.current = saved.revision;
+      cloudLastSavedRef.current = serialized;
+      if (cloudPendingSerializedRef.current === serialized) {
+        cloudPendingSerializedRef.current = "";
+        setCloudSyncState("idle");
+      }
+    } catch (error) {
+      const status = error && typeof error === "object" && "status" in error
+        ? Number(error.status)
+        : 0;
+      if (cloudPendingSerializedRef.current === serialized) {
+        cloudPendingSerializedRef.current = "";
+      }
+      setCloudSyncState(status === 409 ? "conflict" : "unsynced");
+      throw new Error("项目保存失败，未提交媒体任务。");
+    }
+  }, [batchRun, cloudSyncState, projects, remote]);
+
+  function updateSchedulerFields(
+    node: WorkflowSchedulerNode,
+    update: Partial<WorkflowSchedulerNode>,
+  ) {
+    setGraph((current) => {
+      const existing = current.nodes.find(
+        (candidate): candidate is WorkflowSchedulerNode =>
+          candidate.id === node.id && candidate.type === "scheduler",
+      );
+      if (!existing || existing.tvcVideoHistorical === true) return current;
+      const changed = Object.entries(update).some(([key, value]) =>
+        existing[key as keyof WorkflowSchedulerNode] !== value,
+      );
+      if (!changed) return current;
+      const updated = updateWorkflowNode(current, node.id, update);
+      const next = existing.storyRole === "tvc-video-scheduler"
+        ? markTvcVideoSchedulerManualOverride(updated, node.id)
+        : updated;
+      graphRef.current = next;
+      return next;
+    });
+  }
+
+  function isRemovableTvcVideoInput(
+    graph: WorkflowGraph,
+    schedulerId: string,
+    edgeId: string,
+  ) {
+    const scheduler = graph.nodes.find(
+      (node): node is WorkflowSchedulerNode =>
+        node.id === schedulerId &&
+        node.type === "scheduler" &&
+        node.storyRole === "tvc-video-scheduler",
+    );
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    const source = edge
+      ? graph.nodes.find((node) => node.id === edge.sourceId)
+      : undefined;
+    return Boolean(
+      scheduler &&
+        edge?.targetId === scheduler.id &&
+        source &&
+        source.type !== "scheduler" &&
+        source.kind !== "text" &&
+        scheduler.tvcVideoHistorical !== true,
+    );
+  }
+
+  function isEditableTvcImageInput(
+    graph: WorkflowGraph,
+    schedulerId: string,
+    edgeId: string,
+  ) {
+    const scheduler = graph.nodes.find(
+      (node): node is WorkflowSchedulerNode =>
+        node.id === schedulerId &&
+        node.type === "scheduler" &&
+        node.storyRole === "tvc-video-scheduler",
+    );
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    const source = edge
+      ? graph.nodes.find((node) => node.id === edge.sourceId)
+      : undefined;
+    return Boolean(
+      scheduler &&
+        edge?.targetId === scheduler.id &&
+        source?.type === "result" &&
+        source.kind === "image" &&
+        source.status === "success" &&
+        source.assetId &&
+        scheduler.tvcVideoHistorical !== true &&
+        source.tvcProjectId === scheduler.tvcProjectId,
+    );
+  }
+
+  function removeTvcVideoImageInput(schedulerId: string, edgeId: string) {
+    setGraph((current) => {
+      if (!isRemovableTvcVideoInput(current, schedulerId, edgeId)) return current;
+      const next = markTvcVideoSchedulerManualOverride(
+        updateWorkflowNode(removeWorkflowEdge(current, edgeId), schedulerId, { error: "" }),
+        schedulerId,
+      );
+      graphRef.current = next;
+      return next;
+    });
+  }
+
+  function moveTvcVideoImageInput(
+    schedulerId: string,
+    edgeId: string,
+    direction: "up" | "down",
+  ) {
+    setGraph((current) => {
+      if (!isEditableTvcImageInput(current, schedulerId, edgeId)) return current;
+      const incoming = current.edges.filter((edge) => edge.targetId === schedulerId);
+      const imageEdges = incoming.filter((edge) =>
+        isEditableTvcImageInput(current, schedulerId, edge.id),
+      );
+      const index = imageEdges.findIndex((edge) => edge.id === edgeId);
+      const nextIndex = direction === "up" ? index - 1 : index + 1;
+      if (index < 0 || nextIndex < 0 || nextIndex >= imageEdges.length) return current;
+      const reorderedImages = [...imageEdges];
+      [reorderedImages[index], reorderedImages[nextIndex]] = [
+        reorderedImages[nextIndex]!,
+        reorderedImages[index]!,
+      ];
+      const nonImageEdges = incoming.filter((edge) =>
+        !imageEdges.some((imageEdge) => imageEdge.id === edge.id),
+      );
+      const reorderedIncoming = [...nonImageEdges, ...reorderedImages];
+      let incomingIndex = 0;
+      const reordered = updateWorkflowNode({
+        ...current,
+        edges: current.edges.map((edge) =>
+          edge.targetId === schedulerId
+            ? reorderedIncoming[incomingIndex++]!
+            : edge,
+        ),
+      }, schedulerId, { error: "" });
+      const next = markTvcVideoSchedulerManualOverride(reordered, schedulerId);
+      graphRef.current = next;
+      return next;
+    });
+  }
+
+  const saveTvcStoryboard = useCallback((rows: TvcStoryboardTableDraftRow[]) => {
+    const saved = saveTvcStoryboardTableDraft(graphRef.current, rows);
+    commitGraph(() => saved.graph);
+    setIsTvcLockConfirming(false);
+    setTvcStoryboardView(null);
+  }, [commitGraph]);
+
+  const queueTvcPromptRegeneration = useCallback((nextGraph: WorkflowGraph) => {
+    const project = readTvcProject(nextGraph);
+    if (
+      !project ||
+      project.phase !== "script-locked" ||
+      project.lockedRevision === undefined ||
+      !project.promptPlan?.length
+    ) {
+      throw new Error("镜头段尚未保存为锁稿状态，不能重建最终提示词。");
+    }
+    const requestId = crypto.randomUUID();
+    setTvcPromptAutoRequest({
+      id: requestId,
+      textOnly: true,
+      content: [
+        `当前 TVC 项目 ${project.projectId} 已锁稿，并已保存 30 秒以内的视频镜头段。`,
+        `仅返回一项 create_tvc_prompt_package，project_id=${project.projectId}，source_revision=${project.lockedRevision}。`,
+        "必须严格使用画布 tvc.promptPlan 中的每个 ref、起止秒数、镜头编号和参考资产顺序；只补全每段最终视频提示词。",
+        "不得修改 Brief、资产、分镜表或镜头段；不得读取图片；不得提交图片、视频或其他媒体任务。",
+      ].join("\n"),
+    });
+    setTvcPromptRegeneration({
+      projectId: project.projectId,
+      requestId,
+      state: "awaiting",
+      message: "镜头段已保存，正在仅用锁定分镜重建最终提示词；不会提交媒体任务。",
+    });
+    setIsAgentOpen(true);
+  }, []);
+
+  const prepareTvc30SecondPromptPlan = useCallback(() => {
+    try {
+      const prepared = prepareTvcPromptPlan(graphRef.current);
+      graphRef.current = prepared.graph;
+      setGraph(prepared.graph);
+      const project = readTvcProject(prepared.graph);
+      setTvcPromptAutoRequest(null);
+      setTvcPromptRegeneration({
+        projectId: project?.projectId ?? "",
+        state: "saved",
+        message: "已按 30 秒以内的默认边界建立镜头段。确认切点后点击“保存镜头段并重新输出”。",
+      });
+      setTvcStoryboardView({
+        tab: "prompt",
+        editing: false,
+        segmentEditing: true,
+      });
+    } catch (error) {
+      const project = readTvcProject(graphRef.current);
+      setTvcPromptRegeneration({
+        projectId: project?.projectId ?? "",
+        state: "error",
+        message: error instanceof Error ? error.message : "无法按 30 秒镜头段重新输出。",
+      });
+    }
+  }, []);
+
+  const saveTvcPromptPlan = useCallback((boundaries: TvcPromptPlanBoundary[]) => {
+    try {
+      const saved = saveTvcPromptPlanBoundaries(graphRef.current, boundaries);
+      graphRef.current = saved.graph;
+      setGraph(saved.graph);
+      queueTvcPromptRegeneration(saved.graph);
+    } catch (error) {
+      const project = readTvcProject(graphRef.current);
+      setTvcPromptRegeneration({
+        projectId: project?.projectId ?? "",
+        state: "error",
+        message: error instanceof Error ? error.message : "无法保存 TVC 镜头段。",
+      });
+    }
+  }, [queueTvcPromptRegeneration]);
+
+  const completeTvcPromptRegeneration = useCallback((
+    requestId: string,
+    outcome: CanvasAgentAutoRequestOutcome,
+  ) => {
+    setTvcPromptAutoRequest((current) => current?.id === requestId ? null : current);
+    setTvcPromptRegeneration((current) => {
+      if (!current || current.requestId !== requestId) return current;
+      const project = readTvcProject(graphRef.current);
+      if (outcome.succeeded && project?.projectId === current.projectId && project.phase === "prompt-final") {
+        return {
+          projectId: current.projectId,
+          state: "saved",
+          message: "最终提示词已更新，已按实际视频调度器建立可运行节点；尚未提交媒体任务。",
+        };
+      }
+      return {
+        projectId: current.projectId,
+        state: "error",
+        message: outcome.succeeded
+          ? "Agent 未返回可用的最终提示词包，请检查锁稿分镜后重试。"
+          : outcome.error,
+      };
+    });
+  }, []);
+
+  const runScheduler = useCallback(async (schedulerId: string, retryResultId?: string) => {
     if (runningSchedulersRef.current.has(schedulerId)) return;
     const scheduler = graphRef.current.nodes.find(
       (node): node is WorkflowSchedulerNode =>
         node.id === schedulerId && node.type === "scheduler",
     );
     if (!scheduler) return;
+    if (
+      scheduler.outputKind === "video" &&
+      schedulerHasSubmissionUnknownResult(graphRef.current, scheduler.id)
+    ) {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: "该视频任务提交状态未知，请先在结果节点确认是否重新提交。",
+      }));
+      return;
+    }
+    if (remote && cloudSyncState !== "idle") {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: "当前项目尚未同步完成，未提交媒体任务。",
+      }));
+      return;
+    }
+    const tvcRunError = scheduler.storyRole === "tvc-video-scheduler"
+      ? tvcVideoSchedulerRunError(graphRef.current, scheduler)
+      : null;
+    if (tvcRunError) {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: tvcRunError,
+      }));
+      return;
+    }
+    if (
+      isTvcProject(graphRef.current) &&
+      scheduler.outputKind === "video" &&
+      scheduler.storyRole !== "tvc-video-scheduler"
+    ) {
+      commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+        error: "TVC 仅允许锁稿后的最终提示词视频调度器提交任务。",
+      }));
+      return;
+    }
     const inputs = readWorkflowInputs(graphRef.current, scheduler.id);
     if (inputs.videos.length) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
@@ -1422,23 +2039,42 @@ export function WorkflowCanvas() {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "当前模型配置无效。" }));
       return;
     }
+    commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "" }));
     runningSchedulersRef.current.add(scheduler.id);
     setRunningSchedulers((current) => new Set(current).add(scheduler.id));
     let createdResultIds: string[] = [];
     try {
-      const files = await Promise.all(inputs.images.map((node) =>
-        workflowImageToFile(
-          node,
-          remote
-            ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
-            : readAsset,
-        )
-      ));
-      if (files.length > config.maxReferenceImages) {
+      const usesTrxCloudReferences = scheduler.outputKind === "video" &&
+        scheduler.model === TRX_SEEDANCE_25_MODEL;
+      if (usesTrxCloudReferences && !remote) {
+        throw new Error("SD 2.5 视频仅支持云端项目的已归档图片资产。");
+      }
+      const referenceAssetIds = usesTrxCloudReferences
+        ? inputs.images.map((node) => {
+            if (!node.assetId) {
+              throw new Error("SD 2.5 视频参考图缺少云端资产，请重新上传图片。");
+            }
+            return node.assetId;
+          })
+        : [];
+      const files = usesTrxCloudReferences
+        ? []
+        : await Promise.all(inputs.images.map((node) =>
+            workflowImageToFile(
+              node,
+              remote
+                ? async (assetId) => readCloudAsset(assetId, assetVersionsRef.current[assetId])
+                : readAsset,
+            )
+          ));
+      const referenceCount = usesTrxCloudReferences ? referenceAssetIds.length : files.length;
+      if (referenceCount > config.maxReferenceImages) {
         throw new Error(`参考图片超过当前模型的 ${config.maxReferenceImages} 张上限。`);
       }
-      if (files.some((file) => file.size > MAX_IMAGE_BYTES)) throw new Error("单张参考图片不能超过 10MB。");
-      if (files.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGE_TOTAL_BYTES) {
+      if (!usesTrxCloudReferences && files.some((file) => file.size > MAX_IMAGE_BYTES)) {
+        throw new Error("单张参考图片不能超过 10MB。");
+      }
+      if (!usesTrxCloudReferences && files.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGE_TOTAL_BYTES) {
         throw new Error("参考图片合计不能超过 30MB。");
       }
       const images = await Promise.all(files.map(async (file) => ({
@@ -1447,44 +2083,160 @@ export function WorkflowCanvas() {
         size: file.size,
         dataUrl: await fileToDataUrl(file),
       } satisfies GenerateReferenceImage)));
-      const created = createWorkflowRun(graphRef.current, scheduler.id, Date.now());
+      const retryResult = retryResultId
+        ? graphRef.current.nodes.find(
+            (node): node is WorkflowResultNode =>
+              node.id === retryResultId &&
+              node.type === "result" &&
+              node.schedulerId === scheduler.id &&
+              node.status === "ready",
+          )
+        : undefined;
+      const created = retryResult
+        ? {
+            graph: updateWorkflowResult(graphRef.current, retryResult.id, {
+              status: "pending",
+              progress: "等待提交",
+              error: "",
+              model: scheduler.model,
+              resultUrl: undefined,
+              taskId: undefined,
+              startedAt: Date.now(),
+            }),
+            resultIds: [retryResult.id],
+          }
+        : createWorkflowRun(graphRef.current, scheduler.id, Date.now());
       if (!created.resultIds.length) return;
       createdResultIds = created.resultIds;
       graphRef.current = created.graph;
       setGraph(created.graph);
+      try {
+        await persistMediaSubmissionGraph(created.graph);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "项目保存失败，未提交媒体任务。";
+        const restored = created.resultIds.reduce(
+          (current, resultId) => updateWorkflowResult(current, resultId, {
+            status: "ready",
+            progress: "待生成",
+            error: "",
+            taskId: undefined,
+            startedAt: undefined,
+          }),
+          created.graph,
+        );
+        const next = updateWorkflowNode(restored, scheduler.id, { error: message });
+        graphRef.current = next;
+        setGraph(next);
+        return;
+      }
       await Promise.all(created.resultIds.map(async (resultId) => {
         try {
-          const response = await fetch("/api/ai/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: scheduler.outputKind,
-              model: scheduler.model,
-              prompt,
-              images,
-              aspectRatio: scheduler.aspectRatio || undefined,
-              resolution: scheduler.resolution || undefined,
-              duration: scheduler.duration || undefined,
-            }),
-          });
-          if (!response.ok) throw new Error(await readApiError(response));
-          const result = (await response.json()) as GenerateResponse;
-          commitGraph((current) => result.kind === "text"
-            ? updateWorkflowResult(current, resultId, {
+          let response: Response;
+          try {
+            response = await fetch("/api/ai/generate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mode: scheduler.outputKind,
+                model: scheduler.model,
+                prompt,
+                ...(usesTrxCloudReferences
+                  ? {
+                      projectId: activeProjectIdRef.current,
+                      referenceAssetIds,
+                    }
+                  : { images }),
+                aspectRatio: scheduler.aspectRatio || undefined,
+                resolution: scheduler.resolution || undefined,
+                duration: scheduler.duration || undefined,
+              }),
+            });
+          } catch (error) {
+            if (scheduler.outputKind === "video") {
+              throw new SubmissionUnknownError("视频提交连接中断，无法确认媒体平台是否已接收请求。");
+            }
+            throw error;
+          }
+          if (!response.ok) {
+            const failure = await readGenerateApiFailure(response);
+            if (
+              scheduler.outputKind === "video" &&
+              failure.code === "submission-unknown"
+            ) {
+              throw new SubmissionUnknownError(failure.message);
+            }
+            throw new Error(failure.message);
+          }
+          let payload: unknown;
+          try {
+            payload = await response.json();
+          } catch {
+            if (scheduler.outputKind === "video") {
+              throw new SubmissionUnknownError("媒体服务响应不完整，无法确认是否已创建视频任务。");
+            }
+            throw new Error("模型服务返回了无法识别的响应。");
+          }
+          if (
+            payload &&
+            typeof payload === "object" &&
+            !Array.isArray(payload) &&
+            typeof (payload as { error?: unknown }).error === "string"
+          ) {
+            const errorPayload = payload as { error: string; code?: unknown };
+            if (scheduler.outputKind === "video" && errorPayload.code === "submission-unknown") {
+              throw new SubmissionUnknownError(errorPayload.error);
+            }
+            throw new Error(errorPayload.error);
+          }
+          const result = payload as GenerateResponse;
+          if (
+            scheduler.outputKind === "video" &&
+            (result.kind !== "task" ||
+              typeof result.taskId !== "string" ||
+              !result.taskId.trim())
+          ) {
+            throw new SubmissionUnknownError("媒体服务未返回任务编号。");
+          }
+          const next = result.kind === "text"
+            ? updateWorkflowResult(graphRef.current, resultId, {
                 status: "success", progress: "", text: result.content,
               })
-            : updateWorkflowResult(current, resultId, {
+            : updateWorkflowResult(graphRef.current, resultId, {
                 status: "pending", progress: "排队中", taskId: result.taskId, startedAt: Date.now(),
+              });
+          graphRef.current = next;
+          setGraph(next);
+          if (result.kind === "task") {
+            try {
+              await persistMediaSubmissionGraph(next);
+            } catch {
+              commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+                error: "任务编号已收到，但项目保存失败；请保持当前页面，系统不会再次提交。",
               }));
+            }
+          }
         } catch (error) {
-          commitGraph((current) => updateWorkflowResult(current, resultId, {
-            status: "failed",
-            progress: "",
-            error: error instanceof Error ? error.message : "生成请求失败，请稍后重试。",
-          }));
+          const message = error instanceof Error ? error.message : "生成请求失败，请稍后重试。";
+          const next = scheduler.outputKind === "video" && error instanceof SubmissionUnknownError
+            ? markWorkflowResultSubmissionUnknown(graphRef.current, resultId, message)
+            : updateWorkflowResult(graphRef.current, resultId, {
+                status: "failed",
+                progress: "",
+                error: message,
+              });
+          graphRef.current = next;
+          setGraph(next);
+          if (scheduler.outputKind === "video" && error instanceof SubmissionUnknownError) {
+            try {
+              await persistMediaSubmissionGraph(next);
+            } catch {
+              commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
+                error: "提交状态未知，但项目保存失败；请保持当前页面，系统不会再次提交。",
+              }));
+            }
+          }
         }
       }));
-      commitGraph((current) => updateWorkflowNode(current, scheduler.id, { error: "" }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "生成请求失败，请稍后重试。";
       commitGraph((current) => {
@@ -1512,7 +2264,7 @@ export function WorkflowCanvas() {
         return next;
       });
     }
-  }, [commitGraph, remote]);
+  }, [cloudSyncState, commitGraph, persistMediaSubmissionGraph, remote]);
 
   useEffect(() => {
     if (!hydrated || !batchRun || batchRun.status !== "running") return;
@@ -1701,6 +2453,7 @@ export function WorkflowCanvas() {
     setProjectEditor({
       mode: "create",
       value: `新项目 ${projects.projects.length + 1}`,
+      projectMode: "workflow",
       error: "",
     });
   }
@@ -1710,7 +2463,10 @@ export function WorkflowCanvas() {
     try {
       if (projectEditor.mode === "create") {
         if (remote) {
-          const created = await createCloudProject(projectEditor.value);
+          const created = await createCloudProject(
+            projectEditor.value,
+            projectEditor.projectMode,
+          );
           const registry = await loadCloudProjects();
           setProjectEditor(null);
           activeProjectIdRef.current = created.id;
@@ -1723,7 +2479,10 @@ export function WorkflowCanvas() {
         const created = createWorkflowProject(projects, projectEditor.value);
         window.localStorage.setItem(
           workflowProjectGraphKey(created.project.id),
-          JSON.stringify(emptyWorkflowGraph()),
+          JSON.stringify(createWorkflowProjectGraph(
+            projectEditor.projectMode,
+            () => created.project.id,
+          )),
         );
         window.localStorage.setItem(
           workflowProjectViewportKey(created.project.id),
@@ -1767,7 +2526,12 @@ export function WorkflowCanvas() {
       (project) => project.id === projects.activeProjectId,
     );
     if (!active) return;
-    setProjectEditor({ mode: "rename", value: active.name, error: "" });
+    setProjectEditor({
+      mode: "rename",
+      value: active.name,
+      projectMode: "workflow",
+      error: "",
+    });
   }
 
   async function deleteActiveProject() {
@@ -1859,7 +2623,10 @@ export function WorkflowCanvas() {
     const active = projects.projects.find((project) => project.id === projects.activeProjectId);
     if (!active) return;
     try {
-      const created = await createCloudProject(`${active.name}-副本-${Date.now()}`);
+      const created = await createCloudProject(
+        `${active.name}-副本-${Date.now()}`,
+        isTvcProject(graphRef.current) ? "tvc" : "workflow",
+      );
       const blank = await loadCloudProject(created.id);
       await saveCloudProject({
         id: created.id,
@@ -1879,51 +2646,266 @@ export function WorkflowCanvas() {
     }
   }
 
-  function exportLocalProject() {
+  async function exportLocalProject() {
     if (remote || !projects) return;
     const active = projects.projects.find((project) => project.id === projects.activeProjectId);
     if (!active) return;
-    const conversation = parseAgentConversationStore(
-      window.localStorage.getItem(workflowProjectConversationKey(active.id)),
-      null,
-    );
-    const textConversation: AgentConversationStore = {
-      ...conversation,
-      conversations: conversation.conversations.map((item) => ({
-        ...item,
-        messages: item.messages.map((message) => ({
-          id: message.id,
-          role: message.role,
-          content: message.content,
-          createdAt: message.createdAt,
-          ...(message.details?.length ? { details: message.details } : {}),
+    try {
+      const conversation = parseAgentConversationStore(
+        window.localStorage.getItem(workflowProjectConversationKey(active.id)),
+        null,
+      );
+      const textConversation: AgentConversationStore = {
+        ...conversation,
+        conversations: conversation.conversations.map((item) => ({
+          ...item,
+          messages: item.messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            createdAt: message.createdAt,
+            ...(message.details?.length ? { details: message.details } : {}),
+          })),
         })),
-      })),
-    };
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      project: active,
-      graph: graphRef.current,
-      viewport: viewportRef.current,
-      batch: null,
-      conversation: textConversation,
-    };
-    const serialized = JSON.stringify(payload);
-    const url = URL.createObjectURL(new Blob([serialized], {
-      type: "application/json",
-    }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${active.name.replace(/[\\/:*?"<>|]/g, "-")}.canvas.json`;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
+      };
+      const exported = await prepareWorkflowProjectExport(graphRef.current, readAsset);
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        project: active,
+        graph: exported.graph,
+        viewport: viewportRef.current,
+        batch: null,
+        conversation: textConversation,
+        assets: exported.assets,
+      };
+      const serialized = JSON.stringify(payload);
+      const url = URL.createObjectURL(new Blob([serialized], {
+        type: "application/json",
+      }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${active.name.replace(/[\\/:*?"<>|]/g, "-")}.canvas.json`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法导出当前项目。");
+    }
+  }
+
+  function chooseProjectImport() {
+    if (projectImporting) return;
+    if (runningSchedulersRef.current.size) {
+      setProjectImportError("生成请求正在提交，请等待任务 ID 保存后再导入项目。");
+      return;
+    }
+    if (remote && cloudSyncState !== "idle") {
+      setProjectImportError("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+      return;
+    }
+    setProjectImportError("");
+    projectImportInputRef.current?.click();
+  }
+
+  async function importProject(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!/\.canvas\.json$/i.test(file.name)) {
+      setProjectImportError("请选择 .canvas.json 项目文件。");
+      return;
+    }
+    if (!projects) return;
+    if (projectImporting || runningSchedulersRef.current.size) {
+      setProjectImportError("生成请求正在提交，请等待任务 ID 保存后再导入项目。");
+      return;
+    }
+    if (remote && cloudSyncState !== "idle") {
+      setProjectImportError("当前项目尚未同步完成，请先重试保存或处理版本冲突。");
+      return;
+    }
+    setProjectImporting(true);
+    if (remote) {
+      const previousProjectId = activeProjectIdRef.current;
+      let createdProjectId = "";
+      try {
+        const imported = importWorkflowProject(projects, await file.text());
+        const expectedAssets = projectImageAssets(imported.graph);
+        if (expectedAssets.length !== imported.assets.length) {
+          throw new Error("云端导入需要文件包含全部图片素材，无法安全迁移缺失图片的项目。");
+        }
+        const created = await createCloudProject(
+          imported.project.name,
+          isTvcProject(imported.graph) ? "tvc" : "workflow",
+        );
+        createdProjectId = created.id;
+        const uploadedAssets = new Map<string, { assetId: string; assetUrl: string }>();
+        for (const asset of imported.assets) {
+          const node = imported.graph.nodes.find((candidate) =>
+            (candidate.type === "source" || candidate.type === "result") &&
+            candidate.kind === "image" &&
+            candidate.assetId === asset.id
+          );
+          if (!node) throw new Error("导入文件中的图片引用无效。");
+          const blob = await imageBlobFromDataUrl(asset.dataUrl, asset.mimeType);
+          const uploaded = await uploadCloudAsset({
+            projectId: created.id,
+            nodeId: node.id,
+            file: new File([blob], asset.name, { type: asset.mimeType }),
+          });
+          uploadedAssets.set(asset.id, {
+            assetId: uploaded.assetId,
+            assetUrl: cloudAssetUrl(uploaded.assetId),
+          });
+        }
+        const cloudGraph = rebindImportedWorkflowAssets(imported.graph, uploadedAssets);
+        await saveCloudProject({
+          id: created.id,
+          name: created.name,
+          graph: cloudGraph,
+          viewport: imported.viewport,
+          batch: null,
+          revision: created.revision,
+        });
+        await saveCloudConversation({
+          projectId: created.id,
+          conversation: imported.conversation as AgentConversationStore,
+          revision: 1,
+        });
+        const registry = await loadCloudProjects();
+        activeProjectIdRef.current = created.id;
+        setProjects(registry);
+        setAgentBusy(false);
+        setHydrated(false);
+        await reloadCloudProject(created.id);
+        setHydrated(true);
+        setCloudSyncState("idle");
+        setProjectImportError("");
+      } catch (error) {
+        if (createdProjectId) {
+          await deleteCloudProject(createdProjectId).catch(() => undefined);
+          if (previousProjectId) {
+            await activateCloudProject(previousProjectId).catch(() => undefined);
+          }
+        }
+        setProjectImportError(error instanceof Error ? error.message : "无法导入云端项目文件。");
+      } finally {
+        setProjectImporting(false);
+      }
+      return;
+    }
+    const savedAssetIds: string[] = [];
+    try {
+      const imported = importWorkflowProject(projects, await file.text());
+      for (const asset of imported.assets) {
+        const blob = await imageBlobFromDataUrl(asset.dataUrl, asset.mimeType);
+        await saveAsset(asset.id, blob);
+        savedAssetIds.push(asset.id);
+      }
+
+      const activeProjectId = activeProjectIdRef.current;
+      if (activeProjectId) {
+        persistenceRef.current?.flush();
+        window.localStorage.setItem(
+          workflowProjectGraphKey(activeProjectId),
+          JSON.stringify(graphRef.current),
+        );
+        window.localStorage.setItem(
+          workflowProjectViewportKey(activeProjectId),
+          JSON.stringify(viewportRef.current),
+        );
+        if (batchRun) {
+          window.localStorage.setItem(
+            workflowProjectBatchKey(activeProjectId),
+            JSON.stringify(batchRun),
+          );
+        } else {
+          window.localStorage.removeItem(workflowProjectBatchKey(activeProjectId));
+        }
+      }
+
+      window.localStorage.setItem(
+        workflowProjectGraphKey(imported.project.id),
+        JSON.stringify(imported.graph),
+      );
+      window.localStorage.setItem(
+        workflowProjectViewportKey(imported.project.id),
+        JSON.stringify(imported.viewport),
+      );
+      window.localStorage.removeItem(workflowProjectBatchKey(imported.project.id));
+      window.localStorage.setItem(
+        workflowProjectConversationKey(imported.project.id),
+        JSON.stringify(imported.conversation),
+      );
+      window.localStorage.setItem(
+        WORKFLOW_PROJECTS_STORAGE_KEY,
+        JSON.stringify(imported.registry),
+      );
+      activeProjectIdRef.current = imported.project.id;
+      setProjects(imported.registry);
+      setAgentBusy(false);
+      const missingImageCount = projectImageAssets(imported.graph).length - imported.assets.length;
+      setProjectImportError(
+        missingImageCount
+          ? `导入完成，但 ${missingImageCount} 项图片未包含在文件中，请在对应节点重新上传。`
+          : "",
+      );
+      loadProject(imported.project.id);
+    } catch (error) {
+      await Promise.all(savedAssetIds.map((assetId) => deleteAsset(assetId)));
+      setProjectImportError(error instanceof Error ? error.message : "无法导入项目文件。");
+    } finally {
+      setProjectImporting(false);
+    }
+  }
+
+  async function exportTvcStoryboard() {
+    const project = readTvcProject(graphRef.current);
+    if (!project?.storyboard || !projects) return;
+    if (remote) {
+      window.location.assign(
+        `/api/workflow/projects/${encodeURIComponent(projects.activeProjectId)}/tvc/storyboard`,
+      );
+      return;
+    }
+    try {
+      const bytes = await createTvcStoryboardWorkbook(project.storyboard);
+      const url = URL.createObjectURL(new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = tvcStoryboardFilename(project.storyboard.title);
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法导出 TVC 分镜表。");
+    }
+  }
+
+  function confirmTvcScriptLock() {
+    try {
+      commitGraph((current) => lockTvcScript(current));
+      setIsTvcLockConfirming(false);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "无法锁定 TVC 分镜表。");
+    }
   }
 
   function deleteNode(node: WorkflowNode) {
-    if (node.type === "result" && (node.status === "pending" || node.status === "running")) {
+    if (node.type === "result" && node.status === "submission-unknown") {
+      window.alert("该视频提交状态未知，不能通过删除绕过重提确认。请在结果节点使用“确认重新提交”。");
+      return;
+    }
+    if (
+      node.type === "result" &&
+      (node.status === "pending" ||
+        node.status === "running")
+    ) {
       if (!window.confirm("删除只会停止本地查询，远端任务仍可能继续并产生费用。确定删除吗？")) return;
     }
     setSelectedIds((current) => current.filter((id) => id !== node.id));
@@ -1946,6 +2928,73 @@ export function WorkflowCanvas() {
     }
   }
 
+  function requestSubmissionRetry(node: WorkflowResultNode) {
+    if (node.status !== "submission-unknown" || !node.schedulerId) return;
+    setSubmissionRetryConfirmation({
+      resultId: node.id,
+      schedulerId: node.schedulerId,
+    });
+  }
+
+  function confirmSubmissionRetry() {
+    const confirmation = submissionRetryConfirmation;
+    if (!confirmation) return;
+    const result = graphRef.current.nodes.find(
+      (node): node is WorkflowResultNode =>
+        node.id === confirmation.resultId &&
+        node.type === "result",
+    );
+    const scheduler = graphRef.current.nodes.find(
+      (node): node is WorkflowSchedulerNode =>
+        node.id === confirmation.schedulerId &&
+        node.type === "scheduler",
+    );
+    if (!result || result.status !== "submission-unknown" || !scheduler) {
+      setSubmissionRetryConfirmation(null);
+      return;
+    }
+    const next = updateWorkflowResult(graphRef.current, result.id, {
+      status: "ready",
+      progress: "待重新提交",
+      error: "",
+      taskId: undefined,
+      startedAt: undefined,
+    });
+    graphRef.current = next;
+    setGraph(next);
+    setSubmissionRetryConfirmation(null);
+    void runScheduler(scheduler.id, result.id);
+  }
+
+  const tvcProject = readTvcProject(graph);
+  const tvcVideoSchedulers = tvcProject
+    ? graph.nodes.filter(
+        (node): node is WorkflowSchedulerNode =>
+          node.type === "scheduler" &&
+          node.storyRole === "tvc-video-scheduler" &&
+          node.tvcProjectId === tvcProject.projectId,
+      )
+    : [];
+  const tvcSegmentControlsReadOnly = Boolean(
+    tvcProject && graph.nodes.some((node) =>
+      node.tvcProjectId === tvcProject.projectId && (
+        node.tvcVideoHistorical === true ||
+        (node.type === "result" &&
+          node.storyRole === "tvc-video-result" &&
+          (Boolean(node.taskId) || node.status !== "ready"))
+      ),
+    ),
+  );
+  const tvcPromptStatus = tvcProject && tvcPromptRegeneration?.projectId === tvcProject.projectId
+    ? tvcPromptRegeneration
+    : null;
+  const tvcSystemRoles = new Set([
+    "tvc-brief",
+    "tvc-storyboard",
+    "tvc-prompt",
+    "tvc-video-scheduler",
+    "tvc-video-result",
+  ]);
   const selection = selectedIds.length > 1 ? workflowSelectionBounds(graph, selectedIds) : null;
   const selectedAssetRefs = assetRefsForSelection(graph, selectedIds);
   const selectedAssetStoryIds = [...new Set(
@@ -2064,7 +3113,7 @@ export function WorkflowCanvas() {
         <div className="workflow-project-switcher" data-workflow-isolated>
           <select
             aria-label="当前工作流项目"
-            disabled={runningSchedulers.size > 0 || (remote && cloudSyncState !== "idle")}
+            disabled={projectImporting || runningSchedulers.size > 0 || (remote && cloudSyncState !== "idle")}
             value={projects.activeProjectId}
             onChange={(event) => void activateProject(projects, event.target.value)}
           >
@@ -2081,9 +3130,55 @@ export function WorkflowCanvas() {
           <button aria-label="删除项目" title="删除项目" type="button" onClick={deleteActiveProject}>
             <Trash2 size={15} />
           </button>
+          <>
+            <input
+              ref={projectImportInputRef}
+              accept=".canvas.json,application/json"
+              hidden
+              type="file"
+              onChange={(event) => void importProject(event)}
+            />
+            <button
+              aria-label={remote ? "导入本地项目到云端" : "导入本地项目"}
+              title={remote ? "导入本地项目到云端" : "导入本地项目"}
+              disabled={projectImporting}
+              type="button"
+              onClick={chooseProjectImport}
+            >
+              <Upload size={15} />
+            </button>
+          </>
           {!remote ? (
-            <button aria-label="导出当前项目" title="导出当前项目" type="button" onClick={exportLocalProject}>
-              <Download size={15} />
+            <>
+              <button aria-label="导出当前项目" title="导出当前项目" type="button" onClick={() => void exportLocalProject()}>
+                <Download size={15} />
+              </button>
+            </>
+          ) : null}
+          {projectImportError ? <span className="workflow-project-import-error" role="alert">{projectImportError}</span> : null}
+          {tvcProject ? (
+            <span className="workflow-project-status workflow-project-tvc-stage">
+              TVC · {tvcStageLabel(tvcProject.phase)}
+            </span>
+          ) : null}
+          {tvcProject?.storyboard ? (
+            <button
+              aria-label="查看 TVC 分镜表"
+              title="查看 TVC 分镜表"
+              type="button"
+              onClick={() => setTvcStoryboardView({ tab: "storyboard", editing: false })}
+            >
+              <FileText size={15} />
+            </button>
+          ) : null}
+          {tvcProject?.phase === "script-draft" ? (
+            <button
+              aria-label="锁定 TVC 分镜稿"
+              title="锁定 TVC 分镜稿"
+              type="button"
+              onClick={() => setIsTvcLockConfirming(true)}
+            >
+              锁稿
             </button>
           ) : null}
           {agentBusy ? <span className="workflow-project-status">Agent 处理中</span> : null}
@@ -2127,6 +3222,40 @@ export function WorkflowCanvas() {
                 })}
               />
             </label>
+            {projectEditor.mode === "create" ? (
+              <fieldset className="workflow-project-mode">
+                <legend>项目类型</legend>
+                <label>
+                  <input
+                    checked={projectEditor.projectMode === "workflow"}
+                    name="workflow-project-mode"
+                    type="radio"
+                    value="workflow"
+                    onChange={() => setProjectEditor({
+                      ...projectEditor,
+                      projectMode: "workflow",
+                      error: "",
+                    })}
+                  />
+                  普通工作流
+                </label>
+                <label>
+                  <input
+                    checked={projectEditor.projectMode === "tvc"}
+                    name="workflow-project-mode"
+                    type="radio"
+                    value="tvc"
+                    onChange={() => setProjectEditor({
+                      ...projectEditor,
+                      projectMode: "tvc",
+                      error: "",
+                    })}
+                  />
+                  TVC 导演
+                </label>
+                <p>TVC 先整理资料和分镜表；锁稿后才可生成最终提示词，不会自动生成媒体。</p>
+              </fieldset>
+            ) : null}
             {projectEditor.error ? <p>{projectEditor.error}</p> : null}
             <div>
               <button type="button" onClick={() => setProjectEditor(null)}>取消</button>
@@ -2134,6 +3263,13 @@ export function WorkflowCanvas() {
             </div>
           </form>
         </div>
+      ) : null}
+      {isTvcLockConfirming && tvcProject?.phase === "script-draft" && tvcProject.storyboard ? (
+        <TvcLockDialog
+          storyboard={tvcProject.storyboard}
+          onCancel={() => setIsTvcLockConfirming(false)}
+          onConfirm={confirmTvcScriptLock}
+        />
       ) : null}
       <div
         ref={gridRef}
@@ -2200,7 +3336,50 @@ export function WorkflowCanvas() {
             onPointerLeave={() => setHoveredEdgeId(null)}
             onClick={(event) => {
               event.stopPropagation();
-              setGraph((current) => removeWorkflowEdge(current, hoveredEdge.id));
+              setGraph((current) => {
+                const edge = current.edges.find((item) => item.id === hoveredEdge.id);
+                const source = edge
+                  ? current.nodes.find((node) => node.id === edge.sourceId)
+                  : undefined;
+                const target = edge
+                  ? current.nodes.find((node) => node.id === edge.targetId)
+                  : undefined;
+                if (
+                  target?.type === "scheduler" &&
+                  target.storyRole === "tvc-video-scheduler"
+                ) {
+                  if (isRemovableTvcVideoInput(current, target.id, hoveredEdge.id)) {
+                    const next = markTvcVideoSchedulerManualOverride(
+                      updateWorkflowNode(
+                        removeWorkflowEdge(current, hoveredEdge.id),
+                        target.id,
+                        { error: "" },
+                      ),
+                      target.id,
+                    );
+                    graphRef.current = next;
+                    return next;
+                  }
+                  const next = updateWorkflowNode(current, target.id, {
+                    error: "最终提示词文本连线保留；仅可移除参考媒体资产。",
+                  });
+                  graphRef.current = next;
+                  return next;
+                }
+                if (
+                  source?.type === "scheduler" &&
+                  source.storyRole === "tvc-video-scheduler"
+                ) {
+                  const next = updateWorkflowNode(current, source.id, {
+                    error: "TVC 视频结果连线由系统维护，不能手动移除。",
+                  });
+                  graphRef.current = next;
+                  return next;
+                }
+                const next = removeWorkflowEdge(current, hoveredEdge.id);
+                graphRef.current = next;
+                return next;
+              });
               setHoveredEdgeId(null);
             }}
           >
@@ -2256,8 +3435,17 @@ export function WorkflowCanvas() {
           </button>
         ) : null}
 
-        {graph.nodes.map((node) => (
-          <WorkflowNodeCard
+        {graph.nodes.map((node) => {
+          const protectedTvcNode = Boolean(
+            node.tvcProjectId && tvcSystemRoles.has(node.storyRole ?? ""),
+          );
+          const tvcVideoTask = node.type === "scheduler" &&
+            node.storyRole === "tvc-video-scheduler";
+          const canRunTvcVideoTask = !tvcVideoTask ||
+            isRunnableTvcVideoScheduler(graph, node);
+          const tvcVideoManualOverride = tvcVideoTask && isTvcVideoManualOverride(node);
+          const tvcVideoHistorical = tvcVideoTask && node.tvcVideoHistorical === true;
+          return <WorkflowNodeCard
             key={node.id}
             node={node}
             assetUrl={(node.type === "source" || node.type === "result") && node.assetId
@@ -2272,17 +3460,48 @@ export function WorkflowCanvas() {
             inputPorts={inputPortsByTarget.get(node.id) ?? []}
             pendingInputKind={connection?.targetId === node.id ? connectionKind : undefined}
             running={node.type === "scheduler" && runningSchedulers.has(node.id)}
+            protectedNode={protectedTvcNode}
+            tvcVideoTask={tvcVideoTask}
+            tvcVideoManualOverride={tvcVideoManualOverride}
+            tvcVideoHistorical={tvcVideoHistorical}
+            canRunTvcVideoTask={canRunTvcVideoTask}
+            tvcStoryboard={node.storyRole === "tvc-storyboard" ? tvcProject?.storyboard : undefined}
+            tvcPhase={node.storyRole === "tvc-storyboard" ? tvcProject?.phase : undefined}
+            tvcPromptPlan={node.storyRole === "tvc-storyboard" ? tvcProject?.promptPlan : undefined}
+            tvcSegmentControlsReadOnly={tvcSegmentControlsReadOnly}
+            tvcPromptUnits={node.storyRole === "tvc-prompt" ? tvcProject?.promptUnits : undefined}
             onDelete={() => deleteNode(node)}
             onOpen={() => setDetailId(node.id)}
-            onChange={(update) => setGraph((current) => updateWorkflowNode(current, node.id, update))}
+            onOpenTvcStoryboard={() => setTvcStoryboardView({ tab: "storyboard", editing: false })}
+            onEditTvcStoryboard={() => setTvcStoryboardView({ tab: "storyboard", editing: true })}
+            onAdjustTvcPromptPlan={() => setTvcStoryboardView({
+              tab: "prompt",
+              editing: false,
+              segmentEditing: true,
+            })}
+            onOpenTvcPrompt={() => setTvcStoryboardView({ tab: "prompt", editing: false })}
+            onExportTvcStoryboard={() => void exportTvcStoryboard()}
+            onChange={(update) => {
+              if (protectedTvcNode && !tvcVideoTask) return;
+              if (node.type === "scheduler") {
+                updateSchedulerFields(node, update as Partial<WorkflowSchedulerNode>);
+                return;
+              }
+              setGraph((current) => updateWorkflowNode(current, node.id, update));
+            }}
             onUpload={(file) => node.type === "source" && void uploadSource(node, file)}
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
             onModelChange={(model) => node.type === "scheduler" && updateSchedulerModel(node, model)}
+            onRemoveTvcImageInput={(edgeId) => removeTvcVideoImageInput(node.id, edgeId)}
+            onMoveTvcImageInput={(edgeId, direction) =>
+              moveTvcVideoImageInput(node.id, edgeId, direction)}
             onRun={() => node.type === "scheduler" && void runScheduler(node.id)}
+            onConfirmSubmissionRetry={() =>
+              node.type === "result" && requestSubmissionRetry(node)}
             onMediaLoad={(width, height) =>
               fitImageNodeToMedia(node.id, width, height)
             }
-            onResume={() => node.type === "result" && (() => {
+          onResume={() => node.type === "result" && (() => {
               const resumed = { ...node, status: "pending" as const, progress: "准备继续查询", startedAt: Date.now() };
               setGraph((current) => updateWorkflowResult(current, node.id, resumed));
               void pollTask(resumed);
@@ -2291,8 +3510,8 @@ export function WorkflowCanvas() {
             onPointerMove={dragNodes}
             onPointerUp={finishNodeDrag}
             onPointerCancel={finishNodeDrag}
-          />
-        ))}
+          />;
+        })}
 
         {graph.nodes.map((node) => (
           <WorkflowNodeOverlay
@@ -2308,16 +3527,42 @@ export function WorkflowCanvas() {
         ))}
 
         {creationMenu ? (
-          <WorkflowCreationMenu point={creationMenu} onCreate={createNode} />
+          <WorkflowCreationMenu
+            point={creationMenu}
+            tvc={Boolean(tvcProject)}
+            onCreate={createNode}
+          />
         ) : null}
 
         {schedulerMenu ? (
           <WorkflowSchedulerMenu
             menu={schedulerMenu}
+            tvc={Boolean(tvcProject)}
             onCreate={createSchedulerFromMenu}
           />
         ) : null}
       </div>
+
+      {tvcStoryboardView && tvcProject?.storyboard ? (
+        <TvcStoryboardCanvasPanel
+          key={`${tvcProject.projectId}-${tvcProject.revision}-${tvcStoryboardView.tab}-${tvcStoryboardView.editing}-${Boolean(tvcStoryboardView.segmentEditing)}`}
+          storyboard={tvcProject.storyboard}
+          promptPlan={tvcProject.promptPlan}
+          promptUnits={tvcProject.promptUnits}
+          videoSchedulers={tvcVideoSchedulers}
+          initialTab={tvcStoryboardView.tab}
+          initialEditing={tvcStoryboardView.editing}
+          initialSegmentEditing={Boolean(tvcStoryboardView.segmentEditing)}
+          phase={tvcProject.phase}
+          segmentControlsReadOnly={tvcSegmentControlsReadOnly}
+          promptRegeneration={tvcPromptStatus}
+          onClose={() => setTvcStoryboardView(null)}
+          onExport={() => void exportTvcStoryboard()}
+          onSave={saveTvcStoryboard}
+          onPreparePromptPlan={prepareTvc30SecondPromptPlan}
+          onSavePromptPlan={saveTvcPromptPlan}
+        />
+      ) : null}
 
       {marqueeBounds ? <div className="canvas-selection-marquee" style={{
         width: marqueeBounds.width,
@@ -2344,6 +3589,13 @@ export function WorkflowCanvas() {
         />
       ) : null}
 
+      {submissionRetryConfirmation ? (
+        <SubmissionUnknownConfirmationCard
+          onCancel={() => setSubmissionRetryConfirmation(null)}
+          onConfirm={confirmSubmissionRetry}
+        />
+      ) : null}
+
       {!isAgentOpen ? (
         <button
           aria-label="打开工作流 Agent"
@@ -2366,9 +3618,15 @@ export function WorkflowCanvas() {
           ? workflowProjectConversationKey(projects.activeProjectId)
           : "workflow-agent-conversations-pending"}
         legacyStorageKey=""
-        subtitle="GPT-5.6 Sol · 可规划并运行工作流"
-        emptyMessage="粘贴完整剧本后，我会先分析类型、主题、受众、情绪和时长，再逐批搭建人物、场景与道具资产库。"
-        intakePlaceholder="粘贴完整剧本或输入资产规划要求…"
+        subtitle={tvcProject
+          ? "TVC 导演 · 资料梳理、分镜表与锁稿提示词"
+          : "GPT-5.6 Sol · 可规划并运行工作流"}
+        emptyMessage={tvcProject
+          ? "提交 TVC 资料、脚本、产品与参考图后，我会先整理 Brief 和参考图映射，再形成可锁定的分镜表。"
+          : "粘贴完整剧本后，我会先分析类型、主题、受众、情绪和时长，再逐批搭建人物、场景与道具资产库。"}
+        intakePlaceholder={tvcProject
+          ? "粘贴 TVC Brief、脚本或补充参考资料…"
+          : "粘贴完整剧本或输入资产规划要求…"}
         focusedNodeId={agentContextNodeId ?? undefined}
         onClose={() => {
           setIsAgentOpen(false);
@@ -2385,6 +3643,8 @@ export function WorkflowCanvas() {
         onBusyChange={setAgentBusy}
         loadConversationStore={remote ? loadRemoteConversation : undefined}
         saveConversationStore={remote ? saveRemoteConversation : undefined}
+        autoRequest={tvcPromptAutoRequest}
+        onAutoRequestComplete={completeTvcPromptRegeneration}
       /> : null}
     </main>
   );
@@ -2415,13 +3675,31 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   inputPorts,
   pendingInputKind,
   running,
+  protectedNode,
+  tvcVideoTask,
+  tvcVideoManualOverride,
+  tvcVideoHistorical,
+  canRunTvcVideoTask,
+  tvcStoryboard,
+  tvcPhase,
+  tvcPromptPlan,
+  tvcSegmentControlsReadOnly,
+  tvcPromptUnits,
   onDelete,
   onOpen,
+  onOpenTvcStoryboard,
+  onEditTvcStoryboard,
+  onAdjustTvcPromptPlan,
+  onOpenTvcPrompt,
+  onExportTvcStoryboard,
   onChange,
   onUpload,
   onKindChange,
   onModelChange,
+  onRemoveTvcImageInput,
+  onMoveTvcImageInput,
   onRun,
+  onConfirmSubmissionRetry,
   onMediaLoad,
   onResume,
   onPointerDown,
@@ -2437,13 +3715,31 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   inputPorts: WorkflowInputPort[];
   pendingInputKind?: ComposerMode;
   running: boolean;
+  protectedNode: boolean;
+  tvcVideoTask: boolean;
+  tvcVideoManualOverride: boolean;
+  tvcVideoHistorical: boolean;
+  canRunTvcVideoTask: boolean;
+  tvcStoryboard?: TvcStoryboard;
+  tvcPhase?: "intake" | "script-draft" | "script-locked" | "prompt-final";
+  tvcPromptPlan?: TvcPromptPlanSegment[];
+  tvcSegmentControlsReadOnly: boolean;
+  tvcPromptUnits?: TvcPromptUnit[];
   onDelete: () => void;
   onOpen: () => void;
+  onOpenTvcStoryboard: () => void;
+  onEditTvcStoryboard: () => void;
+  onAdjustTvcPromptPlan: () => void;
+  onOpenTvcPrompt: () => void;
+  onExportTvcStoryboard: () => void;
   onChange: (update: Partial<WorkflowNode>) => void;
   onUpload: (file?: File) => void;
   onKindChange: (kind: ComposerMode) => void;
   onModelChange: (model: string) => void;
+  onRemoveTvcImageInput: (edgeId: string) => void;
+  onMoveTvcImageInput: (edgeId: string, direction: "up" | "down") => void;
   onRun: () => void;
+  onConfirmSubmissionRetry: () => void;
   onMediaLoad: (width: number, height: number) => void;
   onResume: () => void;
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
@@ -2474,28 +3770,53 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
       onDoubleClick={(event) => {
         if ((event.target as HTMLElement).closest("[data-workflow-control]")) return;
         event.stopPropagation();
+        if (node.storyRole === "tvc-storyboard" && tvcStoryboard) {
+          onOpenTvcStoryboard();
+          return;
+        }
+        if (node.storyRole === "tvc-prompt") {
+          onOpenTvcPrompt();
+          return;
+        }
         if (node.type === "result" || (node.type === "source" && node.kind !== "text")) onOpen();
       }}
     >
       <header className="canvas-node-header">
         <span className="canvas-node-kind"><Icon size={15} /><span className="workflow-node-title">{title}</span></span>
-        <button
+        {!protectedNode ? <button
           aria-label="删除节点"
           className="canvas-node-delete"
           data-workflow-control
           type="button"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => { event.stopPropagation(); onDelete(); }}
-        ><Trash2 size={14} /></button>
+        ><Trash2 size={14} /></button> : null}
       </header>
 
-      {node.type === "source" ? (
+      {node.storyRole === "tvc-storyboard" && tvcStoryboard ? (
+        <TvcStoryboardNodePreview
+          storyboard={tvcStoryboard}
+          phase={tvcPhase ?? "script-draft"}
+          hasPromptPlan={Boolean(tvcPromptPlan?.length)}
+          segmentControlsReadOnly={tvcSegmentControlsReadOnly}
+          onOpen={onOpenTvcStoryboard}
+          onEdit={onEditTvcStoryboard}
+          onAdjustSegments={onAdjustTvcPromptPlan}
+          onExport={onExportTvcStoryboard}
+        />
+      ) : node.storyRole === "tvc-prompt" ? (
+        <TvcPromptNodePreview
+          promptUnits={tvcPromptUnits}
+          onOpen={onOpenTvcPrompt}
+        />
+      ) : node.type === "source" ? (
         <div className={`workflow-source-body${node.kind === "image" && assetUrl && !assetError ? " workflow-source-body-media" : ""}`}>
           {node.kind === "text" ? (
             <textarea
               aria-label="文本素材内容"
               data-workflow-control
               placeholder="在这里输入提示词或上下文…"
+              readOnly={protectedNode}
               value={node.text}
               onPointerDown={(event) => event.stopPropagation()}
               onChange={(event) => onChange({ text: event.target.value })}
@@ -2539,9 +3860,16 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           inputPorts={inputPorts}
           pendingInputKind={pendingInputKind}
           running={running}
+          outputKindLocked={tvcVideoTask}
+          tvcVideoTask={tvcVideoTask}
+          tvcVideoManualOverride={tvcVideoManualOverride}
+          tvcVideoHistorical={tvcVideoHistorical}
+          canRun={canRunTvcVideoTask}
           onChange={onChange}
           onKindChange={onKindChange}
           onModelChange={onModelChange}
+          onRemoveTvcImageInput={onRemoveTvcImageInput}
+          onMoveTvcImageInput={onMoveTvcImageInput}
           onRun={onRun}
         />
       ) : (
@@ -2549,6 +3877,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           node={node}
           assetUrl={assetUrl}
           assetLoading={assetLoading}
+          onConfirmSubmissionRetry={onConfirmSubmissionRetry}
           onResume={onResume}
           onMediaLoad={onMediaLoad}
         />
@@ -2563,17 +3892,50 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   previous.connectionTarget === next.connectionTarget &&
   previous.pendingInputKind === next.pendingInputKind &&
   sameWorkflowInputPorts(previous.inputPorts, next.inputPorts) &&
-  previous.running === next.running,
+  previous.running === next.running &&
+  previous.protectedNode === next.protectedNode &&
+  previous.tvcVideoTask === next.tvcVideoTask &&
+  previous.tvcVideoManualOverride === next.tvcVideoManualOverride &&
+  previous.tvcVideoHistorical === next.tvcVideoHistorical &&
+  previous.canRunTvcVideoTask === next.canRunTvcVideoTask &&
+  previous.tvcStoryboard === next.tvcStoryboard &&
+  previous.tvcPhase === next.tvcPhase &&
+  previous.tvcPromptPlan === next.tvcPromptPlan &&
+  previous.tvcSegmentControlsReadOnly === next.tvcSegmentControlsReadOnly &&
+  previous.tvcPromptUnits === next.tvcPromptUnits,
 );
 
-function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChange, onKindChange, onModelChange, onRun }: {
+function SchedulerControls({
+  node,
+  inputPorts,
+  pendingInputKind,
+  running,
+  outputKindLocked,
+  tvcVideoTask,
+  tvcVideoManualOverride,
+  tvcVideoHistorical,
+  canRun,
+  onChange,
+  onKindChange,
+  onModelChange,
+  onRemoveTvcImageInput,
+  onMoveTvcImageInput,
+  onRun,
+}: {
   node: WorkflowSchedulerNode;
   inputPorts: WorkflowInputPort[];
   pendingInputKind?: ComposerMode;
   running: boolean;
+  outputKindLocked: boolean;
+  tvcVideoTask: boolean;
+  tvcVideoManualOverride: boolean;
+  tvcVideoHistorical: boolean;
+  canRun: boolean;
   onChange: (update: Partial<WorkflowNode>) => void;
   onKindChange: (kind: ComposerMode) => void;
   onModelChange: (model: string) => void;
+  onRemoveTvcImageInput: (edgeId: string) => void;
+  onMoveTvcImageInput: (edgeId: string, direction: "up" | "down") => void;
   onRun: () => void;
 }) {
   const config = getModelConfig(node.outputKind, node.model);
@@ -2583,22 +3945,65 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
       <div className="workflow-input-section">
         <span className="workflow-input-title">输入类型</span>
         <div className="workflow-input-list">
-          {inputPorts.map((port) => (
-            <div
+          {inputPorts.map((port, index) => {
+            const editableImageInput = tvcVideoTask &&
+              !tvcVideoHistorical &&
+              port.kind === "image";
+            const previousImageInput = inputPorts
+              .slice(0, index)
+              .some((candidate) => candidate.kind === "image");
+            const nextImageInput = inputPorts
+              .slice(index + 1)
+              .some((candidate) => candidate.kind === "image");
+            return <div
               key={port.edgeId}
               className={`workflow-input-row workflow-input-row-${port.kind}`}
               title={`${port.label} · ${port.sourceName}`}
-            >
+              >
               <span className="workflow-input-row-port" aria-hidden="true" />
               <strong>{port.label}</strong>
-              <span>{port.sourceName}</span>
-            </div>
-          ))}
+              <span className="workflow-input-row-name">{port.sourceName}</span>
+              {editableImageInput ? <span className="workflow-input-row-actions">
+                <button
+                  aria-label={`上移 ${port.sourceName}`}
+                  data-workflow-control
+                  disabled={!previousImageInput}
+                  type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onMoveTvcImageInput(port.edgeId, "up");
+                  }}
+                ><ChevronUp size={12} /></button>
+                <button
+                  aria-label={`下移 ${port.sourceName}`}
+                  data-workflow-control
+                  disabled={!nextImageInput}
+                  type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onMoveTvcImageInput(port.edgeId, "down");
+                  }}
+                ><ChevronDown size={12} /></button>
+                <button
+                  aria-label={`移除 ${port.sourceName}`}
+                  data-workflow-control
+                  type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemoveTvcImageInput(port.edgeId);
+                  }}
+                ><Trash2 size={11} /></button>
+              </span> : null}
+            </div>;
+          })}
           {pendingInputKind ? (
             <div className={`workflow-input-row workflow-input-row-${pendingInputKind} workflow-input-row-pending`}>
               <span className="workflow-input-row-port" aria-hidden="true" />
               <strong>新输入</strong>
-              <span>松开后连接</span>
+              <span className="workflow-input-row-name">松开后连接</span>
             </div>
           ) : null}
           {!inputPorts.length && !pendingInputKind ? (
@@ -2608,22 +4013,30 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
       </div>
       <div className="workflow-scheduler-fields">
         <div className="workflow-field-row">
-          <label>输出类型<select disabled={node.assetRole === "scheduler"} value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
+          <label>输出类型<select disabled={outputKindLocked || node.assetRole === "scheduler"} value={node.outputKind} onChange={(event) => onKindChange(event.target.value as ComposerMode)}>
             <option value="text">文本</option><option value="image">图片</option><option value="video">视频</option>
           </select></label>
-          <label>模型<select value={node.model} onChange={(event) => onModelChange(event.target.value)}>
+          <label>模型<select disabled={tvcVideoHistorical} value={node.model} onChange={(event) => onModelChange(event.target.value)}>
             {MODEL_CONFIGS[node.outputKind].map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
           </select></label>
         </div>
-        <label className="workflow-prompt">提示词<textarea value={node.prompt} placeholder="描述本节点要生成的内容…" onChange={(event) => onChange({ prompt: event.target.value, error: "" })} /></label>
+        <label className="workflow-prompt">提示词<textarea readOnly={tvcVideoHistorical} value={node.prompt} placeholder="描述本节点要生成的内容…" onChange={(event) => onChange({ prompt: event.target.value, error: "" })} /></label>
         {node.outputKind !== "text" ? <div className="workflow-field-row workflow-parameters">
-          <label>比例<select value={node.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.target.value })}>{config?.aspectRatios.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label>清晰度<select value={node.resolution} onChange={(event) => onChange({ resolution: event.target.value })}>{config?.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
-          {node.outputKind === "video" ? <label>时长<select value={node.duration} onChange={(event) => onChange({ duration: event.target.value })}>{config?.durations.map((value) => <option key={value} value={value}>{value} 秒</option>)}</select></label> : null}
-            <label>数量<select disabled={node.assetRole === "scheduler"} value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>比例<select disabled={tvcVideoHistorical} value={node.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.target.value })}>{config?.aspectRatios.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>清晰度<select disabled={tvcVideoHistorical} value={node.resolution} onChange={(event) => onChange({ resolution: event.target.value })}>{config?.resolutions.map((value) => <option key={value}>{value}</option>)}</select></label>
+          {node.outputKind === "video" ? <label>时长<select disabled={tvcVideoHistorical} value={node.duration} onChange={(event) => onChange({ duration: event.target.value })}>{config?.durations.map((value) => <option key={value} value={value}>{value} 秒</option>)}</select></label> : null}
+            <label>数量<select disabled={tvcVideoHistorical || node.assetRole === "scheduler"} value={node.outputCount} onChange={(event) => onChange({ outputCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((value) => <option key={value}>{value}</option>)}</select></label>
         </div> : null}
+        {tvcVideoTask ? <p className={`workflow-tvc-video-status${tvcVideoHistorical ? " workflow-tvc-video-status-historical" : ""}`}>
+          {tvcVideoHistorical
+            ? "历史版本：锁稿已更新，仅保留查看。"
+            : tvcVideoManualOverride
+              ? "已手动覆盖：可编辑参数、提示词和图片参考资产。"
+              : "锁稿版本：修改任一视频参数或图片参考后将成为手动覆盖版本。"}
+        </p> : null}
         {node.error ? <p className="workflow-scheduler-error">{node.error}</p> : null}
-        <button className="workflow-run" disabled={running} type="button" onClick={onRun}>
+        {!canRun ? <p className="workflow-scheduler-error">历史版本仅保留查看，不能再次运行。</p> : null}
+        <button className="workflow-run" disabled={running || !canRun} type="button" onClick={onRun}>
           {running ? <LoaderCircle className="animate-spin" size={15} /> : <Play size={15} fill="currentColor" />}
           {running ? "正在提交" : `运行 ${taskCount} 个任务`}
         </button>
@@ -2632,14 +4045,27 @@ function SchedulerControls({ node, inputPorts, pendingInputKind, running, onChan
   );
 }
 
-function ResultBody({ node, assetUrl, assetLoading, onResume, onMediaLoad }: {
+function ResultBody({ node, assetUrl, assetLoading, onConfirmSubmissionRetry, onResume, onMediaLoad }: {
   node: WorkflowResultNode;
   assetUrl?: string;
   assetLoading: boolean;
+  onConfirmSubmissionRetry: () => void;
   onResume: () => void;
   onMediaLoad: (width: number, height: number) => void;
 }) {
   if (node.status === "failed") return <p className="canvas-node-error">{node.error || "任务失败"}</p>;
+  if (node.status === "submission-unknown") {
+    return <div className="workflow-submission-unknown" data-workflow-control>
+      <strong>{WORKFLOW_SUBMISSION_UNKNOWN_PROGRESS}</strong>
+      <p>{node.error || WORKFLOW_SUBMISSION_UNKNOWN_ERROR}</p>
+      <button
+        className="workflow-submission-retry"
+        type="button"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={onConfirmSubmissionRetry}
+      >确认重新提交</button>
+    </div>;
+  }
   if (node.kind === "text" && node.status === "success") return <p className="canvas-node-text">{node.text}</p>;
   const mediaUrl = assetUrl || (node.assetId ? undefined : node.resultUrl);
   if (node.kind === "image" && mediaUrl) return (
@@ -2667,6 +4093,29 @@ function ResultBody({ node, assetUrl, assetLoading, onResume, onMediaLoad }: {
   if (node.status === "ready") return <div className="canvas-node-loading"><span>{node.progress || "待生成"}</span></div>;
   if (node.status === "paused") return <div className="canvas-node-loading"><span>{node.progress}</span><button className="workflow-resume" type="button" data-workflow-control onClick={onResume}><RotateCcw size={13} />继续查询</button></div>;
   return <div className="canvas-node-loading"><LoaderCircle className="animate-spin" size={20} /><span>{node.progress || "处理中"}</span></div>;
+}
+
+function SubmissionUnknownConfirmationCard({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return <div
+    className="workflow-submission-confirm-backdrop"
+    data-workflow-isolated
+    onPointerDown={(event) => event.stopPropagation()}
+  >
+    <section className="workflow-submission-confirm" role="dialog" aria-modal="true" aria-label="确认重新提交视频">
+      <h2>确认重新提交视频？</h2>
+      <p>首次请求没有返回任务编号，媒体平台可能已经接收并计费。重新提交可能产生重复费用。</p>
+      <div>
+        <button type="button" onClick={onCancel}>取消</button>
+        <button type="button" onClick={onConfirm}>确认重新提交</button>
+      </div>
+    </section>
+  </div>;
 }
 
 const WorkflowNodeOverlay = memo(function WorkflowNodeOverlay({ node, onConnectDown, onConnectMove, onConnectUp, onResizeDown, onResizeMove, onResizeUp }: {
@@ -2709,12 +4158,20 @@ const WorkflowNodeOverlay = memo(function WorkflowNodeOverlay({ node, onConnectD
   </>;
 }, (previous, next) => previous.node === next.node);
 
-function WorkflowCreationMenu({ point, onCreate }: { point: CreationMenu; onCreate: (type: ComposerMode | "scheduler") => void }) {
+function WorkflowCreationMenu({ point, tvc, onCreate }: {
+  point: CreationMenu;
+  tvc: boolean;
+  onCreate: (type: ComposerMode | "scheduler") => void;
+}) {
   const items = [
     { type: "text", label: "文本素材", icon: FileText },
     { type: "image", label: "图片素材", icon: ImageIcon },
-    { type: "video", label: "视频素材", icon: Video },
-    { type: "scheduler", label: "通用调度", icon: Workflow },
+    ...(tvc
+      ? []
+      : [
+          { type: "video" as const, label: "视频素材", icon: Video },
+          { type: "scheduler" as const, label: "通用调度", icon: Workflow },
+        ]),
   ] as const;
   return <div className="workflow-create-menu" data-workflow-isolated style={{ transform: `translate(${point.x}px, ${point.y}px)` }} onPointerDown={(event) => event.stopPropagation()}>
     {items.map((item) => <button key={item.type} type="button" onClick={() => onCreate(item.type)}><item.icon size={15} />{item.label}</button>)}
@@ -2723,15 +4180,17 @@ function WorkflowCreationMenu({ point, onCreate }: { point: CreationMenu; onCrea
 
 function WorkflowSchedulerMenu({
   menu,
+  tvc,
   onCreate,
 }: {
   menu: SchedulerMenu;
+  tvc: boolean;
   onCreate: (outputKind: ComposerMode) => void;
 }) {
   const items = [
     { kind: "text", label: "文本生成", icon: FileText },
     { kind: "image", label: "图片生成", icon: ImageIcon },
-    { kind: "video", label: "视频生成", icon: Video },
+    ...(tvc ? [] : [{ kind: "video" as const, label: "视频生成", icon: Video }]),
   ] as const;
   return (
     <div
@@ -2754,6 +4213,563 @@ function WorkflowSchedulerMenu({
         </button>
       ))}
     </div>
+  );
+}
+
+function tvcStageLabel(phase: "intake" | "script-draft" | "script-locked" | "prompt-final") {
+  return phase === "intake"
+    ? "资料梳理"
+    : phase === "script-draft"
+      ? "分镜草案"
+      : phase === "script-locked"
+        ? "已锁稿"
+        : "提示词完成";
+}
+
+function TvcLockDialog({
+  storyboard,
+  onCancel,
+  onConfirm,
+}: {
+  storyboard: TvcStoryboard;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="workflow-project-editor-backdrop" data-workflow-isolated>
+      <section className="workflow-project-editor tvc-lock-dialog" role="dialog" aria-modal="true" aria-label="锁定 TVC 分镜稿">
+        <h2>锁定 TVC 分镜稿？</h2>
+        <p className="tvc-dialog-copy">
+          当前分镜表共 {storyboard.rows.length} 镜、{storyboard.targetDurationSeconds} 秒。锁稿不产生图片或视频费用。
+        </p>
+        <p className="tvc-dialog-copy">
+          锁定后，Agent 只能基于这份分镜表转换最终视频提示词；后续修改脚本、镜头、时长、旁白或场景会自动回到草案并作废提示词。
+        </p>
+        <div>
+          <button type="button" onClick={onCancel}>返回检查</button>
+          <button type="button" className="tvc-confirm-button" onClick={onConfirm}>确认锁稿</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+type TvcStoryboardEditableTextField =
+  | "shotNumber"
+  | "referenceScene"
+  | "sceneTime"
+  | "shotSizeLens"
+  | "camera"
+  | "composition"
+  | "performance"
+  | "narration"
+  | "sound"
+  | "transition"
+  | "constraints";
+
+const TVC_STORYBOARD_TEXT_COLUMNS: Array<{
+  key: TvcStoryboardEditableTextField;
+  label: string;
+}> = [
+  { key: "referenceScene", label: "参考场景图" },
+  { key: "sceneTime", label: "场景/时间" },
+  { key: "shotSizeLens", label: "景别与焦段" },
+  { key: "camera", label: "机位与运镜" },
+  { key: "composition", label: "画面构图" },
+  { key: "performance", label: "角色动作与表演" },
+  { key: "narration", label: "旁白" },
+  { key: "sound", label: "环境声与拟声" },
+  { key: "transition", label: "转场/切点" },
+  { key: "constraints", label: "连续性与生成限制" },
+];
+
+function tvcTableDraftRows(storyboard: TvcStoryboard): TvcStoryboardTableDraftRow[] {
+  return storyboard.rows.map((row) => ({
+    shotNumber: row.shotNumber,
+    durationSeconds: row.durationSeconds,
+    referenceScene: row.referenceScene,
+    sceneTime: row.sceneTime,
+    shotSizeLens: row.shotSizeLens,
+    camera: row.camera,
+    composition: row.composition,
+    performance: row.performance,
+    narration: row.narration,
+    sound: row.sound,
+    transition: row.transition,
+    constraints: row.constraints,
+    referenceNodeIds: [...row.referenceNodeIds],
+  }));
+}
+
+function tvcTimecode(second: number) {
+  const safeSecond = Math.max(0, second);
+  return `${String(Math.floor(safeSecond / 60)).padStart(2, "0")}:${String(safeSecond % 60).padStart(2, "0")}`;
+}
+
+function TvcStoryboardNodePreview({
+  storyboard,
+  phase,
+  hasPromptPlan,
+  segmentControlsReadOnly,
+  onOpen,
+  onEdit,
+  onAdjustSegments,
+  onExport,
+}: {
+  storyboard: TvcStoryboard;
+  phase: "intake" | "script-draft" | "script-locked" | "prompt-final";
+  hasPromptPlan: boolean;
+  segmentControlsReadOnly: boolean;
+  onOpen: () => void;
+  onEdit: () => void;
+  onAdjustSegments: () => void;
+  onExport: () => void;
+}) {
+  return (
+    <section
+      className="tvc-storyboard-node-preview"
+      data-workflow-isolated
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div>
+        <strong>{storyboard.title}</strong>
+        <p>{tvcStageLabel(phase)} · {storyboard.rows.length} 镜 · {storyboard.targetDurationSeconds} 秒</p>
+        <p className="tvc-storyboard-node-status">{storyboard.validationStatus}</p>
+      </div>
+      <ol>
+        {storyboard.rows.slice(0, 3).map((row) => (
+          <li key={row.shotNumber}>
+            <strong>{row.shotNumber}</strong>
+            <span>{row.timecode} · {row.referenceScene}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="tvc-storyboard-node-actions">
+        <button data-workflow-control type="button" aria-label="展开分镜表" onClick={onOpen}>展开分镜表</button>
+        <button data-workflow-control type="button" aria-label="编辑分镜表" onClick={onEdit}>编辑</button>
+        {phase === "prompt-final" ? (
+          <button
+            data-workflow-control
+            aria-label="调整镜头段"
+            disabled={segmentControlsReadOnly || !hasPromptPlan}
+            title={segmentControlsReadOnly
+              ? "已有提交或历史视频，镜头段只能查看。"
+              : hasPromptPlan
+                ? "按锁定分镜调整每个视频段的切点。"
+                : "请先按 30 秒重新输出。"}
+            type="button"
+            onClick={onAdjustSegments}
+          >调整镜头段</button>
+        ) : null}
+        <button data-workflow-control type="button" aria-label="导出 Excel" onClick={onExport}><Download size={14} />导出 Excel</button>
+      </div>
+    </section>
+  );
+}
+
+function TvcPromptNodePreview({
+  promptUnits,
+  onOpen,
+}: {
+  promptUnits?: TvcPromptUnit[];
+  onOpen: () => void;
+}) {
+  return (
+    <section
+      className="tvc-prompt-node-preview"
+      data-workflow-isolated
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <p>{promptUnits?.length ? `已生成 ${promptUnits.length} 个锁稿提示词单元。` : "尚未生成锁稿后的最终提示词。"}</p>
+      <button data-workflow-control type="button" aria-label="查看最终提示词" onClick={onOpen}>查看最终提示词</button>
+    </section>
+  );
+}
+
+type TvcStoryboardTimedRow = {
+  row: TvcStoryboard["rows"][number];
+  index: number;
+  startSecond: number;
+  endSecond: number;
+};
+
+function tvcStoryboardTimedRows(storyboard: TvcStoryboard): TvcStoryboardTimedRow[] {
+  let startSecond = 0;
+  return storyboard.rows.map((row, index) => {
+    const endSecond = startSecond + row.durationSeconds;
+    const timed = { row, index, startSecond, endSecond };
+    startSecond = endSecond;
+    return timed;
+  });
+}
+
+type TvcPromptPlanPreview = {
+  startSecond: number;
+  endSecond: number;
+  shotNumbers: string[];
+  referenceNodeIds: string[];
+};
+
+function tvcPromptPlanPreview(
+  rows: TvcStoryboardTimedRow[],
+  cutAfterShotNumbers: ReadonlySet<string>,
+): TvcPromptPlanPreview[] {
+  const segments: TvcPromptPlanPreview[] = [];
+  let startSecond = 0;
+  let shotNumbers: string[] = [];
+  let referenceNodeIds: string[] = [];
+  for (const timed of rows) {
+    shotNumbers.push(timed.row.shotNumber);
+    referenceNodeIds = [
+      ...referenceNodeIds,
+      ...timed.row.referenceNodeIds.filter((nodeId) => !referenceNodeIds.includes(nodeId)),
+    ];
+    if (!cutAfterShotNumbers.has(timed.row.shotNumber) && timed.index !== rows.length - 1) continue;
+    segments.push({
+      startSecond,
+      endSecond: timed.endSecond,
+      shotNumbers,
+      referenceNodeIds,
+    });
+    startSecond = timed.endSecond;
+    shotNumbers = [];
+    referenceNodeIds = [];
+  }
+  return segments;
+}
+
+function TvcPromptPlanEditor({
+  storyboard,
+  promptPlan,
+  readOnly,
+  regeneration,
+  onSave,
+}: {
+  storyboard: TvcStoryboard;
+  promptPlan: TvcPromptPlanSegment[];
+  readOnly: boolean;
+  regeneration: TvcPromptRegenerationState;
+  onSave: (boundaries: TvcPromptPlanBoundary[]) => void;
+}) {
+  const rows = useMemo(() => tvcStoryboardTimedRows(storyboard), [storyboard]);
+  const [cutAfterShotNumbers, setCutAfterShotNumbers] = useState(() => new Set(
+    promptPlan.map((segment) => segment.endSecond)
+      .flatMap((endSecond) => rows.find((item) => item.endSecond === endSecond)?.row.shotNumber ?? []),
+  ));
+  const segments = useMemo(
+    () => tvcPromptPlanPreview(rows, cutAfterShotNumbers),
+    [cutAfterShotNumbers, rows],
+  );
+  const invalidSegment = segments.find((segment) =>
+    segment.endSecond - segment.startSecond > 30 ||
+    segment.endSecond - segment.startSecond < 4,
+  );
+
+  function toggleCut(shotNumber: string, checked: boolean) {
+    setCutAfterShotNumbers((current) => {
+      const next = new Set(current);
+      if (checked) next.add(shotNumber);
+      else next.delete(shotNumber);
+      return next;
+    });
+  }
+
+  return (
+    <section className="tvc-prompt-plan-editor" aria-label="调整镜头段">
+      <header>
+        <div>
+          <h3>调整镜头段</h3>
+          <p>按已锁定的分镜行选择切点。每个视频段必须为 4–30 秒；保存后只会重新请求文字提示词，不会生成媒体。</p>
+        </div>
+        <p className="tvc-prompt-plan-total">项目范围 {tvcTimecode(0)}–{tvcTimecode(storyboard.targetDurationSeconds)} · {segments.length} 段</p>
+      </header>
+      {readOnly ? (
+        <p className="tvc-prompt-plan-readonly">已有提交或历史视频结果。为避免改写历史任务，镜头段仅可查看。</p>
+      ) : null}
+      <div className="tvc-prompt-plan-segments" aria-label="当前视频段">
+        {segments.map((segment, index) => {
+          const duration = segment.endSecond - segment.startSecond;
+          const persisted = promptPlan[index];
+          return (
+            <article key={`${segment.startSecond}-${segment.endSecond}`}>
+              <strong>{persisted?.ref ?? `segment-${String(index + 1).padStart(3, "0")}`}</strong>
+              <span>项目时间 {tvcTimecode(segment.startSecond)}–{tvcTimecode(segment.endSecond)}</span>
+              <span>实际时长 {duration} 秒</span>
+              <span>包含镜头 {segment.shotNumbers.join("、")}</span>
+            </article>
+          );
+        })}
+      </div>
+      <div className="tvc-prompt-plan-rows">
+        {rows.map((timed) => {
+          const segmentIndex = segments.findIndex((segment) =>
+            timed.startSecond >= segment.startSecond && timed.endSecond <= segment.endSecond,
+          );
+          const isFinalRow = timed.index === rows.length - 1;
+          return (
+            <label key={timed.row.shotNumber}>
+              <input
+                aria-label={`在镜头 ${timed.row.shotNumber} 后切段`}
+                checked={isFinalRow || cutAfterShotNumbers.has(timed.row.shotNumber)}
+                disabled={readOnly || isFinalRow}
+                type="checkbox"
+                onChange={(event) => toggleCut(timed.row.shotNumber, event.target.checked)}
+              />
+              <span>{timed.row.shotNumber} · {tvcTimecode(timed.startSecond)}–{tvcTimecode(timed.endSecond)} · {timed.row.durationSeconds} 秒</span>
+              <em>视频段 {segmentIndex + 1}</em>
+              <small>{isFinalRow ? "项目末镜固定收段" : "在本镜后切段"}</small>
+            </label>
+          );
+        })}
+      </div>
+      {invalidSegment ? (
+        <p className="tvc-storyboard-edit-error">{tvcTimecode(invalidSegment.startSecond)}–{tvcTimecode(invalidSegment.endSecond)} 的视频段不在 4–30 秒范围内。</p>
+      ) : null}
+      <div className="tvc-prompt-plan-actions">
+        <button
+          className="tvc-storyboard-save"
+          disabled={readOnly || Boolean(invalidSegment) || regeneration?.state === "awaiting"}
+          type="button"
+          onClick={() => onSave(segments.map(({ startSecond, endSecond }) => ({ startSecond, endSecond })))}
+        >{regeneration?.state === "awaiting" ? "正在重建最终提示词…" : "保存镜头段并重新输出"}</button>
+      </div>
+    </section>
+  );
+}
+
+function TvcStoryboardCanvasPanel({
+  storyboard,
+  promptPlan,
+  promptUnits,
+  videoSchedulers,
+  initialTab,
+  initialEditing,
+  initialSegmentEditing,
+  phase,
+  segmentControlsReadOnly,
+  promptRegeneration,
+  onClose,
+  onExport,
+  onSave,
+  onPreparePromptPlan,
+  onSavePromptPlan,
+}: {
+  storyboard: TvcStoryboard;
+  promptPlan?: TvcPromptPlanSegment[];
+  promptUnits?: TvcPromptUnit[];
+  videoSchedulers: WorkflowSchedulerNode[];
+  initialTab: "storyboard" | "prompt";
+  initialEditing: boolean;
+  initialSegmentEditing: boolean;
+  phase: "intake" | "script-draft" | "script-locked" | "prompt-final";
+  segmentControlsReadOnly: boolean;
+  promptRegeneration: TvcPromptRegenerationState;
+  onClose: () => void;
+  onExport: () => void;
+  onSave: (rows: TvcStoryboardTableDraftRow[]) => void;
+  onPreparePromptPlan: () => void;
+  onSavePromptPlan: (boundaries: TvcPromptPlanBoundary[]) => void;
+}) {
+  const [tab, setTab] = useState(initialTab);
+  const [editing, setEditing] = useState(initialEditing);
+  const [segmentEditing, setSegmentEditing] = useState(initialSegmentEditing);
+  const [draftRows, setDraftRows] = useState<TvcStoryboardTableDraftRow[]>(() =>
+    tvcTableDraftRows(storyboard),
+  );
+  const [error, setError] = useState("");
+
+  const rowsWithTimecode = useMemo(() => {
+    return draftRows.reduce<{
+      cursor: number;
+      rows: Array<{ row: TvcStoryboardTableDraftRow; timecode: string }>;
+    }>((state, row) => {
+      const duration = Number.isInteger(row.durationSeconds) && row.durationSeconds > 0
+        ? row.durationSeconds
+        : 0;
+      return {
+        cursor: state.cursor + duration,
+        rows: [...state.rows, {
+        row,
+          timecode: `${tvcTimecode(state.cursor)}–${tvcTimecode(state.cursor + duration)}`,
+        }],
+      };
+    }, { cursor: 0, rows: [] }).rows;
+  }, [draftRows]);
+
+  function updateTextRow(
+    index: number,
+    field: TvcStoryboardEditableTextField,
+    value: string,
+  ) {
+    setDraftRows((current) => current.map((row, rowIndex) =>
+      rowIndex === index ? { ...row, [field]: value } : row,
+    ));
+  }
+
+  function updateDuration(index: number, value: string) {
+    const durationSeconds = Number(value);
+    setDraftRows((current) => current.map((row, rowIndex) =>
+      rowIndex === index
+        ? { ...row, durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0 }
+        : row,
+    ));
+  }
+
+  function cancelEditing() {
+    setDraftRows(tvcTableDraftRows(storyboard));
+    setError("");
+    setEditing(false);
+  }
+
+  function saveEditing() {
+    try {
+      onSave(draftRows);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "无法保存 TVC 分镜表。");
+    }
+  }
+
+  return (
+    <section
+      aria-label="画布内分镜表"
+      className="tvc-storyboard-canvas-panel"
+      data-workflow-isolated
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <header className="tvc-storyboard-canvas-header">
+        <div>
+          <h2>{storyboard.title} · 画布内分镜表</h2>
+          <p>{tvcStageLabel(phase)} · {storyboard.validationStatus} · 目标 {storyboard.targetDurationSeconds} 秒</p>
+        </div>
+        <div className="tvc-storyboard-canvas-actions">
+          {phase === "prompt-final" ? (
+            <button
+              aria-label="按30秒重新输出"
+              disabled={segmentControlsReadOnly || promptRegeneration?.state === "awaiting"}
+              title={segmentControlsReadOnly
+                ? "已有提交或历史视频，不能改写镜头段。"
+                : "按锁定分镜重建每段不超过 30 秒的最终提示词。"}
+              type="button"
+              onClick={onPreparePromptPlan}
+            >按30秒重新输出</button>
+          ) : null}
+          {phase === "prompt-final" && promptPlan?.length ? (
+            <button
+              aria-label="调整镜头段"
+              disabled={segmentControlsReadOnly}
+              type="button"
+              onClick={() => {
+                setTab("prompt");
+                setSegmentEditing(true);
+              }}
+            >调整镜头段</button>
+          ) : null}
+          {tab === "storyboard" && !editing && !segmentEditing ? (
+            <button type="button" aria-label="编辑分镜表" onClick={() => setEditing(true)}>编辑</button>
+          ) : null}
+          {editing ? (
+            <>
+              <button type="button" aria-label="取消编辑" onClick={cancelEditing}>取消编辑</button>
+              <button type="button" aria-label="保存分镜表" className="tvc-storyboard-save" onClick={saveEditing}>保存分镜表</button>
+            </>
+          ) : null}
+          <button type="button" aria-label="导出 Excel" onClick={onExport}><Download size={15} />导出 Excel</button>
+          <button type="button" aria-label="关闭画布内分镜表" className="tvc-storyboard-close" onClick={onClose}><X size={17} /></button>
+        </div>
+      </header>
+      <div className="tvc-storyboard-tabs" role="tablist" aria-label="TVC 分镜表视图">
+        <button
+          aria-selected={tab === "storyboard"}
+          role="tab"
+          type="button"
+          onClick={() => {
+            setTab("storyboard");
+            setSegmentEditing(false);
+          }}
+        >镜头分镜表</button>
+        <button
+          aria-label="最终提示词"
+          aria-selected={tab === "prompt"}
+          role="tab"
+          type="button"
+          onClick={() => setTab("prompt")}
+        >最终提示词{promptUnits?.length ? `（${promptUnits.length}）` : ""}</button>
+      </div>
+      <div className="tvc-storyboard-canvas-content">
+        {tab === "storyboard" ? (
+          <div className="tvc-storyboard-table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>镜号</th>
+                  <th>时间码</th>
+                  <th>时长（秒）</th>
+                  {TVC_STORYBOARD_TEXT_COLUMNS.map((column) => <th key={column.key}>{column.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rowsWithTimecode.map(({ row, timecode }, index) => (
+                  <tr key={`${index}-${row.shotNumber}`}>
+                    <td>
+                      {editing ? <input aria-label={`第 ${index + 1} 镜镜号`} value={row.shotNumber} onChange={(event) => updateTextRow(index, "shotNumber", event.target.value)} /> : row.shotNumber}
+                    </td>
+                    <td>{editing ? <input aria-label={`第 ${index + 1} 镜时间码`} readOnly value={timecode} /> : timecode}</td>
+                    <td>
+                      {editing ? <input aria-label={`第 ${index + 1} 镜时长`} min="1" step="1" type="number" value={row.durationSeconds} onChange={(event) => updateDuration(index, event.target.value)} /> : row.durationSeconds}
+                    </td>
+                    {TVC_STORYBOARD_TEXT_COLUMNS.map((column) => (
+                      <td key={column.key}>
+                        {editing ? <textarea aria-label={`第 ${index + 1} 镜${column.label}`} value={row[column.key]} onChange={(event) => updateTextRow(index, column.key, event.target.value)} /> : row[column.key]}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : segmentEditing && promptPlan?.length ? (
+          <TvcPromptPlanEditor
+            storyboard={storyboard}
+            promptPlan={promptPlan}
+            readOnly={segmentControlsReadOnly}
+            regeneration={promptRegeneration}
+            onSave={onSavePromptPlan}
+          />
+        ) : videoSchedulers.length ? (
+          <section className="tvc-storyboard-prompt-units">
+            {videoSchedulers.map((scheduler) => {
+              const unit = promptUnits?.find((item) => item.ref === scheduler.tvcUnitRef);
+              return (
+                <article key={scheduler.id}>
+                  <h3>{scheduler.label || scheduler.tvcUnitRef || "最终提示词调度"}</h3>
+                  <p>
+                    项目时间 {unit ? `${tvcTimecode(unit.startSecond)}–${tvcTimecode(unit.endSecond)}` : "历史任务"}
+                    {unit ? ` · 实际时长 ${unit.endSecond - unit.startSecond} 秒 · 镜头 ${unit.shotNumbers.join("、")}` : ""}
+                  </p>
+                  <p>参考资产：{unit?.referenceNodeIds.length ? unit.referenceNodeIds.join("、") : "未使用图片参考"}</p>
+                  <pre>{scheduler.prompt}</pre>
+                </article>
+              );
+            })}
+          </section>
+        ) : (
+          <p className="tvc-storyboard-empty-prompt">
+            {promptRegeneration?.state === "awaiting"
+              ? promptRegeneration.message
+              : phase === "script-locked"
+                ? "镜头段已锁定，正在等待仅文字的最终提示词输出。"
+                : "锁稿后可在此查看按平台时长拆分的最终提示词。"}
+          </p>
+        )}
+      </div>
+      {editing ? <p className="tvc-storyboard-edit-note">时间码会随时长自动连续重算；保存后将回到分镜草案并作废已有最终提示词。</p> : null}
+      {promptRegeneration ? (
+        <p className={`tvc-prompt-regeneration-status tvc-prompt-regeneration-${promptRegeneration.state}`} role="status">
+          {promptRegeneration.message}
+        </p>
+      ) : null}
+      {error ? <p className="tvc-storyboard-edit-error">{error}</p> : null}
+    </section>
   );
 }
 

@@ -1,9 +1,11 @@
-import COS from "cos-nodejs-sdk-v5";
+import { createRequire } from "node:module";
+import type COS from "cos-nodejs-sdk-v5";
 import { requireEnvironment } from "./config.ts";
 
 export { workflowObjectKey } from "./storage-rules.ts";
 
 let client: COS | undefined;
+const requireNodeModule = createRequire(import.meta.url);
 
 function storageConfig() {
   return {
@@ -13,7 +15,8 @@ function storageConfig() {
 }
 
 function storageClient() {
-  client ??= new COS({
+  const COSClient = requireNodeModule("cos-nodejs-sdk-v5") as typeof COS;
+  client ??= new COSClient({
     SecretId: requireEnvironment("COS_SECRET_ID"),
     SecretKey: requireEnvironment("COS_SECRET_KEY"),
   });
@@ -37,6 +40,21 @@ export async function createUploadUrl(input: {
       "content-type": input.mimeType,
     },
   } as COS.GetObjectUrlParams & { Headers: Record<string, string> });
+}
+
+export async function createReadUrl(input: {
+  key: string;
+  expiresSeconds?: number;
+}) {
+  const config = storageConfig();
+  return storageClient().getObjectUrl({
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: input.key,
+    Method: "GET",
+    Sign: true,
+    Expires: input.expiresSeconds ?? 60 * 60 * 24,
+  } as COS.GetObjectUrlParams);
 }
 
 export async function inspectObject(key: string) {
