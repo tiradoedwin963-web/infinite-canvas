@@ -28,7 +28,7 @@ test("offers an isolated TVC project flow with explicit lock and storyboard expo
   assert.doesNotMatch(canvas, /locked=\{tvcVideoTask\}/);
   assert.match(canvas, /onRemoveTvcImageInput/);
   assert.match(canvas, /onMoveTvcImageInput/);
-  assert.match(canvas, /TVC 视频仅可添加本项目已成功生成的图片资产作为参考图/);
+  assert.match(canvas, /TVC 视频仅可添加本项目已成功图片资产或已上传品牌 Logo 作为参考图/);
   assert.match(canvas, /最终提示词文本连线保留；仅可移除参考媒体资产/);
   assert.match(canvas, /submission-unknown/);
   assert.match(canvas, /确认重新提交/);
@@ -102,6 +102,18 @@ test("offers an isolated TVC project flow with explicit lock and storyboard expo
   assert.match(canvas, /TvcStoryboardCanvasPanel/);
   assert.match(canvas, /画布内分镜表/);
   assert.match(canvas, /saveTvcStoryboardTableDraft/);
+  assert.match(canvas, /TvcAgentSettingsCard/);
+  assert.match(canvas, /上传品牌 Logo/);
+  assert.match(canvas, /正片片头/);
+  assert.match(canvas, /正片片尾/);
+  assert.match(canvas, /独立 Logo 视频/);
+  assert.match(canvas, /加入旁白/);
+  assert.match(canvas, /不加旁白/);
+  assert.match(canvas, /不会输出旁白，但会保留角色对白、环境声和拟声/);
+  assert.match(canvas, /tvc-logo-video-scheduler/);
+  assert.match(canvas, /tvc-logo-prompt/);
+  assert.match(canvas, /isTvcVideoSchedulerReference/);
+  assert.match(sidebar, /contextControls\?: ReactNode/);
   assert.match(styles, /\.workflow-project-mode \{/);
   assert.match(styles, /\.tvc-storyboard-canvas-panel \{/);
   assert.match(styles, /\.tvc-prompt-plan-editor \{/);

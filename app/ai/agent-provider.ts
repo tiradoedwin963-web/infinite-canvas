@@ -86,6 +86,41 @@ function validateTvcPromptPlan(value: unknown): AgentTvcPromptPlanSegment[] {
   });
 }
 
+function validateTvcLogo(
+  value: unknown,
+): NonNullable<AgentTvcSnapshot["logo"]> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new CanvasAgentError("TVC 品牌 Logo 设置无效。", 400);
+  }
+  const nodeId = typeof value.nodeId === "string" ? value.nodeId.trim() : "";
+  const placement = value.placement;
+  const durationSeconds = typeof value.durationSeconds === "number"
+    ? value.durationSeconds
+    : undefined;
+  if (
+    !nodeId ||
+    (placement !== "opening" && placement !== "closing" && placement !== "standalone") ||
+    durationSeconds === undefined ||
+    !Number.isInteger(durationSeconds) ||
+    durationSeconds < 4 ||
+    durationSeconds > 30
+  ) {
+    throw new CanvasAgentError("TVC 品牌 Logo 设置无效。", 400);
+  }
+  return { nodeId, placement, durationSeconds };
+}
+
+function validateTvcPromptOptions(
+  value: unknown,
+): NonNullable<AgentTvcSnapshot["promptOptions"]> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || (value.narration !== "include" && value.narration !== "omit")) {
+    throw new CanvasAgentError("TVC 旁白设置无效。", 400);
+  }
+  return { narration: value.narration };
+}
+
 function validateTvcSnapshot(value: unknown): AgentTvcSnapshot | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new CanvasAgentError("TVC 项目状态无效。", 400);
@@ -139,6 +174,8 @@ function validateTvcSnapshot(value: unknown): AgentTvcSnapshot | undefined {
   const promptPlan = value.promptPlan === undefined
     ? undefined
     : validateTvcPromptPlan(value.promptPlan);
+  const logo = validateTvcLogo(value.logo);
+  const promptOptions = validateTvcPromptOptions(value.promptOptions);
   return {
     projectId,
     stage,
@@ -147,6 +184,8 @@ function validateTvcSnapshot(value: unknown): AgentTvcSnapshot | undefined {
     ...(title ? { title } : {}),
     ...(targetModel ? { targetModel } : {}),
     ...(targetMaxDuration !== undefined ? { targetMaxDuration } : {}),
+    ...(logo ? { logo } : {}),
+    ...(promptOptions ? { promptOptions } : {}),
     ...(promptPlan ? { promptPlan } : {}),
   };
 }
@@ -320,7 +359,7 @@ function systemPrompt(
 当前会话阶段：${phase}。
 当前画布类型：${canvas.mode}。
 ${canvas.mode === "workflow" && canvas.tvc
-  ? `当前 TVC 项目 ID：${canvas.tvc.projectId}。当前 TVC 阶段：${canvas.tvc.stage}。当前 TVC 修订号：${canvas.tvc.revision}。${canvas.tvc.lockedRevision !== undefined ? `当前锁定分镜修订号：${canvas.tvc.lockedRevision}。` : ""}${canvas.tvc.title ? `项目名称：${canvas.tvc.title}。` : ""}${canvas.tvc.targetModel ? `目标视频平台：${canvas.tvc.targetModel}。` : ""}${canvas.tvc.promptPlan ? `\n当前已持久化的 30 秒提示词段计划（唯一权威，必须逐段原样复制 ref、全片起止秒、镜头顺序与参考资产顺序；只补写每段 prompt）：${JSON.stringify(canvas.tvc.promptPlan)}。` : ""}`
+  ? `当前 TVC 项目 ID：${canvas.tvc.projectId}。当前 TVC 阶段：${canvas.tvc.stage}。当前 TVC 修订号：${canvas.tvc.revision}。${canvas.tvc.lockedRevision !== undefined ? `当前锁定分镜修订号：${canvas.tvc.lockedRevision}。` : ""}${canvas.tvc.title ? `项目名称：${canvas.tvc.title}。` : ""}${canvas.tvc.targetModel ? `目标视频平台：${canvas.tvc.targetModel}。` : ""}${canvas.tvc.logo ? `\n当前品牌 Logo：节点 ${canvas.tvc.logo.nodeId}，用途 ${canvas.tvc.logo.placement}，时长 ${canvas.tvc.logo.durationSeconds} 秒。` : ""}${canvas.tvc.promptOptions ? `\n当前最终提示词旁白选项：${canvas.tvc.promptOptions.narration}。` : "\n当前最终提示词旁白选项尚未设置；新项目必须先让用户选择加入或不加旁白。"}${canvas.tvc.promptPlan ? `\n当前已持久化的 30 秒提示词段计划（唯一权威，必须逐段原样复制 ref、全片起止秒、镜头顺序与参考资产顺序；只补写每段 prompt）：${JSON.stringify(canvas.tvc.promptPlan)}。` : ""}`
   : ""}
 可用于 generate_content 的 mode/model 组合：${models}。model 字段只能填写 model 值，不得添加 mode 前缀。
 
@@ -459,6 +498,62 @@ function localPromptTimecode(endSecond: number) {
   return `00:00–00:${String(endSecond).padStart(2, "0")}`;
 }
 
+function hasForbiddenCrossSegmentCut(prompt: string) {
+  return /\b[JL][ -]?cut\b/i.test(prompt);
+}
+
+function validateTvcStoryboardLogoRow(
+  tvc: AgentTvcSnapshot,
+  operation: Extract<AgentResponse["operations"][number], {
+    type: "write_tvc_storyboard_draft";
+  }>,
+) {
+  const logo = tvc.logo;
+  const logoRows = operation.rows.filter((row) => row.kind === "logo-animation");
+  if (!logo || logo.placement === "standalone") {
+    if (logoRows.length) {
+      throw new Error("未设置正片品牌 Logo 时不得写入 Logo 动效分镜。");
+    }
+    return;
+  }
+  const expectedIndex = logo.placement === "opening" ? 0 : operation.rows.length - 1;
+  const logoRow = operation.rows[expectedIndex];
+  if (
+    logoRows.length !== 1 ||
+    logoRow?.kind !== "logo-animation" ||
+    logoRow.durationSeconds !== logo.durationSeconds ||
+    !logoRow.referenceNodeIds.includes(logo.nodeId)
+  ) {
+    throw new Error("正片品牌 Logo 必须作为唯一的首镜或末镜动效分镜，并引用当前 Logo。");
+  }
+}
+
+function validateTvcStandaloneLogoUnit(
+  tvc: AgentTvcSnapshot,
+  operation: Extract<AgentResponse["operations"][number], {
+    type: "create_tvc_prompt_package";
+  }>,
+) {
+  const standaloneLogoUnit = operation.standaloneLogoUnit;
+  if (tvc.logo?.placement !== "standalone") {
+    if (standaloneLogoUnit) {
+      throw new Error("未选择独立 Logo 视频时不得返回独立 Logo 提示词单元。");
+    }
+    return;
+  }
+  const logo = tvc.logo;
+  if (
+    !standaloneLogoUnit ||
+    standaloneLogoUnit.ref !== "logo-animation" ||
+    standaloneLogoUnit.durationSeconds !== logo.durationSeconds ||
+    !hasSameStrings(standaloneLogoUnit.referenceNodeIds, [logo.nodeId]) ||
+    !standaloneLogoUnit.prompt.includes(localPromptTimecode(logo.durationSeconds)) ||
+    hasForbiddenCrossSegmentCut(standaloneLogoUnit.prompt)
+  ) {
+    throw new Error("独立 Logo 提示词必须匹配当前 Logo、时长和本段本地时间轴，且不得包含 J-cut 或 L-cut。");
+  }
+}
+
 function validateTvcPromptPackageAgainstPlan(
   tvc: AgentTvcSnapshot,
   operation: Extract<AgentResponse["operations"][number], {
@@ -485,7 +580,7 @@ function validateTvcPromptPackageAgainstPlan(
     const duration = unit.endSecond - unit.startSecond;
     if (
       !unit.prompt.includes(localPromptTimecode(duration)) ||
-      /\b[JL][ -]?cut\b/i.test(unit.prompt)
+      hasForbiddenCrossSegmentCut(unit.prompt)
     ) {
       throw new Error(`TVC 提示词单元 ${unit.ref} 必须使用本段 0 至 ${duration} 秒时间轴，且不得包含 J-cut 或 L-cut。`);
     }
@@ -532,6 +627,13 @@ export function validateTvcAgentOperations(
     }
     if (operation.type === "create_tvc_prompt_package") {
       validateTvcPromptPackageAgainstPlan(tvc, operation);
+      validateTvcStandaloneLogoUnit(tvc, operation);
+      if (tvc.stage === "script-locked" && !tvc.promptOptions) {
+        throw new Error("TVC 最终提示词前必须明确选择是否加入旁白。");
+      }
+    }
+    if (operation.type === "write_tvc_storyboard_draft") {
+      validateTvcStoryboardLogoRow(tvc, operation);
     }
   }
 }

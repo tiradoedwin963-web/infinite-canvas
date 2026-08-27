@@ -246,6 +246,10 @@ test("renders an isolated screen-space editable 13-column storyboard panel from 
   assert.match(canvas, /storyboard\.rows\.slice\(0, 3\)/);
   assert.match(canvas, /storyRole === "tvc-storyboard"/);
   assert.match(canvas, /storyRole === "tvc-prompt"/);
+  assert.match(canvas, /storyRole === "tvc-logo-prompt"/);
+  assert.match(canvas, /Logo 动效/);
+  assert.match(canvas, /旁白：\{row\.narration \|\| "无"\}/);
+  assert.match(canvas, /对白：\{row\.dialogue \|\| "无"\}/);
   assert.match(canvas, /onOpenTvcPrompt\(\)/);
   assert.match(canvas, /saveTvcStoryboardTableDraft/);
   assert.match(canvas, /saveTvcPromptPlanBoundaries/);

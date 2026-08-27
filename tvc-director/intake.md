@@ -49,3 +49,11 @@
 ```
 
 不得在首次创建 Brief 的同一 operation 中伪造尚未分配的实际 `project_id`。参考映射为空时使用空数组；不要虚构节点 ID、素材内容、授权、产品数据或市场结论。
+
+## 品牌 Logo
+
+如果用户要使用品牌 Logo，提示其通过 TVC 侧边 Agent 的上传入口添加 PNG、WebP 或 JPEG。上传本身不是 Agent operation，不能把 Logo 伪装成资产计划或图片生成请求。画布快照出现 `logo` 后，读取其节点 ID、用途和时长：
+
+- 用途未由设置卡确认时，返回 `workflow_state: "clarifying"` 与空 `operations`，询问片头、片尾还是独立 Logo 视频；不要猜测。
+- `opening` 或 `closing` 时，后续分镜必须为 Logo 预留当前配置的时长；`standalone` 时不改变正片目标时长。
+- Logo 不写入 Brief 的 `reference_map`，也不要求生成 Logo 资产图。

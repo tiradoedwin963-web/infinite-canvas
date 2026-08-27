@@ -2068,3 +2068,30 @@
 - `tests/models.test.mjs`、`tests/provider.test.mjs`、`tests/trx-video-provider.test.mjs`：覆盖新能力范围、提示词限制、模型列表门禁、原生请求与状态分类。
 - `progress.md`：记录本轮企业文档对齐、验证与回滚边界。
 - 回滚方式：发布后执行 `git revert <本轮发布提交哈希>`，随后仅重建 app 容器。该回退不会删除桶内原图、云端项目或 `segment-002` 的未知提交证据。
+
+## 2026-08-27 - Task: TVC Director 品牌 Logo 动效与可选旁白
+
+### What was done
+- TVC 导演侧边设置新增品牌 Logo 上传与用途选择：正片片头、正片片尾或独立 Logo 视频。Logo 只接受 PNG、WebP、JPEG（最大 10MB），继续复用本地 IndexedDB 或云端既有私有桶，不会重新生成或复制素材。
+- 正片 Logo 作为唯一的首镜或末镜 `logo-animation` 分镜行处理；独立模式创建只引用 Logo 的独立提示词、视频调度器和结果占位，不改变正片时长或镜头计划。旧 Logo 与已提交视频保留为历史证据，不会因替换而被删除。
+- 最终提示词前新增明确的“加入旁白 / 不加旁白”选择门禁。不加旁白仅移除旁白描述，仍保留对白、环境声和拟声；改选项只作废未提交的提示词/视频占位，不会提交媒体任务。
+- 分镜、画布提示词视图和 Excel 保持 13 列，第 10 列统一显示“旁白 / 对白”；TVC Logo 是唯一允许直接作为视频参考的上传源图片，普通上传图片仍不能绕过资产门禁。
+
+### Testing
+- `node --test tests/tvc-agent.test.mjs`：16/16 通过，覆盖 Logo/旁白快照、三种 Logo 用途、独立 Logo 单元、锁稿旁白选择门禁和 Agent 手册约束。
+- `node --test tests/tvc-domain.test.mjs`：20/20 通过，覆盖 Logo 文件/归属、首尾 Logo 分镜、独立任务、旁白省略保留对白/声音及历史归档。
+- `npm run lint`：通过。
+- `npm test`：生产构建通过，214/214 测试通过；仅保留既有客户端包体积提示。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：仍被本轮开始前已有的 Agent、侧边栏和 Worker 类型诊断阻断；已修复本轮出现的 TVC 调度器类型守卫收窄问题，当前未报告 `workflow-canvas.tsx`、`app/workflow/tvc.ts` 或 `app/workflow/graph.ts` 的新增诊断。
+- 未调用图片、视频或其他媒体生成接口。
+
+### Notes
+- `app/ai/agent.ts`、`app/ai/agent-provider.ts`：扩展 TVC Logo、对白、旁白选项与独立 Logo 提示词的严格操作/快照校验。
+- `app/workflow/graph.ts`、`app/workflow/tvc.ts`：持久化 v1 兼容的 Logo/旁白状态，建立首尾/独立 Logo 工作流、参考资产门禁和历史保护。
+- `components/canvas-agent-sidebar.tsx`、`components/workflow/workflow-canvas.tsx`、`app/globals.css`：提供 Logo 设置卡、上传、用途/旁白选择、画布展示及调度器引用交互。
+- `app/workflow/tvc-excel.ts`：保持 13 列并将声音列导出为“旁白 / 对白”。
+- `tvc-director/core.md`、`tvc-director/intake.md`、`tvc-director/storyboard.md`、`tvc-director/prompt-package.md`：同步 Logo 动效、旁白选择和独立任务规则。
+- `tests/tvc-agent.test.mjs`、`tests/tvc-domain.test.mjs`、`tests/tvc-excel.test.mjs`、`tests/tvc-table-canvas.test.mjs`、`tests/tvc-ui.test.mjs`：覆盖协议、领域规则、Excel 投影和画布交互契约。
+- `docs/canvas.md`：说明 Logo 参考保真边界、三种用途、旁白/对白行为与导出结果。
+- `progress.md`：记录本轮实现和验证。当前改动尚未提交；回滚可执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/globals.css app/workflow/graph.ts app/workflow/tvc-excel.ts app/workflow/tvc.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md tests/tvc-agent.test.mjs tests/tvc-domain.test.mjs tests/tvc-excel.test.mjs tests/tvc-table-canvas.test.mjs tests/tvc-ui.test.mjs tvc-director/core.md tvc-director/intake.md tvc-director/prompt-package.md tvc-director/storyboard.md progress.md`。

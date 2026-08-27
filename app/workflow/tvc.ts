@@ -3,6 +3,7 @@ import type {
   WorkflowNode,
   WorkflowResultNode,
   WorkflowSchedulerNode,
+  WorkflowSourceNode,
   TvcVideoManualOverride,
 } from "./graph.ts";
 
@@ -18,6 +19,14 @@ export const TVC_VIDEO_RESOLUTION = "720p";
 export const TVC_VIDEO_MIN_DURATION = 4;
 export const TVC_VIDEO_MAX_DURATION = 30;
 export const TVC_VIDEO_MAX_REFERENCE_IMAGES = 30;
+export const TVC_LOGO_DEFAULT_DURATION = 4;
+export const TVC_LOGO_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/webp",
+  "image/jpeg",
+] as const;
+export const TVC_LOGO_PLACEMENTS = ["opening", "closing", "standalone"] as const;
+export const TVC_NARRATION_OPTIONS = ["include", "omit"] as const;
 
 const TVC_VIDEO_HISTORICAL_ERROR = "锁稿已更新，历史视频结果仅保留查看，不能再次运行。";
 
@@ -33,6 +42,8 @@ export const TVC_REFERENCE_ROLES = [
 ] as const;
 
 export type TvcReferenceRole = (typeof TVC_REFERENCE_ROLES)[number];
+export type TvcLogoPlacement = (typeof TVC_LOGO_PLACEMENTS)[number];
+export type TvcNarrationOption = (typeof TVC_NARRATION_OPTIONS)[number];
 export type TvcPhase =
   | "intake"
   | "script-draft"
@@ -43,6 +54,23 @@ export type TvcReferenceMapping = {
   nodeId: string;
   roles: TvcReferenceRole[];
   note: string;
+};
+
+export type TvcLogoConfig = {
+  nodeId: string;
+  placement: TvcLogoPlacement;
+  durationSeconds: number;
+};
+
+export type TvcPromptOptions = {
+  narration: TvcNarrationOption;
+};
+
+export type TvcLogoSourceInput = {
+  assetId: string;
+  assetName: string;
+  assetMimeType: (typeof TVC_LOGO_IMAGE_MIME_TYPES)[number];
+  text?: string;
 };
 
 export type TvcBrief = {
@@ -80,10 +108,12 @@ export type TvcStoryboardDraftRow = {
   composition: string;
   performance: string;
   narration: string;
+  dialogue?: string;
   sound: string;
   transition: string;
   constraints: string;
   referenceNodeIds: string[];
+  kind?: "logo-animation";
 };
 
 export type TvcStoryboardTableDraftRow = Omit<
@@ -118,17 +148,27 @@ export type TvcPromptPlanBoundary = {
   endSecond: number;
 };
 
+export type TvcStandaloneLogoUnit = {
+  ref: "logo-animation";
+  durationSeconds: number;
+  referenceNodeIds: string[];
+  prompt: string;
+};
+
 export type TvcWorkflowState = {
   projectId: string;
   phase: TvcPhase;
   title: string;
   revision: number;
   brief?: TvcBrief;
+  logo?: TvcLogoConfig;
+  promptOptions?: TvcPromptOptions;
   storyboard?: TvcStoryboard;
   lockedAt?: number;
   lockedRevision?: number;
   promptPlan?: TvcPromptPlanSegment[];
   promptUnits?: TvcPromptUnit[];
+  standaloneLogoUnit?: TvcStandaloneLogoUnit;
   promptSourceRevision?: number;
 };
 
@@ -167,6 +207,7 @@ export type TvcCreatePromptPackageOperation = {
   projectId: string;
   sourceRevision: number;
   units: TvcPromptUnit[];
+  standaloneLogoUnit?: TvcStandaloneLogoUnit;
   adjustments?: string[];
 };
 
@@ -191,6 +232,40 @@ function isFinitePositiveInteger(value: unknown): value is number {
 
 function isReferenceRole(value: unknown): value is TvcReferenceRole {
   return typeof value === "string" && (TVC_REFERENCE_ROLES as readonly string[]).includes(value);
+}
+
+function isTvcLogoPlacement(value: unknown): value is TvcLogoPlacement {
+  return typeof value === "string" && (TVC_LOGO_PLACEMENTS as readonly string[]).includes(value);
+}
+
+function isTvcNarrationOption(value: unknown): value is TvcNarrationOption {
+  return typeof value === "string" && (TVC_NARRATION_OPTIONS as readonly string[]).includes(value);
+}
+
+function isTvcLogoConfig(value: unknown): value is TvcLogoConfig {
+  return isRecord(value) &&
+    isNonEmptyString(value.nodeId) &&
+    isTvcLogoPlacement(value.placement) &&
+    isFinitePositiveInteger(value.durationSeconds) &&
+    value.durationSeconds >= TVC_VIDEO_MIN_DURATION &&
+    value.durationSeconds <= TVC_VIDEO_MAX_DURATION;
+}
+
+function isTvcPromptOptions(value: unknown): value is TvcPromptOptions {
+  return isRecord(value) && isTvcNarrationOption(value.narration);
+}
+
+function isTvcStandaloneLogoUnit(value: unknown): value is TvcStandaloneLogoUnit {
+  return isRecord(value) &&
+    value.ref === "logo-animation" &&
+    isFinitePositiveInteger(value.durationSeconds) &&
+    value.durationSeconds >= TVC_VIDEO_MIN_DURATION &&
+    value.durationSeconds <= TVC_VIDEO_MAX_DURATION &&
+    Array.isArray(value.referenceNodeIds) &&
+    value.referenceNodeIds.length > 0 &&
+    value.referenceNodeIds.every(isNonEmptyString) &&
+    new Set(value.referenceNodeIds).size === value.referenceNodeIds.length &&
+    isNonEmptyString(value.prompt);
 }
 
 function isReferenceMapping(value: unknown): value is TvcReferenceMapping {
@@ -228,6 +303,8 @@ function isStoryboardRow(value: unknown): value is TvcStoryboardRow {
     Array.isArray(value.referenceNodeIds) &&
     value.referenceNodeIds.every(isNonEmptyString) &&
     new Set(value.referenceNodeIds).size === value.referenceNodeIds.length &&
+    (value.dialogue === undefined || typeof value.dialogue === "string") &&
+    (value.kind === undefined || value.kind === "logo-animation") &&
     [
       value.referenceScene,
       value.sceneTime,
@@ -289,6 +366,8 @@ export function isTvcWorkflowState(value: unknown): value is TvcWorkflowState {
     !Number.isInteger(value.revision) ||
     value.revision < 0 ||
     (value.brief !== undefined && !isTvcBrief(value.brief)) ||
+    (value.logo !== undefined && !isTvcLogoConfig(value.logo)) ||
+    (value.promptOptions !== undefined && !isTvcPromptOptions(value.promptOptions)) ||
     (value.storyboard !== undefined && !isStoryboard(value.storyboard)) ||
     (value.lockedAt !== undefined && (typeof value.lockedAt !== "number" || !Number.isFinite(value.lockedAt))) ||
     (value.lockedRevision !== undefined &&
@@ -298,6 +377,7 @@ export function isTvcWorkflowState(value: unknown): value is TvcWorkflowState {
     (value.promptPlan !== undefined &&
       (!Array.isArray(value.promptPlan) || !value.promptPlan.every(isPromptPlanSegment))) ||
     (value.promptUnits !== undefined && (!Array.isArray(value.promptUnits) || !value.promptUnits.every(isPromptUnit))) ||
+    (value.standaloneLogoUnit !== undefined && !isTvcStandaloneLogoUnit(value.standaloneLogoUnit)) ||
     (value.promptSourceRevision !== undefined &&
       (typeof value.promptSourceRevision !== "number" ||
         !Number.isInteger(value.promptSourceRevision) ||
@@ -356,6 +436,9 @@ export function tvcAgentSummary(graph: WorkflowGraph) {
       ? { lockedRevision: project.lockedRevision }
       : {}),
     ...(project.promptPlan?.length ? { promptPlan: project.promptPlan } : {}),
+    ...(project.logo ? { logo: project.logo } : {}),
+    ...(project.promptOptions ? { promptOptions: project.promptOptions } : {}),
+    ...(project.standaloneLogoUnit ? { standaloneLogoUnit: project.standaloneLogoUnit } : {}),
     ...(project.title ? { title: project.title } : {}),
     ...(project.brief?.platform ? { targetModel: project.brief.platform } : {}),
     ...(project.brief?.maxDuration ? { targetMaxDuration: project.brief.maxDuration } : {}),
@@ -387,6 +470,26 @@ function isUsableImageReference(node: WorkflowNode | undefined) {
     node.kind === "image" &&
     ((node.type === "source" && node.assetId) ||
       (node.type === "result" && node.status === "success" && (node.assetId || node.resultUrl))),
+  );
+}
+
+function isTvcLogoMimeType(value: unknown): value is (typeof TVC_LOGO_IMAGE_MIME_TYPES)[number] {
+  return typeof value === "string" &&
+    (TVC_LOGO_IMAGE_MIME_TYPES as readonly string[]).includes(value);
+}
+
+export function isTvcLogoSource(
+  node: WorkflowNode | undefined,
+  projectId?: string,
+): node is WorkflowSourceNode {
+  return Boolean(
+    node &&
+      node.type === "source" &&
+      node.kind === "image" &&
+      node.storyRole === "tvc-logo" &&
+      node.assetId &&
+      isTvcLogoMimeType(node.assetMimeType) &&
+      (projectId === undefined || node.tvcProjectId === projectId),
   );
 }
 
@@ -498,7 +601,7 @@ function tvcVideoResultsForScheduler(graph: WorkflowGraph, schedulerId: string) 
   return graph.nodes.filter(
     (node): node is WorkflowResultNode =>
       node.type === "result" &&
-      node.storyRole === "tvc-video-result" &&
+      (node.storyRole === "tvc-video-result" || node.storyRole === "tvc-logo-video-result") &&
       node.schedulerId === schedulerId,
   );
 }
@@ -515,17 +618,53 @@ function tvcVideoHasSubmissionEvidence(node: WorkflowResultNode) {
   );
 }
 
-function isTvcVideoReference(
+export function isTvcVideoReference(
   node: WorkflowNode | undefined,
   projectId: string,
 ) {
   return Boolean(
     node &&
-      node.type === "result" &&
-      node.kind === "image" &&
-      node.status === "success" &&
-      node.tvcProjectId === projectId &&
-      (node.assetId || node.resultUrl),
+      (
+        (node.type === "result" &&
+          node.kind === "image" &&
+          node.status === "success" &&
+          node.tvcProjectId === projectId &&
+          (node.assetId || node.resultUrl)) ||
+        isTvcLogoSource(node, projectId)
+      ),
+  );
+}
+
+export function isTvcVideoSchedulerNode(
+  node: WorkflowNode | undefined,
+): node is WorkflowSchedulerNode & {
+  storyRole: "tvc-video-scheduler" | "tvc-logo-video-scheduler";
+} {
+  return node !== undefined && node.type === "scheduler" &&
+    (node.storyRole === "tvc-video-scheduler" || node.storyRole === "tvc-logo-video-scheduler");
+}
+
+export function isTvcVideoResultNode(
+  node: WorkflowNode | undefined,
+): node is WorkflowResultNode & {
+  storyRole: "tvc-video-result" | "tvc-logo-video-result";
+} {
+  return node !== undefined && node.type === "result" &&
+    (node.storyRole === "tvc-video-result" || node.storyRole === "tvc-logo-video-result");
+}
+
+export function isTvcVideoSchedulerReference(
+  graph: WorkflowGraph,
+  scheduler: WorkflowNode | undefined,
+  source: WorkflowNode | undefined,
+) {
+  const projectId = scheduler?.tvcProjectId;
+  return Boolean(
+    graph.tvc &&
+      isTvcVideoSchedulerNode(scheduler) &&
+      projectId &&
+      projectId === graph.tvc.projectId &&
+      isTvcVideoReference(source, projectId),
   );
 }
 
@@ -547,6 +686,31 @@ function tvcVideoUnitError(
   );
   if (invalidNodeId) {
     return `TVC 提示词单元 ${unit.ref} 引用了不可用的成功图片资产 ${invalidNodeId}。`;
+  }
+  return null;
+}
+
+function tvcStandaloneLogoUnitError(
+  graph: WorkflowGraph,
+  project: TvcWorkflowState,
+  unit: TvcStandaloneLogoUnit | undefined,
+) {
+  const logo = project.logo;
+  if (!logo || logo.placement !== "standalone" || !unit) {
+    return "独立品牌 Logo 动效缺少已确认的 Logo 配置或最终提示词。";
+  }
+  if (!isTvcStandaloneLogoUnit(unit) || unit.durationSeconds !== logo.durationSeconds) {
+    return "独立品牌 Logo 动效的时长无效。";
+  }
+  if (unit.referenceNodeIds.length !== 1 || unit.referenceNodeIds[0] !== logo.nodeId) {
+    return "独立品牌 Logo 动效只能按顺序引用当前品牌 Logo。";
+  }
+  if (/\b[JL][ -]?cut\b/i.test(unit.prompt)) {
+    return "独立品牌 Logo 动效不能使用 J-cut 或 L-cut。";
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === logo.nodeId);
+  if (!isTvcLogoSource(node, project.projectId)) {
+    return "独立品牌 Logo 动效引用了不可用的项目 Logo。";
   }
   return null;
 }
@@ -593,6 +757,7 @@ function tvcVideoSchedulerPrompt(
   unit: TvcPromptUnit,
 ) {
   const duration = unit.endSecond - unit.startSecond;
+  const includeNarration = project.promptOptions?.narration !== "omit";
   let second = 0;
   const timeline = schedulerTimelineRows(project, unit).map((row) => {
     const startSecond = second;
@@ -602,7 +767,8 @@ function tvcVideoSchedulerPrompt(
       `参考：${row.referenceScene}。`,
       `${row.sceneTime}。${row.shotSizeLens}，${row.camera}。`,
       `${row.composition} ${row.performance}`,
-      `旁白：${row.narration}`,
+      ...(includeNarration ? [`旁白：${row.narration}`] : []),
+      `对白：${row.dialogue?.trim() || "无"}`,
       `声音：${row.sound}`,
       `切点：${row.transition}`,
       `连续性与生成限制：${row.constraints}`,
@@ -626,6 +792,71 @@ function videoResultLabel(unit: TvcPromptUnit) {
   return `${unit.ref} · 视频结果占位`;
 }
 
+function tvcStandaloneLogoSchedulerPrompt(unit: TvcStandaloneLogoUnit) {
+  return [
+    `本视频片段仅生成 0 至 ${unit.durationSeconds} 秒内的品牌 Logo 动效。`,
+    "严格参考输入的品牌 Logo 形状、配色和比例；以原创简洁的光影与镜头运动呈现，不生成字幕、水印或额外可读文字。",
+    "最终提示词：",
+    unit.prompt.trim(),
+  ].join("\n");
+}
+
+function standaloneLogoPromptText(unit: TvcStandaloneLogoUnit) {
+  return `【品牌 Logo 动效｜${unit.durationSeconds} 秒】\n${unit.prompt}`;
+}
+
+function standaloneLogoSchedulerLabel() {
+  return "品牌 Logo · 最终提示词调度";
+}
+
+function standaloneLogoResultLabel() {
+  return "品牌 Logo · 视频结果占位";
+}
+
+function matchesTvcStandaloneLogoSchedulerContext(
+  node: WorkflowNode,
+  project: TvcWorkflowState,
+  unit: TvcStandaloneLogoUnit,
+) {
+  return node.type === "scheduler" &&
+    node.storyRole === "tvc-logo-video-scheduler" &&
+    node.outputKind === "video" &&
+    node.model === TVC_VIDEO_MODEL &&
+    node.prompt === tvcStandaloneLogoSchedulerPrompt(unit) &&
+    node.aspectRatio === project.brief?.aspectRatio &&
+    node.resolution === TVC_VIDEO_RESOLUTION &&
+    node.duration === String(unit.durationSeconds) &&
+    node.outputCount === 1 &&
+    node.label === standaloneLogoSchedulerLabel() &&
+    node.tvcProjectId === project.projectId &&
+    node.tvcUnitRef === unit.ref &&
+    node.tvcPromptRevision === project.promptSourceRevision &&
+    node.tvcVideoManualOverride === undefined &&
+    node.tvcVideoHistorical !== true;
+}
+
+function isSameTvcStandaloneLogoResult(
+  node: WorkflowNode | undefined,
+  schedulerId: string,
+  project: TvcWorkflowState,
+  unit: TvcStandaloneLogoUnit,
+) {
+  return node?.type === "result" &&
+    node.kind === "video" &&
+    node.schedulerId === schedulerId &&
+    node.text === standaloneLogoResultLabel() &&
+    node.model === TVC_VIDEO_MODEL &&
+    node.status === "ready" &&
+    node.progress === "待生成" &&
+    node.error === "" &&
+    node.label === standaloneLogoResultLabel() &&
+    node.tvcProjectId === project.projectId &&
+    node.tvcUnitRef === unit.ref &&
+    node.tvcPromptRevision === project.promptSourceRevision &&
+    node.tvcVideoHistorical !== true &&
+    node.storyRole === "tvc-logo-video-result";
+}
+
 function currentTvcVideoUnit(
   project: TvcWorkflowState,
   node: WorkflowSchedulerNode,
@@ -642,11 +873,30 @@ function currentTvcVideoUnit(
   return unit && promptUnitMatchesPlan(project, unit) ? unit : null;
 }
 
+function currentTvcStandaloneLogoUnit(
+  project: TvcWorkflowState,
+  node: WorkflowSchedulerNode,
+) {
+  const unit = project.standaloneLogoUnit;
+  if (
+    unit &&
+    project.phase === "prompt-final" &&
+    project.promptSourceRevision !== undefined &&
+    project.logo?.placement === "standalone" &&
+    node.tvcProjectId === project.projectId &&
+    node.tvcPromptRevision === project.promptSourceRevision &&
+    node.tvcUnitRef === unit.ref
+  ) {
+    return unit;
+  }
+  return null;
+}
+
 export function isTvcVideoManualOverride(
   node: WorkflowNode,
 ): node is WorkflowSchedulerNode & { tvcVideoManualOverride: TvcVideoManualOverride } {
   return node.type === "scheduler" &&
-    node.storyRole === "tvc-video-scheduler" &&
+    (node.storyRole === "tvc-video-scheduler" || node.storyRole === "tvc-logo-video-scheduler") &&
     node.tvcVideoManualOverride !== undefined;
 }
 
@@ -662,21 +912,25 @@ export function markTvcVideoSchedulerManualOverride(
   if (
     !scheduler ||
     !project ||
-    scheduler.storyRole !== "tvc-video-scheduler" ||
+    (scheduler.storyRole !== "tvc-video-scheduler" && scheduler.storyRole !== "tvc-logo-video-scheduler") ||
     scheduler.outputKind !== "video" ||
     scheduler.tvcVideoHistorical === true ||
     scheduler.tvcVideoManualOverride
   ) {
     return graph;
   }
-  const unit = currentTvcVideoUnit(project, scheduler);
+  const unit = scheduler.storyRole === "tvc-logo-video-scheduler"
+    ? currentTvcStandaloneLogoUnit(project, scheduler)
+    : currentTvcVideoUnit(project, scheduler);
   if (!unit) return graph;
   const override: TvcVideoManualOverride = {
     sourceRevision: project.promptSourceRevision!,
     sourceUnitRef: unit.ref,
-    sourceStartSecond: unit.startSecond,
-    sourceEndSecond: unit.endSecond,
-    sourcePrompt: tvcVideoSchedulerPrompt(project, unit),
+    sourceStartSecond: "durationSeconds" in unit ? 0 : unit.startSecond,
+    sourceEndSecond: "durationSeconds" in unit ? unit.durationSeconds : unit.endSecond,
+    sourcePrompt: "durationSeconds" in unit
+      ? tvcStandaloneLogoSchedulerPrompt(unit)
+      : tvcVideoSchedulerPrompt(project, unit),
   };
   return {
     ...graph,
@@ -743,13 +997,14 @@ function removeOrArchiveTvcVideoSchedulers(
   graph: WorkflowGraph,
   projectId: string,
   isCurrent: (node: WorkflowNode) => boolean,
+  role: "tvc-video-scheduler" | "tvc-logo-video-scheduler" = "tvc-video-scheduler",
 ) {
   const removeIds = new Set<string>();
   const archivedIds = new Set<string>();
   for (const scheduler of graph.nodes) {
     if (
       scheduler.type !== "scheduler" ||
-      scheduler.storyRole !== "tvc-video-scheduler" ||
+      scheduler.storyRole !== role ||
       scheduler.tvcProjectId !== projectId ||
       isCurrent(scheduler)
     ) {
@@ -790,14 +1045,23 @@ function removeOrArchiveTvcVideoSchedulers(
 }
 
 function removeTvcPromptArtifacts(graph: WorkflowGraph, projectId: string) {
-  const withoutVideos = removeOrArchiveTvcVideoSchedulers(
+  const withoutMainVideos = removeOrArchiveTvcVideoSchedulers(
     graph,
     projectId,
     () => false,
   );
+  const withoutVideos = removeOrArchiveTvcVideoSchedulers(
+    withoutMainVideos,
+    projectId,
+    () => false,
+    "tvc-logo-video-scheduler",
+  );
   const promptIds = new Set(
     withoutVideos.nodes
-      .filter((node) => node.tvcProjectId === projectId && node.storyRole === "tvc-prompt")
+      .filter((node) =>
+        node.tvcProjectId === projectId &&
+        (node.storyRole === "tvc-prompt" || node.storyRole === "tvc-logo-prompt"),
+      )
       .map((node) => node.id),
   );
   if (!promptIds.size) return withoutVideos;
@@ -815,6 +1079,29 @@ export function isActiveTvcVideoScheduler(
   node: WorkflowNode,
 ) {
   const project = graph.tvc;
+  if (node.type === "scheduler" && node.storyRole === "tvc-logo-video-scheduler") {
+    const unit = project?.standaloneLogoUnit;
+    const prompt = project ? tvcNode(graph, "tvc-logo-prompt", project.projectId) : undefined;
+    if (
+      !project ||
+      project.phase !== "prompt-final" ||
+      project.promptSourceRevision === undefined ||
+      project.logo?.placement !== "standalone" ||
+      !unit ||
+      !prompt ||
+      prompt.type !== "source" ||
+      tvcStandaloneLogoUnitError(graph, project, unit)
+    ) {
+      return false;
+    }
+    const inputIds = graph.edges
+      .filter((edge) => edge.targetId === node.id)
+      .map((edge) => edge.sourceId);
+    const expectedInputIds = [prompt.id, ...unit.referenceNodeIds];
+    return matchesTvcStandaloneLogoSchedulerContext(node, project, unit) &&
+      inputIds.length === expectedInputIds.length &&
+      inputIds.every((sourceId, index) => sourceId === expectedInputIds[index]);
+  }
   return Boolean(
     project &&
       project.phase === "prompt-final" &&
@@ -845,7 +1132,7 @@ export function tvcVideoSchedulerRunError(
   graph: WorkflowGraph,
   node: WorkflowNode,
 ) {
-  if (node.type !== "scheduler" || node.storyRole !== "tvc-video-scheduler") {
+  if (!isTvcVideoSchedulerNode(node)) {
     return null;
   }
   if (isActiveTvcVideoScheduler(graph, node)) return null;
@@ -863,6 +1150,15 @@ export function tvcVideoSchedulerRunError(
   ) {
     return TVC_VIDEO_HISTORICAL_ERROR;
   }
+  if (
+    node.storyRole === "tvc-logo-video-scheduler" &&
+    node.tvcVideoManualOverride.sourceUnitRef !== "logo-animation"
+  ) {
+    return TVC_VIDEO_HISTORICAL_ERROR;
+  }
+  const expectedPromptRole = node.storyRole === "tvc-logo-video-scheduler"
+    ? "tvc-logo-prompt"
+    : "tvc-prompt";
   const nodes = new Map(graph.nodes.map((item) => [item.id, item]));
   for (const edge of graph.edges.filter((item) => item.targetId === node.id)) {
     const input = nodes.get(edge.sourceId);
@@ -876,7 +1172,7 @@ export function tvcVideoSchedulerRunError(
     if (
       input.kind === "text" &&
       (input.type !== "source" ||
-        input.storyRole !== "tvc-prompt" ||
+        input.storyRole !== expectedPromptRole ||
         input.tvcProjectId !== project.projectId)
     ) {
       return "TVC 视频调度器只允许使用当前锁稿的最终提示词文本节点。";
@@ -897,7 +1193,7 @@ export function isHistoricalTvcVideoScheduler(
   node: WorkflowNode,
 ) {
   return node.type === "scheduler" &&
-    node.storyRole === "tvc-video-scheduler" &&
+    (node.storyRole === "tvc-video-scheduler" || node.storyRole === "tvc-logo-video-scheduler") &&
     (node.tvcVideoHistorical === true ||
       (!isTvcVideoManualOverride(node) && !isActiveTvcVideoScheduler(graph, node)));
 }
@@ -1126,8 +1422,209 @@ export function syncTvcVideoWorkflow(
   return { graph: next, schedulerIds, skippedUnitRefs };
 }
 
+export type TvcStandaloneLogoVideoWorkflowSync = {
+  graph: WorkflowGraph;
+  schedulerId?: string;
+  skipped: boolean;
+};
+
+function removeTvcStandaloneLogoPrompt(
+  graph: WorkflowGraph,
+  projectId: string,
+) {
+  const promptIds = new Set(
+    graph.nodes
+      .filter((node) => node.tvcProjectId === projectId && node.storyRole === "tvc-logo-prompt")
+      .map((node) => node.id),
+  );
+  if (!promptIds.size) return graph;
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((node) => !promptIds.has(node.id)),
+    edges: graph.edges.filter(
+      (edge) => !promptIds.has(edge.sourceId) && !promptIds.has(edge.targetId),
+    ),
+  };
+}
+
+export function syncTvcStandaloneLogoVideoWorkflow(
+  graph: WorkflowGraph,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+): TvcStandaloneLogoVideoWorkflowSync {
+  const project = graph.tvc;
+  const clean = (current: (node: WorkflowNode) => boolean) =>
+    removeTvcStandaloneLogoPrompt(
+      removeOrArchiveTvcVideoSchedulers(
+        graph,
+        project?.projectId ?? "",
+        current,
+        "tvc-logo-video-scheduler",
+      ),
+      project?.projectId ?? "",
+    );
+  if (
+    !project ||
+    project.phase !== "prompt-final" ||
+    !project.brief ||
+    project.promptSourceRevision === undefined ||
+    project.logo?.placement !== "standalone" ||
+    !project.standaloneLogoUnit
+  ) {
+    return { graph: project ? clean(() => false) : graph, skipped: false };
+  }
+  const unit = project.standaloneLogoUnit;
+  if (tvcStandaloneLogoUnitError(graph, project, unit)) {
+    return { graph: clean(() => false), skipped: true };
+  }
+  const expectedPromptText = standaloneLogoPromptText(unit);
+  const existingPrompt = tvcNode(graph, "tvc-logo-prompt", project.projectId);
+  const promptCreated = existingPrompt?.type === "source" &&
+      existingPrompt.label === "品牌 Logo · 最终提示词" &&
+      existingPrompt.text === expectedPromptText &&
+      existingPrompt.width === 520 &&
+      existingPrompt.height === 320
+    ? { graph, nodeId: existingPrompt.id }
+    : addOrUpdateTvcNode(
+      graph,
+      "tvc-logo-prompt",
+      project.projectId,
+      "品牌 Logo · 最终提示词",
+      expectedPromptText,
+      idFactory,
+      { width: 520, height: 320 },
+    );
+  let next = removeOrArchiveTvcVideoSchedulers(
+    promptCreated.graph,
+    project.projectId,
+    (node) =>
+      (isTvcVideoManualOverride(node) &&
+        node.tvcProjectId === project.projectId &&
+        node.tvcUnitRef === unit.ref &&
+        node.tvcPromptRevision === project.promptSourceRevision &&
+        node.tvcVideoHistorical !== true) ||
+      matchesTvcStandaloneLogoSchedulerContext(node, project, unit),
+    "tvc-logo-video-scheduler",
+  );
+  const manualScheduler = next.nodes.find(
+    (node): node is WorkflowSchedulerNode =>
+      isTvcVideoManualOverride(node) &&
+      node.storyRole === "tvc-logo-video-scheduler" &&
+      node.tvcProjectId === project.projectId &&
+      node.tvcUnitRef === unit.ref &&
+      node.tvcPromptRevision === project.promptSourceRevision &&
+      node.tvcVideoHistorical !== true,
+  );
+  if (manualScheduler) {
+    return { graph: next, schedulerId: manualScheduler.id, skipped: false };
+  }
+  let scheduler = next.nodes.find(
+    (node): node is WorkflowSchedulerNode =>
+      node.type === "scheduler" &&
+      node.storyRole === "tvc-logo-video-scheduler" &&
+      node.tvcProjectId === project.projectId &&
+      matchesTvcStandaloneLogoSchedulerContext(node, project, unit),
+  );
+  if (!scheduler) {
+    const prompt = next.nodes.find((node) => node.id === promptCreated.nodeId)!;
+    const promptWidth = prompt.width ?? 520;
+    scheduler = {
+      id: idFactory(),
+      x: prompt.x + promptWidth + 120,
+      y: prompt.y,
+      width: WORKFLOW_NODE_WIDTH,
+      height: 360,
+      type: "scheduler",
+      outputKind: "video",
+      model: TVC_VIDEO_MODEL,
+      prompt: tvcStandaloneLogoSchedulerPrompt(unit),
+      aspectRatio: project.brief.aspectRatio,
+      resolution: TVC_VIDEO_RESOLUTION,
+      duration: String(unit.durationSeconds),
+      outputCount: 1,
+      error: "",
+      label: standaloneLogoSchedulerLabel(),
+      tvcProjectId: project.projectId,
+      tvcUnitRef: unit.ref,
+      tvcPromptRevision: project.promptSourceRevision,
+      storyRole: "tvc-logo-video-scheduler",
+    };
+    next = { ...next, nodes: [...next.nodes, scheduler] };
+  }
+  const schedulerId = scheduler.id;
+  const result = tvcVideoResultsForScheduler(next, schedulerId)[0];
+  if (!result) {
+    const node: WorkflowResultNode = {
+      id: idFactory(),
+      x: scheduler.x + WORKFLOW_NODE_WIDTH + 120,
+      y: scheduler.y,
+      type: "result",
+      kind: "video",
+      schedulerId,
+      text: standaloneLogoResultLabel(),
+      model: TVC_VIDEO_MODEL,
+      status: "ready",
+      progress: "待生成",
+      error: "",
+      label: standaloneLogoResultLabel(),
+      tvcProjectId: project.projectId,
+      tvcUnitRef: unit.ref,
+      tvcPromptRevision: project.promptSourceRevision,
+      storyRole: "tvc-logo-video-result",
+    };
+    next = { ...next, nodes: [...next.nodes, node] };
+  } else if (!tvcVideoHasSubmissionEvidence(result) && !isSameTvcStandaloneLogoResult(result, schedulerId, project, unit)) {
+    next = {
+      ...next,
+      nodes: next.nodes.map((node) => node.id === result.id
+        ? {
+            ...node,
+            kind: "video",
+            schedulerId,
+            text: standaloneLogoResultLabel(),
+            model: TVC_VIDEO_MODEL,
+            status: "ready",
+            progress: "待生成",
+            error: "",
+            label: standaloneLogoResultLabel(),
+            tvcProjectId: project.projectId,
+            tvcUnitRef: unit.ref,
+            tvcPromptRevision: project.promptSourceRevision,
+            tvcVideoHistorical: undefined,
+            storyRole: "tvc-logo-video-result",
+          } as WorkflowNode
+        : node),
+    };
+  }
+  const expectedInputIds = [promptCreated.nodeId, ...unit.referenceNodeIds];
+  const inputIds = next.edges
+    .filter((edge) => edge.targetId === schedulerId)
+    .map((edge) => edge.sourceId);
+  if (
+    inputIds.length !== expectedInputIds.length ||
+    inputIds.some((sourceId, index) => sourceId !== expectedInputIds[index])
+  ) {
+    next = {
+      ...next,
+      edges: [
+        ...next.edges.filter((edge) => edge.targetId !== schedulerId),
+        ...expectedInputIds.map((sourceId) => ({ id: idFactory(), sourceId, targetId: schedulerId })),
+      ],
+    };
+  }
+  const currentResult = tvcVideoResultsForScheduler(next, schedulerId)[0];
+  if (currentResult && !next.edges.some((edge) => edge.sourceId === schedulerId && edge.targetId === currentResult.id)) {
+    next = {
+      ...next,
+      edges: [...next.edges, { id: idFactory(), sourceId: schedulerId, targetId: currentResult.id }],
+    };
+  }
+  return { graph: next, schedulerId, skipped: false };
+}
+
 function briefText(title: string, brief: TvcBrief, graph: WorkflowGraph) {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const project = graph.tvc;
+  const logo = project?.logo;
   return [
     `项目：${title}`,
     `目标：${brief.goal}`,
@@ -1137,6 +1634,10 @@ function briefText(title: string, brief: TvcBrief, graph: WorkflowGraph) {
     `风格：${brief.style}`,
     `叙事方式：${brief.narrativeMode}`,
     `音频：${brief.audioPolicy}`,
+    `最终提示词旁白：${project?.promptOptions?.narration === "omit" ? "不加入旁白" : project?.promptOptions?.narration === "include" ? "加入旁白" : "未设置（沿用旁白）"}`,
+    `品牌 Logo：${logo
+      ? `${nodeName(nodes.get(logo.nodeId) ?? { id: logo.nodeId, x: 0, y: 0, type: "source", kind: "text", text: "" })}；${logo.placement === "opening" ? "片头" : logo.placement === "closing" ? "片尾" : "独立动效"}；${logo.durationSeconds} 秒`
+      : "未设置"}`,
     `文案：${brief.copy || "未提供"}`,
     "参考图映射：",
     ...(brief.referenceMap.length
@@ -1168,7 +1669,7 @@ function storyboardText(storyboard: TvcStoryboard) {
       `机位与运镜：${row.camera}`,
       `画面构图：${row.composition}`,
       `角色动作与表演：${row.performance}`,
-      `旁白：${row.narration}`,
+      `旁白 / 对白：${row.narration}${row.dialogue?.trim() ? ` / ${row.dialogue.trim()}` : " / 无"}`,
       `环境声与拟声：${row.sound}`,
       `转场/切点：${row.transition}`,
       `连续性与生成限制：${row.constraints}`,
@@ -1323,11 +1824,54 @@ function buildTvcPromptPlanFromBoundaries(
   return plan;
 }
 
+function assertTvcLogoStoryboardRows(
+  graph: WorkflowGraph,
+  rows: TvcStoryboardRow[],
+  logo: TvcLogoConfig | undefined,
+) {
+  const logoRows = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.kind === "logo-animation");
+  if (!logo) {
+    if (logoRows.length) {
+      throw new Error("未设置品牌 Logo，不能添加 Logo 动效镜头。 ");
+    }
+    return;
+  }
+  if (logo.placement === "standalone") {
+    if (logoRows.length) {
+      throw new Error("独立 Logo 动效不能加入正片分镜表。 ");
+    }
+    return;
+  }
+  if (logoRows.length !== 1) {
+    throw new Error("片头或片尾 Logo 必须有且仅有一个 Logo 动效镜头。 ");
+  }
+  const item = logoRows[0]!;
+  const expectedIndex = logo.placement === "opening" ? 0 : rows.length - 1;
+  if (item.index !== expectedIndex) {
+    throw new Error(logo.placement === "opening"
+      ? "片头 Logo 必须是正片第一镜。"
+      : "片尾 Logo 必须是正片最后一镜。");
+  }
+  if (item.row.durationSeconds !== logo.durationSeconds) {
+    throw new Error(`Logo 动效镜头时长必须为 ${logo.durationSeconds} 秒。`);
+  }
+  if (!item.row.referenceNodeIds.includes(logo.nodeId)) {
+    throw new Error("Logo 动效镜头必须引用当前项目的品牌 Logo。 ");
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === logo.nodeId);
+  if (!isTvcLogoSource(node, graph.tvc?.projectId)) {
+    throw new Error("品牌 Logo 必须是当前 TVC 项目上传的 PNG、WebP 或 JPEG 图片。 ");
+  }
+}
+
 function normaliseStoryboard(
   title: string,
   targetDuration: number,
   rows: TvcStoryboardDraftRow[],
   graph: WorkflowGraph,
+  logo?: TvcLogoConfig,
 ) {
   if (!rows.length) throw new Error("TVC 分镜表至少需要一个镜头。");
   const shotNumbers = new Set<string>();
@@ -1338,6 +1882,8 @@ function normaliseStoryboard(
       !Number.isInteger(row.startSecond) ||
       !Number.isInteger(row.endSecond) ||
       !isFinitePositiveInteger(row.durationSeconds) ||
+      (row.dialogue !== undefined && typeof row.dialogue !== "string") ||
+      (row.kind !== undefined && row.kind !== "logo-animation") ||
       row.startSecond !== cursor ||
       row.endSecond <= row.startSecond ||
       row.endSecond - row.startSecond !== row.durationSeconds ||
@@ -1377,15 +1923,18 @@ function normaliseStoryboard(
       composition: row.composition,
       performance: row.performance,
       narration: row.narration,
+      ...(row.dialogue !== undefined ? { dialogue: row.dialogue } : {}),
       sound: row.sound,
       transition: row.transition,
       constraints: row.constraints,
       referenceNodeIds: row.referenceNodeIds,
+      ...(row.kind ? { kind: row.kind } : {}),
     } satisfies TvcStoryboardRow;
   });
   if (cursor !== targetDuration) {
     throw new Error(`TVC 分镜总时长为 ${cursor} 秒，与目标 ${targetDuration} 秒不一致。`);
   }
+  assertTvcLogoStoryboardRows(graph, normalised, logo);
   return {
     title,
     targetDurationSeconds: targetDuration,
@@ -1396,6 +1945,170 @@ function normaliseStoryboard(
 
 function stateWith<T extends TvcWorkflowState>(graph: WorkflowGraph, tvc: T): WorkflowGraph {
   return { ...graph, tvc };
+}
+
+export type TvcLogoConfigInput = Omit<TvcLogoConfig, "durationSeconds"> & {
+  durationSeconds?: number;
+};
+
+function normaliseTvcLogoConfig(
+  graph: WorkflowGraph,
+  project: TvcWorkflowState,
+  value: TvcLogoConfigInput,
+): TvcLogoConfig {
+  const durationSeconds = value.durationSeconds ?? TVC_LOGO_DEFAULT_DURATION;
+  if (
+    !isNonEmptyString(value.nodeId) ||
+    !isTvcLogoPlacement(value.placement) ||
+    !isFinitePositiveInteger(durationSeconds) ||
+    durationSeconds < TVC_VIDEO_MIN_DURATION ||
+    durationSeconds > TVC_VIDEO_MAX_DURATION
+  ) {
+    throw new Error(`品牌 Logo 动效时长必须为 ${TVC_VIDEO_MIN_DURATION}–${TVC_VIDEO_MAX_DURATION} 秒。`);
+  }
+  const node = graph.nodes.find((candidate) => candidate.id === value.nodeId);
+  if (!isTvcLogoSource(node, project.projectId)) {
+    throw new Error("品牌 Logo 必须使用当前 TVC 项目上传的 PNG、WebP 或 JPEG 图片。 ");
+  }
+  return { nodeId: value.nodeId, placement: value.placement, durationSeconds };
+}
+
+function refreshTvcBriefNode(
+  graph: WorkflowGraph,
+  project: TvcWorkflowState,
+  idFactory: IdFactory,
+) {
+  if (!project.brief) return graph;
+  return addOrUpdateTvcNode(
+    graph,
+    "tvc-brief",
+    project.projectId,
+    `${project.title} · TVC 资料梳理`,
+    briefText(project.title, project.brief, graph),
+    idFactory,
+    { width: 520, height: 420 },
+  ).graph;
+}
+
+export function createTvcLogoSource(
+  graph: WorkflowGraph,
+  input: TvcLogoSourceInput,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+) {
+  const project = assertTvcProject(graph);
+  if (
+    !isNonEmptyString(input.assetId) ||
+    !isNonEmptyString(input.assetName) ||
+    !isTvcLogoMimeType(input.assetMimeType)
+  ) {
+    throw new Error("品牌 Logo 仅支持不超过 10MB 的 PNG、WebP 或 JPEG 图片。 ");
+  }
+  const origin = rightAppendOrigin(graph);
+  const nodeId = idFactory();
+  const node: WorkflowSourceNode = {
+    id: nodeId,
+    x: origin.x,
+    y: origin.y,
+    type: "source",
+    kind: "image",
+    text: input.text?.trim() || "品牌 Logo，仅作为视频动效视觉参考。",
+    assetId: input.assetId,
+    assetName: input.assetName,
+    assetMimeType: input.assetMimeType,
+    label: `${input.assetName} · TVC 品牌 Logo`,
+    tvcProjectId: project.projectId,
+    storyRole: "tvc-logo",
+  };
+  return {
+    graph: { ...graph, nodes: [...graph.nodes, node] },
+    nodeId,
+  };
+}
+
+function clearTvcPromptState() {
+  return {
+    promptUnits: undefined,
+    standaloneLogoUnit: undefined,
+    promptSourceRevision: undefined,
+  };
+}
+
+export function configureTvcLogo(
+  graph: WorkflowGraph,
+  input: TvcLogoConfigInput | null,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+) {
+  const project = assertTvcProject(graph);
+  const logo = input ? normaliseTvcLogoConfig(graph, project, input) : undefined;
+  const sameConfig = JSON.stringify(project.logo ?? null) === JSON.stringify(logo ?? null);
+  if (sameConfig) return { graph, logo: project.logo };
+  const requiresStoryboardRevision =
+    project.logo?.placement === "opening" ||
+    project.logo?.placement === "closing" ||
+    logo?.placement === "opening" ||
+    logo?.placement === "closing";
+  const revision = project.revision + 1;
+  const locked = project.lockedAt !== undefined && project.lockedRevision !== undefined;
+  const nextProject: TvcWorkflowState = {
+    ...project,
+    ...(logo ? { logo } : { logo: undefined }),
+    revision,
+    ...clearTvcPromptState(),
+    ...(requiresStoryboardRevision
+      ? {
+          phase: project.brief ? "script-draft" as const : project.phase,
+          lockedAt: undefined,
+          lockedRevision: undefined,
+          promptPlan: undefined,
+        }
+      : locked
+        ? {
+            phase: "script-locked" as const,
+            lockedRevision: revision,
+          }
+        : {}),
+  };
+  let next = refreshTvcBriefNode(stateWith(graph, nextProject), nextProject, idFactory);
+  if (requiresStoryboardRevision) {
+    next = {
+      ...next,
+      nodes: next.nodes.map((node) =>
+        node.storyRole === "tvc-storyboard" && node.tvcProjectId === project.projectId
+          ? { ...node, label: `${project.title} · TVC 分镜表 · 草案` }
+          : node,
+      ) as WorkflowNode[],
+    };
+  }
+  return {
+    graph: removeTvcPromptArtifacts(next, project.projectId),
+    logo,
+  };
+}
+
+export function setTvcPromptNarration(
+  graph: WorkflowGraph,
+  narration: TvcNarrationOption,
+  idFactory: IdFactory = () => crypto.randomUUID(),
+) {
+  const project = assertTvcProject(graph);
+  if (!isTvcNarrationOption(narration)) {
+    throw new Error("旁白选项必须为加入旁白或不加旁白。 ");
+  }
+  if (project.promptOptions?.narration === narration) return { graph, narration };
+  const revision = project.revision + 1;
+  const locked = project.lockedAt !== undefined && project.lockedRevision !== undefined;
+  const nextProject: TvcWorkflowState = {
+    ...project,
+    promptOptions: { narration },
+    revision,
+    ...clearTvcPromptState(),
+    ...(locked ? { phase: "script-locked" as const, lockedRevision: revision } : {}),
+  };
+  const withBrief = refreshTvcBriefNode(stateWith(graph, nextProject), nextProject, idFactory);
+  return {
+    graph: removeTvcPromptArtifacts(withBrief, project.projectId),
+    narration,
+  };
 }
 
 export function createTvcBrief(
@@ -1450,6 +2163,7 @@ export function updateTvcBrief(
     lockedRevision: undefined,
     promptPlan: undefined,
     promptUnits: undefined,
+    standaloneLogoUnit: undefined,
     promptSourceRevision: undefined,
   };
   const withState = stateWith(graph, nextProject);
@@ -1593,6 +2307,7 @@ export function writeTvcStoryboardDraft(
     project.brief.targetDuration,
     operation.rows,
     graph,
+    project.logo,
   );
   const nextProject: TvcWorkflowState = {
     ...project,
@@ -1603,6 +2318,7 @@ export function writeTvcStoryboardDraft(
     lockedRevision: undefined,
     promptPlan: undefined,
     promptUnits: undefined,
+    standaloneLogoUnit: undefined,
     promptSourceRevision: undefined,
   };
   const withState = stateWith(graph, nextProject);
@@ -1660,6 +2376,7 @@ export function lockTvcScript(graph: WorkflowGraph, now = Date.now()) {
     lockedRevision: project.revision,
     promptPlan,
     promptUnits: undefined,
+    standaloneLogoUnit: undefined,
     promptSourceRevision: undefined,
   };
   const withState = stateWith(graph, nextProject);
@@ -1694,6 +2411,7 @@ function replaceTvcPromptPlan(
     lockedRevision: revision,
     promptPlan: plan,
     promptUnits: undefined,
+    standaloneLogoUnit: undefined,
     promptSourceRevision: undefined,
   };
   const withoutPrompt = removeTvcPromptArtifacts(
@@ -1766,6 +2484,21 @@ function assertPromptUnits(
   }
 }
 
+function assertStandaloneLogoUnit(
+  graph: WorkflowGraph,
+  project: TvcWorkflowState,
+  unit: TvcStandaloneLogoUnit | undefined,
+) {
+  if (project.logo?.placement !== "standalone") {
+    if (unit !== undefined) {
+      throw new Error("未选择独立 Logo 动效，不能创建独立 Logo 最终提示词。 ");
+    }
+    return;
+  }
+  const error = tvcStandaloneLogoUnitError(graph, project, unit);
+  if (error) throw new Error(error);
+}
+
 export function createTvcPromptPackage(
   graph: WorkflowGraph,
   operation: TvcCreatePromptPackageOperation,
@@ -1781,10 +2514,12 @@ export function createTvcPromptPackage(
     throw new Error("TVC 剧本尚未锁定或已被修改，不能生成最终提示词。");
   }
   assertPromptUnits(graph, project, operation.units);
+  assertStandaloneLogoUnit(graph, project, operation.standaloneLogoUnit);
   const nextProject: TvcWorkflowState = {
     ...project,
     phase: "prompt-final",
     promptUnits: operation.units,
+    standaloneLogoUnit: operation.standaloneLogoUnit,
     promptSourceRevision: operation.sourceRevision,
   };
   const withState = stateWith(graph, nextProject);
@@ -1802,10 +2537,13 @@ export function createTvcPromptPackage(
     ? connectIfMissing(created.graph, storyboard.id, created.nodeId, idFactory)
     : created.graph;
   const synced = syncTvcVideoWorkflow(connected, idFactory);
+  const standalone = syncTvcStandaloneLogoVideoWorkflow(synced.graph, idFactory);
   return {
-    graph: synced.graph,
+    graph: standalone.graph,
     promptNodeId: created.nodeId,
-    schedulerIds: synced.schedulerIds,
+    schedulerIds: standalone.schedulerId
+      ? [...synced.schedulerIds, standalone.schedulerId]
+      : synced.schedulerIds,
   };
 }
 

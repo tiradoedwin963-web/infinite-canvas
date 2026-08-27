@@ -11,7 +11,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AGENT_CHAT_STORAGE_KEY,
   AGENT_CONVERSATIONS_STORAGE_KEY,
@@ -97,6 +97,7 @@ type CanvasAgentSidebarProps = {
     requestId: string,
     outcome: CanvasAgentAutoRequestOutcome,
   ) => void;
+  contextControls?: ReactNode;
 };
 
 export type CanvasAgentAutoRequest = {
@@ -146,6 +147,7 @@ export function CanvasAgentSidebar({
   saveConversationStore,
   autoRequest,
   onAutoRequestComplete,
+  contextControls,
 }: CanvasAgentSidebarProps) {
   const [conversationStore, setConversationStore] = useState<AgentConversationStore>(
     EMPTY_CONVERSATION_STORE,
@@ -1305,6 +1307,7 @@ export function CanvasAgentSidebar({
           </div>
 
           <div className="shrink-0 border-t border-black/8 bg-white p-3.5">
+            {contextControls}
             {foundationControls.map((control) => {
               const confirmationKey = `${control.storyId}:${[...control.refs].sort().join(",")}`;
               if (

@@ -1392,6 +1392,43 @@ body {
   white-space: nowrap;
 }
 
+.tvc-storyboard-shot-number {
+  display: grid;
+  gap: 3px;
+}
+
+.tvc-storyboard-shot-number small {
+  color: #6658b7;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tvc-storyboard-audio-cell p {
+  margin: 0 0 7px;
+}
+
+.tvc-storyboard-audio-cell p:last-child {
+  margin-bottom: 0;
+}
+
+.tvc-storyboard-audio-cell > div {
+  display: grid;
+  gap: 7px;
+}
+
+.tvc-storyboard-audio-cell label {
+  display: grid;
+  gap: 3px;
+  color: #77736d;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.tvc-storyboard-audio-cell textarea {
+  min-height: 52px;
+}
+
 .tvc-storyboard-table-scroll input,
 .tvc-storyboard-table-scroll textarea {
   width: 100%;

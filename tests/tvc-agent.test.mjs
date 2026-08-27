@@ -41,7 +41,7 @@ const tvcPromptPlan = [{
   referenceNodeIds: [],
 }];
 
-function tvcCanvas(stage) {
+function tvcCanvas(stage, options = {}) {
   const revision = stage === "intake" ? 0 : 2;
   return {
     ...workflowCanvas,
@@ -55,6 +55,7 @@ function tvcCanvas(stage) {
       title: "虹桥公园 TVC",
       targetModel: "Seedance 2.5",
       targetMaxDuration: 30,
+      ...options,
     },
   };
 }
@@ -300,7 +301,12 @@ test("loads the storyboard or prompt handbook only for its matching TVC stage", 
       body = JSON.parse(init.body);
       return response([scenario.operation]);
     });
-    await client.respond(request(tvcCanvas(scenario.stage)));
+    await client.respond(request(tvcCanvas(
+      scenario.stage,
+      scenario.stage === "script-locked"
+        ? { promptOptions: { narration: "include" } }
+        : {},
+    )));
     const system = body.messages[0].content;
     assert.match(system, new RegExp(scenario.expected));
     assert.doesNotMatch(system, scenario.excluded);
@@ -330,7 +336,9 @@ test("sends the persisted 30-second prompt plan and only accepts its exact promp
     body = JSON.parse(init.body);
     return response([matchingOperation]);
   });
-  await client.respond(request(tvcCanvas("script-locked")));
+  await client.respond(request(tvcCanvas("script-locked", {
+    promptOptions: { narration: "include" },
+  })));
   const system = body.messages[0].content;
   assert.match(system, /已持久化的 30 秒提示词段计划/);
   assert.match(system, /"ref":"plan-01"/);
@@ -368,6 +376,218 @@ test("sends the persisted 30-second prompt plan and only accepts its exact promp
       operations: [matchingOperation, matchingOperation],
     })).operations),
     /每次只能返回一个最终提示词包操作/,
+  );
+});
+
+test("parses optional TVC dialogue, Logo animation rows, and standalone Logo units", () => {
+  const parsed = parseAgentModelResponse(JSON.stringify({
+    message: "已写入品牌镜头。",
+    workflow_state: "active",
+    operations: [{
+      type: "write_tvc_storyboard_draft",
+      project_id: "project-1",
+      rows: [{
+        shot_number: "001",
+        start_second: 0,
+        end_second: 4,
+        duration_seconds: 4,
+        reference_scene: "深色无文字背景",
+        scene_time: "片头",
+        shot_size_lens: "特写 / 50mm",
+        camera: "缓慢推近",
+        composition: "Logo 居中",
+        performance: "Logo 轻微展开后稳定停留",
+        narration: "无",
+        dialogue: "欢迎来到园区。",
+        sound: "柔和环境声，无 BGM",
+        transition: "起镜",
+        constraints: "保持上传 Logo 的比例与主色",
+        reference_node_ids: ["logo-node"],
+        kind: "logo-animation",
+      }],
+    }, {
+      type: "create_tvc_prompt_package",
+      project_id: "project-1",
+      source_revision: 2,
+      units: [{
+        ref: "plan-01",
+        start_second: 0,
+        end_second: 4,
+        shot_numbers: ["001"],
+        reference_node_ids: [],
+        prompt: "【00:00–00:04】当前正片镜头。",
+      }],
+      standalone_logo_unit: {
+        ref: "logo-animation",
+        duration_seconds: 4,
+        reference_node_ids: ["logo-node"],
+        prompt: "【00:00–00:04】仅生成上传 Logo 的批准动效。",
+      },
+    }],
+  }));
+  const storyboard = parsed.operations[0];
+  const promptPackage = parsed.operations[1];
+  assert.equal(storyboard.type, "write_tvc_storyboard_draft");
+  assert.equal(storyboard.rows[0].dialogue, "欢迎来到园区。");
+  assert.equal(storyboard.rows[0].kind, "logo-animation");
+  assert.equal(promptPackage.type, "create_tvc_prompt_package");
+  assert.deepEqual(promptPackage.standaloneLogoUnit, {
+    ref: "logo-animation",
+    durationSeconds: 4,
+    referenceNodeIds: ["logo-node"],
+    prompt: "【00:00–00:04】仅生成上传 Logo 的批准动效。",
+  });
+});
+
+test("requires the configured Logo row at the chosen main-film boundary", () => {
+  const logoCanvas = tvcCanvas("script-draft", {
+    logo: { nodeId: "logo-node", placement: "opening", durationSeconds: 4 },
+    promptOptions: { narration: "omit" },
+  });
+  const valid = parseAgentModelResponse(JSON.stringify({
+    message: "已写入分镜。",
+    workflow_state: "active",
+    operations: [{
+      type: "write_tvc_storyboard_draft",
+      project_id: "project-1",
+      rows: [{
+        shot_number: "001",
+        start_second: 0,
+        end_second: 4,
+        duration_seconds: 4,
+        reference_scene: "深色无文字背景",
+        scene_time: "片头",
+        shot_size_lens: "特写 / 50mm",
+        camera: "缓慢推近",
+        composition: "Logo 居中",
+        performance: "Logo 轻微展开后稳定停留",
+        narration: "无",
+        sound: "柔和环境声，无 BGM",
+        transition: "起镜",
+        constraints: "保持上传 Logo 的比例与主色",
+        reference_node_ids: ["logo-node"],
+        kind: "logo-animation",
+      }],
+    }],
+  })).operations;
+  assert.doesNotThrow(() => validateTvcAgentOperations(logoCanvas.tvc, valid));
+
+  const missingLogoRow = parseAgentModelResponse(JSON.stringify({
+    message: "已写入分镜。",
+    workflow_state: "active",
+    operations: [{
+      type: "write_tvc_storyboard_draft",
+      project_id: "project-1",
+      rows: [{
+        shot_number: "001",
+        start_second: 0,
+        end_second: 4,
+        duration_seconds: 4,
+        reference_scene: "深色无文字背景",
+        scene_time: "片头",
+        shot_size_lens: "特写 / 50mm",
+        camera: "缓慢推近",
+        composition: "主体居中",
+        performance: "角色停留",
+        narration: "无",
+        sound: "环境声，无 BGM",
+        transition: "起镜",
+        constraints: "保持主体一致",
+        reference_node_ids: [],
+      }],
+    }],
+  })).operations;
+  assert.throws(
+    () => validateTvcAgentOperations(logoCanvas.tvc, missingLogoRow),
+    /唯一的首镜或末镜动效分镜/,
+  );
+});
+
+test("keeps standalone Logo outside the main prompt plan and includes the narration choice", async () => {
+  const standaloneCanvas = tvcCanvas("script-locked", {
+    logo: { nodeId: "logo-node", placement: "standalone", durationSeconds: 4 },
+    promptOptions: { narration: "omit" },
+  });
+  const operation = {
+    type: "create_tvc_prompt_package",
+    project_id: "project-1",
+    source_revision: 2,
+    units: [{
+      ref: "plan-01",
+      start_second: 0,
+      end_second: 4,
+      shot_numbers: ["001"],
+      reference_node_ids: [],
+      prompt: "【00:00–00:04】当前正片镜头，只保留对白与环境声。",
+    }],
+    standalone_logo_unit: {
+      ref: "logo-animation",
+      duration_seconds: 4,
+      reference_node_ids: ["logo-node"],
+      prompt: "【00:00–00:04】仅生成上传 Logo 的批准动效。",
+    },
+  };
+  let body;
+  const client = createCanvasAgentClient(clientConfig, async (_url, init) => {
+    body = JSON.parse(init.body);
+    return response([operation]);
+  });
+  await client.respond(request(standaloneCanvas));
+  assert.match(body.messages[0].content, /当前品牌 Logo：节点 logo-node，用途 standalone，时长 4 秒/);
+  assert.match(body.messages[0].content, /当前最终提示词旁白选项：omit/);
+
+  const missingStandaloneUnit = { ...operation };
+  delete missingStandaloneUnit.standalone_logo_unit;
+  assert.throws(
+    () => validateTvcAgentOperations(standaloneCanvas.tvc, parseAgentModelResponse(JSON.stringify({
+      message: "缺少独立 Logo。",
+      workflow_state: "active",
+      operations: [missingStandaloneUnit],
+    })).operations),
+    /独立 Logo 提示词必须匹配/,
+  );
+});
+
+test("validates Logo and narration snapshot settings while preserving legacy narration", () => {
+  assert.throws(
+    () => request(tvcCanvas("script-draft", {
+      logo: { nodeId: "logo-node", placement: "opening", durationSeconds: 3 },
+    })),
+    (error) => error instanceof CanvasAgentError && /品牌 Logo 设置无效/.test(error.message),
+  );
+  assert.throws(
+    () => request(tvcCanvas("script-draft", {
+      promptOptions: { narration: "auto" },
+    })),
+    (error) => error instanceof CanvasAgentError && /旁白设置无效/.test(error.message),
+  );
+  assert.equal(request(tvcCanvas("script-locked")).canvas.tvc.promptOptions, undefined);
+});
+
+test("requires an explicit narration choice before a new locked prompt package", () => {
+  const operations = parseAgentModelResponse(JSON.stringify({
+    message: "已写入最终提示词。",
+    workflow_state: "active",
+    operations: [{
+      type: "create_tvc_prompt_package",
+      project_id: "project-1",
+      source_revision: 2,
+      units: [{
+        ref: "plan-01",
+        start_second: 0,
+        end_second: 4,
+        shot_numbers: ["001"],
+        reference_node_ids: [],
+        prompt: "【00:00–00:04】当前视频片段的批准镜头。",
+      }],
+    }],
+  })).operations;
+  assert.throws(
+    () => validateTvcAgentOperations(tvcCanvas("script-locked").tvc, operations),
+    /必须明确选择是否加入旁白/,
+  );
+  assert.doesNotThrow(
+    () => validateTvcAgentOperations(tvcCanvas("prompt-final").tvc, operations),
   );
 });
 
@@ -557,6 +777,8 @@ test("documents TVC as an application capability rather than a Codex Skill", asy
   assert.match(core, /不得自行锁稿/);
   assert.match(intake, /不得擅自选择/);
   assert.match(storyboard, /镜号、时间码、时长/);
+  assert.match(storyboard, /旁白 \/ 对白/);
+  assert.match(storyboard, /logo-animation/);
   assert.match(promptPackage, /不得包含 J-cut、L-cut/);
   assert.match(promptPackage, /完整 Agent JSON 对象/);
   assert.match(promptPackage, /"progress_summary"/);
@@ -564,6 +786,8 @@ test("documents TVC as an application capability rather than a Codex Skill", asy
   assert.match(promptPackage, /当前锁稿修订号/);
   assert.match(promptPackage, /`promptPlan` 是唯一权威的 30 秒视频段计划/);
   assert.match(promptPackage, /`【00:00–00:24】`/);
+  assert.match(promptPackage, /standalone_logo_unit/);
+  assert.match(promptPackage, /`omit`/);
   assert.match(promptPackage, /不得在锁稿阶段返回 `update_tvc_brief` 或 `write_tvc_storyboard_draft`/);
   assert.match(core, /`workflow_state: "clarifying"` 与空 `operations`/);
 });

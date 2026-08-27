@@ -50,10 +50,14 @@ export type WorkflowStoryRole =
   | "tvc-asset-spec"
   | "tvc-asset-scheduler"
   | "tvc-asset-result"
+  | "tvc-logo"
   | "tvc-storyboard"
   | "tvc-prompt"
+  | "tvc-logo-prompt"
   | "tvc-video-scheduler"
-  | "tvc-video-result";
+  | "tvc-video-result"
+  | "tvc-logo-video-scheduler"
+  | "tvc-logo-video-result";
 
 export type WorkflowAssetKind = "character" | "scene" | "prop";
 export type WorkflowAssetRole = "spec" | "scheduler" | "result";
@@ -251,10 +255,14 @@ function validBase(node: Partial<WorkflowNode>) {
         "tvc-asset-spec",
         "tvc-asset-scheduler",
         "tvc-asset-result",
+        "tvc-logo",
         "tvc-storyboard",
         "tvc-prompt",
+        "tvc-logo-prompt",
         "tvc-video-scheduler",
         "tvc-video-result",
+        "tvc-logo-video-scheduler",
+        "tvc-logo-video-result",
       ].includes(node.storyRole)) &&
     (node.assetRef === undefined || typeof node.assetRef === "string") &&
     (node.assetKind === undefined ||
@@ -297,7 +305,9 @@ function isWorkflowNode(value: unknown): value is WorkflowNode {
     return (
       isComposerMode(node.kind) &&
       typeof node.text === "string" &&
-      (node.assetId === undefined || typeof node.assetId === "string")
+      (node.assetId === undefined || typeof node.assetId === "string") &&
+      (node.assetName === undefined || typeof node.assetName === "string") &&
+      (node.assetMimeType === undefined || typeof node.assetMimeType === "string")
     );
   }
   if (node.type === "scheduler") {
@@ -916,6 +926,7 @@ export function buildWorkflowGenerationPrompt(
     scheduler.storyRole === "asset-scheduler" ||
     scheduler.storyRole === "tvc-asset-scheduler" ||
     scheduler.storyRole === "tvc-video-scheduler" ||
+    scheduler.storyRole === "tvc-logo-video-scheduler" ||
     scheduler.storyRole === "storyboard-scheduler" ||
     scheduler.storyRole === "video-scheduler"
   ) {
@@ -975,9 +986,10 @@ export function createWorkflowRun(
           (node.storyRole === "storyboard" ||
             node.storyRole === "clip" ||
             node.storyRole === "asset-result")) ||
-        (Boolean(node.tvcProjectId) &&
+          (Boolean(node.tvcProjectId) &&
           (node.storyRole === "tvc-asset-result" ||
-            node.storyRole === "tvc-video-result"))
+            node.storyRole === "tvc-video-result" ||
+            node.storyRole === "tvc-logo-video-result"))
       ),
   );
   if (storyResults.length) {
@@ -1011,7 +1023,8 @@ export function createWorkflowRun(
     };
     const resultIds = reusable.map((node) => node.id);
     if (
-      scheduler.storyRole === "tvc-video-scheduler" &&
+      (scheduler.storyRole === "tvc-video-scheduler" ||
+        scheduler.storyRole === "tvc-logo-video-scheduler") &&
       scheduler.tvcVideoManualOverride &&
       reusable.length < count
     ) {

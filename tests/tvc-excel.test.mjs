@@ -28,6 +28,7 @@ const storyboard = {
       composition: "入口与山林形成引导线",
       performance: "孩子停在门前抬头",
       narration: "新的探索开始。",
+      dialogue: "我们进去看看。",
       sound: "鸟鸣、轻风；无 BGM。",
       transition: "树叶遮挡切",
       constraints: "保持入口结构与角色服装。",
@@ -72,6 +73,8 @@ test("exports a readable TVC storyboard workbook with summary formulas", async (
   assert.equal(sheet.getCell("A6").value, "001");
   assert.equal(sheet.getCell("C7").value, 3);
   assert.equal(sheet.getCell("M7").value, "不新增可读文字或额外主角。");
+  assert.equal(sheet.getCell("J6").value, "旁白：新的探索开始。\n对白：我们进去看看。");
+  assert.equal(sheet.getCell("J7").value, "旁白：好奇心正在发光。\n对白：无");
   assert.equal(sheet.views[0].state, "frozen");
   assert.equal(sheet.views[0].ySplit, 5);
   assert.equal(sheet.getCell("I6").alignment.wrapText, true);

@@ -3,12 +3,18 @@ import test from "node:test";
 import {
   createTvcAssetPlan,
   createTvcBrief,
+  createTvcLogoSource,
   createTvcPromptPackage,
   buildTvcPromptPlan,
   emptyTvcWorkflowGraph,
   isTvcProject,
+  isTvcLogoSource,
+  isTvcVideoReference,
+  isTvcVideoSchedulerNode,
+  isTvcVideoSchedulerReference,
   lockTvcScript,
   readTvcProject,
+  configureTvcLogo,
   prepareTvcPromptPlan,
   saveTvcPromptPlanBoundaries,
   saveTvcStoryboardTableDraft,
@@ -18,6 +24,8 @@ import {
   isTvcVideoManualOverride,
   markTvcVideoSchedulerManualOverride,
   syncTvcVideoWorkflow,
+  syncTvcStandaloneLogoVideoWorkflow,
+  setTvcPromptNarration,
   tvcVideoSchedulerRunError,
   tvcAgentSummary,
   updateTvcBrief,
@@ -957,4 +965,149 @@ test("invalid references are rejected atomically and brief revisions revoke the 
   assert.equal(readTvcProject(updated.graph)?.phase, "script-draft");
   assert.equal(readTvcProject(updated.graph)?.lockedAt, undefined);
   assert.equal(updated.graph.nodes.some((node) => node.storyRole === "tvc-prompt"), false);
+});
+
+test("uses only a current uploaded raster TVC Logo for an opening or closing logo storyboard row", () => {
+  const { graph, idFactory, projectId } = initializedGraph();
+  assert.throws(
+    () => createTvcLogoSource(graph, {
+      assetId: "logo-svg",
+      assetName: "品牌标志.svg",
+      assetMimeType: "image/svg+xml",
+    }, idFactory),
+    /PNG、WebP 或 JPEG/,
+  );
+  const logo = createTvcLogoSource(graph, {
+    assetId: "logo-asset",
+    assetName: "品牌标志.png",
+    assetMimeType: "image/png",
+  }, idFactory);
+  assert.equal(isTvcLogoSource(logo.graph.nodes.find((node) => node.id === logo.nodeId), projectId), true);
+  assert.equal(isTvcVideoReference(logo.graph.nodes.find((node) => node.id === logo.nodeId), projectId), true);
+  assert.equal(isTvcVideoReference(logo.graph.nodes.find((node) => node.id === "reference"), projectId), true);
+  const configured = configureTvcLogo(logo.graph, {
+    nodeId: logo.nodeId,
+    placement: "opening",
+  }, idFactory);
+  assert.equal(readTvcProject(configured.graph)?.logo?.durationSeconds, 4);
+  assert.throws(
+    () => writeTvcStoryboardDraft(configured.graph, {
+      type: "write_tvc_storyboard_draft",
+      projectId,
+      rows: [row("001", 0, 4), row("002", 4, 8)],
+    }, idFactory),
+    /有且仅有一个 Logo 动效镜头/,
+  );
+  const logoRow = {
+    ...row("logo-001", 0, 4),
+    referenceNodeIds: [logo.nodeId],
+    kind: "logo-animation",
+    narration: "无",
+    dialogue: "无",
+  };
+  const contentRow = {
+    ...row("001", 4, 8),
+    dialogue: "欢迎来到园区。",
+  };
+  const drafted = writeTvcStoryboardDraft(configured.graph, {
+    type: "write_tvc_storyboard_draft",
+    projectId,
+    rows: [logoRow, contentRow],
+  }, idFactory);
+  assert.equal(readTvcProject(drafted.graph)?.storyboard?.rows[0]?.kind, "logo-animation");
+  assert.equal(readTvcProject(drafted.graph)?.storyboard?.rows[1]?.dialogue, "欢迎来到园区。");
+  const locked = lockTvcScript(drafted.graph, 1);
+  const withoutNarration = setTvcPromptNarration(locked, "omit", idFactory);
+  const prompted = createTvcPromptPackage(withoutNarration.graph, {
+    type: "create_tvc_prompt_package",
+    projectId,
+    sourceRevision: readTvcProject(withoutNarration.graph)?.revision,
+    units: plannedUnits(withoutNarration.graph, ["八秒品牌片头与园区画面。"]),
+  }, idFactory);
+  const scheduler = prompted.graph.nodes.find((node) => node.storyRole === "tvc-video-scheduler");
+  assert.doesNotMatch(scheduler?.prompt ?? "", /旁白：/);
+  assert.match(scheduler?.prompt ?? "", /对白：欢迎来到园区。/);
+  assert.deepEqual(
+    prompted.graph.edges
+      .filter((edge) => edge.targetId === scheduler?.id)
+      .map((edge) => edge.sourceId),
+    [
+      prompted.graph.nodes.find((node) => node.storyRole === "tvc-prompt")?.id,
+      logo.nodeId,
+      "reference",
+    ],
+  );
+  assert.equal(isTvcVideoSchedulerReference(
+    prompted.graph,
+    scheduler,
+    prompted.graph.nodes.find((node) => node.id === logo.nodeId),
+  ), true);
+});
+
+test("creates an independent Logo prompt and video workflow without adding it to the main prompt plan", () => {
+  const { graph, idFactory, projectId } = initializedGraph();
+  const logo = createTvcLogoSource(graph, {
+    assetId: "logo-asset",
+    assetName: "品牌标志.webp",
+    assetMimeType: "image/webp",
+  }, idFactory);
+  const configured = configureTvcLogo(logo.graph, {
+    nodeId: logo.nodeId,
+    placement: "standalone",
+    durationSeconds: 6,
+  }, idFactory);
+  const drafted = writeTvcStoryboardDraft(configured.graph, {
+    type: "write_tvc_storyboard_draft",
+    projectId,
+    rows: [row("001", 0, 4), row("002", 4, 8)],
+  }, idFactory);
+  const locked = lockTvcScript(drafted.graph, 1);
+  const mainUnits = plannedUnits(locked, ["八秒正片内容。"]);
+  assert.throws(
+    () => createTvcPromptPackage(locked, {
+      type: "create_tvc_prompt_package",
+      projectId,
+      sourceRevision: drafted.revision,
+      units: mainUnits,
+    }, idFactory),
+    /独立品牌 Logo 动效/,
+  );
+  const prompted = createTvcPromptPackage(locked, {
+    type: "create_tvc_prompt_package",
+    projectId,
+    sourceRevision: drafted.revision,
+    units: mainUnits,
+    standaloneLogoUnit: {
+      ref: "logo-animation",
+      durationSeconds: 6,
+      referenceNodeIds: [logo.nodeId],
+      prompt: "品牌 Logo 从柔和光影中显现，保持图形比例和配色稳定。",
+    },
+  }, idFactory);
+  const project = readTvcProject(prompted.graph);
+  const scheduler = prompted.graph.nodes.find((node) => node.storyRole === "tvc-logo-video-scheduler");
+  const result = prompted.graph.nodes.find((node) => node.storyRole === "tvc-logo-video-result");
+  const prompt = prompted.graph.nodes.find((node) => node.storyRole === "tvc-logo-prompt");
+  assert.deepEqual(project?.promptPlan?.map((segment) => segment.ref), ["segment-001"]);
+  assert.equal(project?.standaloneLogoUnit?.ref, "logo-animation");
+  assert.equal(scheduler?.type, "scheduler");
+  assert.equal(scheduler?.duration, "6");
+  assert.equal(scheduler?.storyRole, "tvc-logo-video-scheduler");
+  assert.equal(result?.type, "result");
+  assert.equal(result?.storyRole, "tvc-logo-video-result");
+  assert.equal(isTvcVideoSchedulerNode(scheduler), true);
+  assert.equal(isActiveTvcVideoScheduler(prompted.graph, scheduler), true);
+  assert.equal(isRunnableTvcVideoScheduler(prompted.graph, scheduler), true);
+  assert.deepEqual(
+    prompted.graph.edges
+      .filter((edge) => edge.targetId === scheduler?.id)
+      .map((edge) => edge.sourceId),
+    [prompt?.id, logo.nodeId],
+  );
+  const rerun = syncTvcStandaloneLogoVideoWorkflow(prompted.graph, idFactory);
+  assert.strictEqual(rerun.graph, prompted.graph);
+  assert.equal(rerun.schedulerId, scheduler?.id);
+  const run = createWorkflowRun(prompted.graph, scheduler?.id ?? "", 100, idFactory);
+  assert.deepEqual(run.resultIds, [result?.id]);
+  assert.equal(run.graph.nodes.find((node) => node.id === result?.id)?.status, "pending");
 });

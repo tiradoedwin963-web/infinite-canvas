@@ -140,8 +140,14 @@ import {
   tvcStoryboardFilename,
 } from "@/app/workflow/tvc-excel";
 import {
+  configureTvcLogo,
+  createTvcLogoSource,
   isTvcProject,
+  isTvcLogoSource,
   isRunnableTvcVideoScheduler,
+  isTvcVideoSchedulerNode,
+  isTvcVideoSchedulerReference,
+  isTvcVideoResultNode,
   isTvcVideoManualOverride,
   lockTvcScript,
   markTvcVideoSchedulerManualOverride,
@@ -149,13 +155,17 @@ import {
   readTvcProject,
   saveTvcPromptPlanBoundaries,
   saveTvcStoryboardTableDraft,
+  setTvcPromptNarration,
   syncTvcVideoWorkflow,
   tvcVideoSchedulerRunError,
+  type TvcLogoPlacement,
   type TvcPromptPlanBoundary,
   type TvcPromptPlanSegment,
   type TvcPromptUnit,
+  type TvcStandaloneLogoUnit,
   type TvcStoryboard,
   type TvcStoryboardTableDraftRow,
+  type TvcWorkflowState,
 } from "@/app/workflow/tvc";
 import {
   CanvasAgentSidebar,
@@ -1497,7 +1507,7 @@ export function WorkflowCanvas() {
           (node): node is WorkflowSchedulerNode =>
             node.id === current.targetId && node.type === "scheduler",
         );
-        if (target?.storyRole === "tvc-video-scheduler") {
+        if (target && isTvcVideoSchedulerNode(target)) {
           if (target.tvcVideoHistorical === true) {
             const next = updateWorkflowNode(value, target.id, {
               error: "历史 TVC 视频版本仅保留查看，不能修改参考资产。",
@@ -1505,14 +1515,9 @@ export function WorkflowCanvas() {
             graphRef.current = next;
             return next;
           }
-          const validTvcImage = source?.type === "result" &&
-            source.kind === "image" &&
-            source.status === "success" &&
-            Boolean(source.assetId) &&
-            source.tvcProjectId === target.tvcProjectId;
-          if (!validTvcImage) {
+          if (!isTvcVideoSchedulerReference(value, target, source ?? target)) {
             const next = updateWorkflowNode(value, target.id, {
-              error: "TVC 视频仅可添加本项目已成功生成的图片资产作为参考图。",
+              error: "TVC 视频仅可添加本项目已成功图片资产或已上传品牌 Logo 作为参考图。",
             });
             graphRef.current = next;
             return next;
@@ -1570,6 +1575,16 @@ export function WorkflowCanvas() {
 
   async function uploadSource(node: WorkflowSourceNode, file: File | undefined) {
     if (!file) return;
+    if (
+      node.storyRole === "tvc-logo" &&
+      !["image/png", "image/jpeg", "image/webp"].includes(file.type)
+    ) {
+      setAssetErrors((current) => ({
+        ...current,
+        [node.id]: "品牌 Logo 仅支持 PNG、JPEG 或 WebP 图片。",
+      }));
+      return;
+    }
     if (isTvcProject(graphRef.current) && node.kind === "video") {
       setAssetErrors((current) => ({
         ...current,
@@ -1626,6 +1641,137 @@ export function WorkflowCanvas() {
     }));
   }
 
+  async function uploadTvcLogo(file: File | undefined) {
+    if (!file) return;
+    const project = readTvcProject(graphRef.current);
+    if (!project) return;
+    if (![
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+    ].includes(file.type)) {
+      setAssetErrors((current) => ({
+        ...current,
+        "tvc-logo-upload": "品牌 Logo 仅支持 PNG、JPEG 或 WebP 图片。",
+      }));
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setAssetErrors((current) => ({
+        ...current,
+        "tvc-logo-upload": "品牌 Logo 图片不能超过 10MB。",
+      }));
+      return;
+    }
+
+    const nodeId = crypto.randomUUID();
+    let assetId = "";
+    try {
+      const uploaded = remote
+        ? await uploadCloudAsset({
+            projectId: activeProjectIdRef.current,
+            nodeId,
+            file,
+          })
+        : { assetId: crypto.randomUUID(), assetVersion: "" };
+      assetId = uploaded.assetId;
+      if (!remote) await saveAsset(assetId, file);
+
+      const before = graphRef.current;
+      const created = createTvcLogoSource(before, {
+        assetId,
+        assetName: file.name,
+        assetMimeType: file.type as "image/png" | "image/jpeg" | "image/webp",
+      }, () => nodeId);
+      const priorConfig = readTvcProject(before)?.logo;
+      const next = priorConfig
+        ? configureTvcLogo(created.graph, {
+            nodeId: created.nodeId,
+            placement: priorConfig.placement,
+            durationSeconds: priorConfig.durationSeconds,
+          }).graph
+        : created.graph;
+      graphRef.current = next;
+      setGraph(next);
+      const url = URL.createObjectURL(file);
+      loadedAssets.current.add(assetId);
+      if (remote && uploaded.assetVersion) {
+        setAssetVersions((current) => ({ ...current, [assetId]: uploaded.assetVersion }));
+      }
+      setAssetUrls((current) => ({ ...current, [assetId]: url }));
+      setAssetErrors((current) => {
+        const nextErrors = { ...current };
+        delete nextErrors["tvc-logo-upload"];
+        return nextErrors;
+      });
+    } catch (error) {
+      if (assetId) {
+        if (remote) {
+          await deleteCloudAsset(assetId).catch(() => undefined);
+        } else {
+          await deleteAsset(assetId).catch(() => undefined);
+        }
+      }
+      setAssetErrors((current) => ({
+        ...current,
+        "tvc-logo-upload": error instanceof Error ? error.message : "无法上传品牌 Logo。",
+      }));
+    }
+  }
+
+  function configureTvcLogoUsage(
+    placement: TvcLogoPlacement,
+    durationSeconds: number,
+  ) {
+    try {
+      const project = readTvcProject(graphRef.current);
+      const logoNode = project
+        ? graphRef.current.nodes.find((node) => node.id === project.logo?.nodeId) ??
+          [...graphRef.current.nodes].reverse().find(
+            (node) => node.type === "source" &&
+              node.storyRole === "tvc-logo" &&
+              node.tvcProjectId === project.projectId,
+          )
+        : undefined;
+      if (!logoNode || !isTvcLogoSource(logoNode, project?.projectId)) {
+        throw new Error("请先上传当前 TVC 项目的 PNG、JPEG 或 WebP 品牌 Logo。");
+      }
+      const configured = configureTvcLogo(graphRef.current, {
+        nodeId: logoNode.id,
+        placement,
+        durationSeconds,
+      });
+      graphRef.current = configured.graph;
+      setGraph(configured.graph);
+      setTvcPromptAutoRequest(null);
+      setTvcPromptRegeneration(null);
+    } catch (error) {
+      setAssetErrors((current) => ({
+        ...current,
+        "tvc-logo-upload": error instanceof Error ? error.message : "无法设置品牌 Logo 用途。",
+      }));
+    }
+  }
+
+  function setTvcNarrationOption(narration: "include" | "omit") {
+    try {
+      const saved = setTvcPromptNarration(graphRef.current, narration);
+      graphRef.current = saved.graph;
+      setGraph(saved.graph);
+      const project = readTvcProject(saved.graph);
+      if (project?.phase === "script-locked" && project.promptPlan?.length) {
+        queueTvcPromptRegeneration(saved.graph);
+      }
+    } catch (error) {
+      const project = readTvcProject(graphRef.current);
+      setTvcPromptRegeneration({
+        projectId: project?.projectId ?? "",
+        state: "error",
+        message: error instanceof Error ? error.message : "无法设置旁白选项。",
+      });
+    }
+  }
+
   function fitImageNodeToMedia(
     nodeId: string,
     naturalWidth: number,
@@ -1637,7 +1783,7 @@ export function WorkflowCanvas() {
   }
 
   function updateSchedulerKind(node: WorkflowSchedulerNode, outputKind: ComposerMode) {
-    if (node.storyRole === "tvc-video-scheduler") {
+    if (isTvcVideoSchedulerNode(node)) {
       setGraph((current) => updateWorkflowNode(current, node.id, {
         error: "TVC 最终提示词调度器固定输出视频，可调整其余视频参数。",
       }));
@@ -1756,7 +1902,7 @@ export function WorkflowCanvas() {
       );
       if (!changed) return current;
       const updated = updateWorkflowNode(current, node.id, update);
-      const next = existing.storyRole === "tvc-video-scheduler"
+      const next = isTvcVideoSchedulerNode(existing)
         ? markTvcVideoSchedulerManualOverride(updated, node.id)
         : updated;
       graphRef.current = next;
@@ -1773,7 +1919,7 @@ export function WorkflowCanvas() {
       (node): node is WorkflowSchedulerNode =>
         node.id === schedulerId &&
         node.type === "scheduler" &&
-        node.storyRole === "tvc-video-scheduler",
+        isTvcVideoSchedulerNode(node),
     );
     const edge = graph.edges.find((candidate) => candidate.id === edgeId);
     const source = edge
@@ -1798,7 +1944,7 @@ export function WorkflowCanvas() {
       (node): node is WorkflowSchedulerNode =>
         node.id === schedulerId &&
         node.type === "scheduler" &&
-        node.storyRole === "tvc-video-scheduler",
+        isTvcVideoSchedulerNode(node),
     );
     const edge = graph.edges.find((candidate) => candidate.id === edgeId);
     const source = edge
@@ -1807,12 +1953,9 @@ export function WorkflowCanvas() {
     return Boolean(
       scheduler &&
         edge?.targetId === scheduler.id &&
-        source?.type === "result" &&
-        source.kind === "image" &&
-        source.status === "success" &&
-        source.assetId &&
         scheduler.tvcVideoHistorical !== true &&
-        source.tvcProjectId === scheduler.tvcProjectId,
+        source &&
+        isTvcVideoSchedulerReference(graph, scheduler, source),
     );
   }
 
@@ -1883,6 +2026,15 @@ export function WorkflowCanvas() {
     ) {
       throw new Error("镜头段尚未保存为锁稿状态，不能重建最终提示词。");
     }
+    if (!project.promptOptions) {
+      setTvcPromptRegeneration({
+        projectId: project.projectId,
+        state: "error",
+        message: "请先在 TVC 导演设置中选择“加入旁白”或“不加旁白”，再输出最终提示词。",
+      });
+      setIsAgentOpen(true);
+      return;
+    }
     const requestId = crypto.randomUUID();
     setTvcPromptAutoRequest({
       id: requestId,
@@ -1891,6 +2043,12 @@ export function WorkflowCanvas() {
         `当前 TVC 项目 ${project.projectId} 已锁稿，并已保存 30 秒以内的视频镜头段。`,
         `仅返回一项 create_tvc_prompt_package，project_id=${project.projectId}，source_revision=${project.lockedRevision}。`,
         "必须严格使用画布 tvc.promptPlan 中的每个 ref、起止秒数、镜头编号和参考资产顺序；只补全每段最终视频提示词。",
+        project.promptOptions.narration === "omit"
+          ? "本次选择不加旁白：不得输出旁白描述，但必须保留分镜中的角色对白、环境声和拟声。"
+          : "本次选择加入旁白：保留分镜中的旁白、角色对白、环境声和拟声。",
+        project.logo?.placement === "standalone"
+          ? "必须额外返回 standalone_logo_unit：只引用当前品牌 Logo，时长严格匹配当前 Logo 设置；它不属于 tvc.promptPlan。"
+          : "不得返回 standalone_logo_unit。",
         "不得修改 Brief、资产、分镜表或镜头段；不得读取图片；不得提交图片、视频或其他媒体任务。",
       ].join("\n"),
     });
@@ -1993,7 +2151,7 @@ export function WorkflowCanvas() {
       }));
       return;
     }
-    const tvcRunError = scheduler.storyRole === "tvc-video-scheduler"
+    const tvcRunError = isTvcVideoSchedulerNode(scheduler)
       ? tvcVideoSchedulerRunError(graphRef.current, scheduler)
       : null;
     if (tvcRunError) {
@@ -2005,7 +2163,7 @@ export function WorkflowCanvas() {
     if (
       isTvcProject(graphRef.current) &&
       scheduler.outputKind === "video" &&
-      scheduler.storyRole !== "tvc-video-scheduler"
+      !isTvcVideoSchedulerNode(scheduler)
     ) {
       commitGraph((current) => updateWorkflowNode(current, scheduler.id, {
         error: "TVC 仅允许锁稿后的最终提示词视频调度器提交任务。",
@@ -2891,6 +3049,7 @@ export function WorkflowCanvas() {
     try {
       commitGraph((current) => lockTvcScript(current));
       setIsTvcLockConfirming(false);
+      setIsAgentOpen(true);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "无法锁定 TVC 分镜表。");
     }
@@ -2967,20 +3126,29 @@ export function WorkflowCanvas() {
   }
 
   const tvcProject = readTvcProject(graph);
+  const tvcLogoNode = tvcProject
+    ? graph.nodes.find(
+        (node): node is WorkflowSourceNode => node.id === tvcProject.logo?.nodeId && node.type === "source",
+      ) ?? [...graph.nodes].reverse().find(
+        (node): node is WorkflowSourceNode =>
+          node.type === "source" &&
+          node.storyRole === "tvc-logo" &&
+          node.tvcProjectId === tvcProject.projectId,
+      )
+    : undefined;
   const tvcVideoSchedulers = tvcProject
     ? graph.nodes.filter(
         (node): node is WorkflowSchedulerNode =>
           node.type === "scheduler" &&
-          node.storyRole === "tvc-video-scheduler" &&
+          isTvcVideoSchedulerNode(node) &&
           node.tvcProjectId === tvcProject.projectId,
       )
     : [];
   const tvcSegmentControlsReadOnly = Boolean(
     tvcProject && graph.nodes.some((node) =>
-      node.tvcProjectId === tvcProject.projectId && (
-        node.tvcVideoHistorical === true ||
-        (node.type === "result" &&
-          node.storyRole === "tvc-video-result" &&
+        node.tvcProjectId === tvcProject.projectId && (
+          node.tvcVideoHistorical === true ||
+        (isTvcVideoResultNode(node) &&
           (Boolean(node.taskId) || node.status !== "ready"))
       ),
     ),
@@ -2990,10 +3158,14 @@ export function WorkflowCanvas() {
     : null;
   const tvcSystemRoles = new Set([
     "tvc-brief",
+    "tvc-logo",
     "tvc-storyboard",
     "tvc-prompt",
+    "tvc-logo-prompt",
     "tvc-video-scheduler",
     "tvc-video-result",
+    "tvc-logo-video-scheduler",
+    "tvc-logo-video-result",
   ]);
   const selection = selectedIds.length > 1 ? workflowSelectionBounds(graph, selectedIds) : null;
   const selectedAssetRefs = assetRefsForSelection(graph, selectedIds);
@@ -3346,7 +3518,7 @@ export function WorkflowCanvas() {
                   : undefined;
                 if (
                   target?.type === "scheduler" &&
-                  target.storyRole === "tvc-video-scheduler"
+                  isTvcVideoSchedulerNode(target)
                 ) {
                   if (isRemovableTvcVideoInput(current, target.id, hoveredEdge.id)) {
                     const next = markTvcVideoSchedulerManualOverride(
@@ -3368,7 +3540,7 @@ export function WorkflowCanvas() {
                 }
                 if (
                   source?.type === "scheduler" &&
-                  source.storyRole === "tvc-video-scheduler"
+                  isTvcVideoSchedulerNode(source)
                 ) {
                   const next = updateWorkflowNode(current, source.id, {
                     error: "TVC 视频结果连线由系统维护，不能手动移除。",
@@ -3439,8 +3611,7 @@ export function WorkflowCanvas() {
           const protectedTvcNode = Boolean(
             node.tvcProjectId && tvcSystemRoles.has(node.storyRole ?? ""),
           );
-          const tvcVideoTask = node.type === "scheduler" &&
-            node.storyRole === "tvc-video-scheduler";
+          const tvcVideoTask = node.type === "scheduler" && isTvcVideoSchedulerNode(node);
           const canRunTvcVideoTask = !tvcVideoTask ||
             isRunnableTvcVideoScheduler(graph, node);
           const tvcVideoManualOverride = tvcVideoTask && isTvcVideoManualOverride(node);
@@ -3470,6 +3641,7 @@ export function WorkflowCanvas() {
             tvcPromptPlan={node.storyRole === "tvc-storyboard" ? tvcProject?.promptPlan : undefined}
             tvcSegmentControlsReadOnly={tvcSegmentControlsReadOnly}
             tvcPromptUnits={node.storyRole === "tvc-prompt" ? tvcProject?.promptUnits : undefined}
+            tvcStandaloneLogoUnit={node.storyRole === "tvc-logo-prompt" ? tvcProject?.standaloneLogoUnit : undefined}
             onDelete={() => deleteNode(node)}
             onOpen={() => setDetailId(node.id)}
             onOpenTvcStoryboard={() => setTvcStoryboardView({ tab: "storyboard", editing: false })}
@@ -3489,7 +3661,11 @@ export function WorkflowCanvas() {
               }
               setGraph((current) => updateWorkflowNode(current, node.id, update));
             }}
-            onUpload={(file) => node.type === "source" && void uploadSource(node, file)}
+            onUpload={(file) => node.type === "source" && void (
+              node.storyRole === "tvc-logo"
+                ? uploadTvcLogo(file)
+                : uploadSource(node, file)
+            )}
             onKindChange={(kind) => node.type === "scheduler" && updateSchedulerKind(node, kind)}
             onModelChange={(model) => node.type === "scheduler" && updateSchedulerModel(node, model)}
             onRemoveTvcImageInput={(edgeId) => removeTvcVideoImageInput(node.id, edgeId)}
@@ -3549,6 +3725,7 @@ export function WorkflowCanvas() {
           storyboard={tvcProject.storyboard}
           promptPlan={tvcProject.promptPlan}
           promptUnits={tvcProject.promptUnits}
+          standaloneLogoUnit={tvcProject.standaloneLogoUnit}
           videoSchedulers={tvcVideoSchedulers}
           initialTab={tvcStoryboardView.tab}
           initialEditing={tvcStoryboardView.editing}
@@ -3645,6 +3822,17 @@ export function WorkflowCanvas() {
         saveConversationStore={remote ? saveRemoteConversation : undefined}
         autoRequest={tvcPromptAutoRequest}
         onAutoRequestComplete={completeTvcPromptRegeneration}
+        contextControls={tvcProject ? (
+          <TvcAgentSettingsCard
+            project={tvcProject}
+            logoNode={tvcLogoNode}
+            disabled={agentBusy}
+            error={assetErrors["tvc-logo-upload"]}
+            onUploadLogo={(file) => void uploadTvcLogo(file)}
+            onConfigureLogo={configureTvcLogoUsage}
+            onSetNarration={setTvcNarrationOption}
+          />
+        ) : null}
       /> : null}
     </main>
   );
@@ -3685,6 +3873,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   tvcPromptPlan,
   tvcSegmentControlsReadOnly,
   tvcPromptUnits,
+  tvcStandaloneLogoUnit,
   onDelete,
   onOpen,
   onOpenTvcStoryboard,
@@ -3725,6 +3914,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
   tvcPromptPlan?: TvcPromptPlanSegment[];
   tvcSegmentControlsReadOnly: boolean;
   tvcPromptUnits?: TvcPromptUnit[];
+  tvcStandaloneLogoUnit?: TvcStandaloneLogoUnit;
   onDelete: () => void;
   onOpen: () => void;
   onOpenTvcStoryboard: () => void;
@@ -3774,7 +3964,7 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           onOpenTvcStoryboard();
           return;
         }
-        if (node.storyRole === "tvc-prompt") {
+        if (node.storyRole === "tvc-prompt" || node.storyRole === "tvc-logo-prompt") {
           onOpenTvcPrompt();
           return;
         }
@@ -3804,9 +3994,10 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
           onAdjustSegments={onAdjustTvcPromptPlan}
           onExport={onExportTvcStoryboard}
         />
-      ) : node.storyRole === "tvc-prompt" ? (
+      ) : node.storyRole === "tvc-prompt" || node.storyRole === "tvc-logo-prompt" ? (
         <TvcPromptNodePreview
           promptUnits={tvcPromptUnits}
+          standaloneLogoUnit={tvcStandaloneLogoUnit}
           onOpen={onOpenTvcPrompt}
         />
       ) : node.type === "source" ? (
@@ -3845,10 +4036,12 @@ const WorkflowNodeCard = memo(function WorkflowNodeCard({
                 )
               ) : assetLoading ? (
                 <><LoaderCircle className="animate-spin" size={20} /><span>素材加载中…</span></>
-              ) : <><Plus size={20} /><span>上传一{node.kind === "image" ? "张图片" : "段视频"}</span></>}
+              ) : <><Plus size={20} /><span>{node.storyRole === "tvc-logo" ? "上传品牌 Logo" : `上传一${node.kind === "image" ? "张图片" : "段视频"}`}</span></>}
               <input
                 type="file"
-                accept={node.kind === "image" ? "image/*" : "video/*"}
+                accept={node.storyRole === "tvc-logo"
+                  ? "image/png,image/jpeg,image/webp"
+                  : node.kind === "image" ? "image/*" : "video/*"}
                 onChange={(event) => onUpload(event.target.files?.[0])}
               />
             </label>
@@ -4226,6 +4419,120 @@ function tvcStageLabel(phase: "intake" | "script-draft" | "script-locked" | "pro
         : "提示词完成";
 }
 
+function TvcAgentSettingsCard({
+  project,
+  logoNode,
+  disabled,
+  error,
+  onUploadLogo,
+  onConfigureLogo,
+  onSetNarration,
+}: {
+  project: TvcWorkflowState;
+  logoNode?: WorkflowSourceNode;
+  disabled: boolean;
+  error?: string;
+  onUploadLogo: (file?: File) => void;
+  onConfigureLogo: (placement: TvcLogoPlacement, durationSeconds: number) => void;
+  onSetNarration: (narration: "include" | "omit") => void;
+}) {
+  const logoReady = Boolean(logoNode?.assetId);
+  const logo = project.logo;
+  const canChooseNarration = project.phase === "script-locked" || project.phase === "prompt-final";
+  const standaloneDuration = logo?.placement === "standalone" ? logo.durationSeconds : 4;
+
+  return (
+    <section className="mb-3 rounded-2xl border border-violet-200 bg-violet-50 p-3 text-[11px] leading-4 text-violet-950">
+      <p className="mt-0 mb-2 font-semibold">TVC 导演设置</p>
+      <div className="space-y-2">
+        <div>
+          <p className="mt-0 mb-1.5">导演 Agent：是否上传品牌 Logo 作为动效参考？</p>
+          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-violet-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+            <Upload aria-hidden="true" size={13} />
+            {logoReady ? "替换品牌 Logo" : "上传品牌 Logo"}
+            <input
+              accept="image/png,image/jpeg,image/webp"
+              disabled={disabled}
+              hidden
+              type="file"
+              onChange={(event) => onUploadLogo(event.target.files?.[0])}
+            />
+          </label>
+          <p className="mt-1 mb-0 text-[10px] text-violet-800">建议透明 PNG；仅用作视频参考，无法保证文字或图形像素级还原。</p>
+          {error ? <p className="mt-1 mb-0 text-[10px] font-medium text-red-700">{error}</p> : null}
+        </div>
+
+        {logoReady ? (
+          <div className="border-t border-violet-200 pt-2">
+            <p className="mt-0 mb-1.5">导演 Agent：这枚 Logo 如何使用？</p>
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                ["opening", "正片片头"],
+                ["closing", "正片片尾"],
+                ["standalone", "独立 Logo 视频"],
+              ] as const).map(([placement, label]) => (
+                <button
+                  key={placement}
+                  aria-pressed={logo?.placement === placement}
+                  className={`rounded-full px-2.5 py-1 text-[11px] ${logo?.placement === placement ? "bg-violet-900 text-white" : "bg-white text-violet-900 ring-1 ring-violet-200"}`}
+                  disabled={disabled}
+                  type="button"
+                  onClick={() => onConfigureLogo(placement, placement === "standalone" ? standaloneDuration : 4)}
+                >{label}</button>
+              ))}
+            </div>
+            {logo?.placement === "standalone" ? (
+              <label className="mt-2 flex items-center gap-2 text-[11px]">
+                独立动效时长
+                <select
+                  disabled={disabled}
+                  value={standaloneDuration}
+                  onChange={(event) => onConfigureLogo("standalone", Number(event.target.value))}
+                >
+                  {Array.from({ length: 27 }, (_, index) => index + 4).map((seconds) => (
+                    <option key={seconds} value={seconds}>{seconds} 秒</option>
+                  ))}
+                </select>
+              </label>
+            ) : logo ? (
+              <p className="mt-2 mb-0 text-[10px] text-violet-800">Logo 动效为正片 {logo.placement === "opening" ? "首镜" : "末镜"}，固定计入全片 4 秒时长。</p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {canChooseNarration ? (
+          <div className="border-t border-violet-200 pt-2">
+            <p className="mt-0 mb-1.5">导演 Agent：最终提示词是否加入旁白？</p>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                aria-pressed={project.promptOptions?.narration === "include"}
+                className={`rounded-full px-2.5 py-1 text-[11px] ${project.promptOptions?.narration === "include" ? "bg-violet-900 text-white" : "bg-white text-violet-900 ring-1 ring-violet-200"}`}
+                disabled={disabled}
+                type="button"
+                onClick={() => onSetNarration("include")}
+              >加入旁白</button>
+              <button
+                aria-pressed={project.promptOptions?.narration === "omit"}
+                className={`rounded-full px-2.5 py-1 text-[11px] ${project.promptOptions?.narration === "omit" ? "bg-violet-900 text-white" : "bg-white text-violet-900 ring-1 ring-violet-200"}`}
+                disabled={disabled}
+                type="button"
+                onClick={() => onSetNarration("omit")}
+              >不加旁白</button>
+            </div>
+            <p className="mt-1 mb-0 text-[10px] text-violet-800">
+              {project.promptOptions?.narration === "omit"
+                ? "不会输出旁白，但会保留角色对白、环境声和拟声。"
+                : project.promptOptions?.narration === "include"
+                  ? "会按锁定分镜输出旁白、角色对白、环境声和拟声。"
+                  : "选择后才能输出新的最终提示词。"}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function TvcLockDialog({
   storyboard,
   onCancel,
@@ -4263,6 +4570,7 @@ type TvcStoryboardEditableTextField =
   | "composition"
   | "performance"
   | "narration"
+  | "dialogue"
   | "sound"
   | "transition"
   | "constraints";
@@ -4277,7 +4585,7 @@ const TVC_STORYBOARD_TEXT_COLUMNS: Array<{
   { key: "camera", label: "机位与运镜" },
   { key: "composition", label: "画面构图" },
   { key: "performance", label: "角色动作与表演" },
-  { key: "narration", label: "旁白" },
+  { key: "narration", label: "旁白 / 对白" },
   { key: "sound", label: "环境声与拟声" },
   { key: "transition", label: "转场/切点" },
   { key: "constraints", label: "连续性与生成限制" },
@@ -4294,10 +4602,12 @@ function tvcTableDraftRows(storyboard: TvcStoryboard): TvcStoryboardTableDraftRo
     composition: row.composition,
     performance: row.performance,
     narration: row.narration,
+    dialogue: row.dialogue ?? "",
     sound: row.sound,
     transition: row.transition,
     constraints: row.constraints,
     referenceNodeIds: [...row.referenceNodeIds],
+    ...(row.kind ? { kind: row.kind } : {}),
   }));
 }
 
@@ -4369,18 +4679,23 @@ function TvcStoryboardNodePreview({
 
 function TvcPromptNodePreview({
   promptUnits,
+  standaloneLogoUnit,
   onOpen,
 }: {
   promptUnits?: TvcPromptUnit[];
+  standaloneLogoUnit?: TvcStandaloneLogoUnit;
   onOpen: () => void;
 }) {
+  const count = (promptUnits?.length ?? 0) + (standaloneLogoUnit ? 1 : 0);
   return (
     <section
       className="tvc-prompt-node-preview"
       data-workflow-isolated
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <p>{promptUnits?.length ? `已生成 ${promptUnits.length} 个锁稿提示词单元。` : "尚未生成锁稿后的最终提示词。"}</p>
+      <p>{count
+        ? `已生成 ${count} 个锁稿提示词单元${standaloneLogoUnit ? "，含独立品牌 Logo 动效。" : "。"}`
+        : "尚未生成锁稿后的最终提示词。"}</p>
       <button data-workflow-control type="button" aria-label="查看最终提示词" onClick={onOpen}>查看最终提示词</button>
     </section>
   );
@@ -4541,6 +4856,7 @@ function TvcStoryboardCanvasPanel({
   storyboard,
   promptPlan,
   promptUnits,
+  standaloneLogoUnit,
   videoSchedulers,
   initialTab,
   initialEditing,
@@ -4557,6 +4873,7 @@ function TvcStoryboardCanvasPanel({
   storyboard: TvcStoryboard;
   promptPlan?: TvcPromptPlanSegment[];
   promptUnits?: TvcPromptUnit[];
+  standaloneLogoUnit?: TvcStandaloneLogoUnit;
   videoSchedulers: WorkflowSchedulerNode[];
   initialTab: "storyboard" | "prompt";
   initialEditing: boolean;
@@ -4693,7 +5010,7 @@ function TvcStoryboardCanvasPanel({
           role="tab"
           type="button"
           onClick={() => setTab("prompt")}
-        >最终提示词{promptUnits?.length ? `（${promptUnits.length}）` : ""}</button>
+        >最终提示词{(promptUnits?.length || standaloneLogoUnit) ? `（${(promptUnits?.length ?? 0) + (standaloneLogoUnit ? 1 : 0)}）` : ""}</button>
       </div>
       <div className="tvc-storyboard-canvas-content">
         {tab === "storyboard" ? (
@@ -4711,17 +5028,51 @@ function TvcStoryboardCanvasPanel({
                 {rowsWithTimecode.map(({ row, timecode }, index) => (
                   <tr key={`${index}-${row.shotNumber}`}>
                     <td>
-                      {editing ? <input aria-label={`第 ${index + 1} 镜镜号`} value={row.shotNumber} onChange={(event) => updateTextRow(index, "shotNumber", event.target.value)} /> : row.shotNumber}
+                      {editing ? <input aria-label={`第 ${index + 1} 镜镜号`} value={row.shotNumber} onChange={(event) => updateTextRow(index, "shotNumber", event.target.value)} /> : (
+                        <span className="tvc-storyboard-shot-number">
+                          {row.shotNumber}
+                          {row.kind === "logo-animation" ? <small>Logo 动效</small> : null}
+                        </span>
+                      )}
                     </td>
                     <td>{editing ? <input aria-label={`第 ${index + 1} 镜时间码`} readOnly value={timecode} /> : timecode}</td>
                     <td>
                       {editing ? <input aria-label={`第 ${index + 1} 镜时长`} min="1" step="1" type="number" value={row.durationSeconds} onChange={(event) => updateDuration(index, event.target.value)} /> : row.durationSeconds}
                     </td>
-                    {TVC_STORYBOARD_TEXT_COLUMNS.map((column) => (
-                      <td key={column.key}>
-                        {editing ? <textarea aria-label={`第 ${index + 1} 镜${column.label}`} value={row[column.key]} onChange={(event) => updateTextRow(index, column.key, event.target.value)} /> : row[column.key]}
-                      </td>
-                    ))}
+                    {TVC_STORYBOARD_TEXT_COLUMNS.map((column) => {
+                      if (column.key === "narration") {
+                        return <td key={column.key} className="tvc-storyboard-audio-cell">
+                          {editing ? (
+                            <div>
+                              <label>
+                                <span>旁白</span>
+                                <textarea
+                                  aria-label={`第 ${index + 1} 镜旁白`}
+                                  value={row.narration}
+                                  onChange={(event) => updateTextRow(index, "narration", event.target.value)}
+                                />
+                              </label>
+                              <label>
+                                <span>对白</span>
+                                <textarea
+                                  aria-label={`第 ${index + 1} 镜对白`}
+                                  value={row.dialogue ?? ""}
+                                  onChange={(event) => updateTextRow(index, "dialogue", event.target.value)}
+                                />
+                              </label>
+                            </div>
+                          ) : (
+                            <>
+                              <p>旁白：{row.narration || "无"}</p>
+                              <p>对白：{row.dialogue || "无"}</p>
+                            </>
+                          )}
+                        </td>;
+                      }
+                      return <td key={column.key}>
+                        {editing ? <textarea aria-label={`第 ${index + 1} 镜${column.label}`} value={row[column.key] ?? ""} onChange={(event) => updateTextRow(index, column.key, event.target.value)} /> : row[column.key]}
+                      </td>;
+                    })}
                   </tr>
                 ))}
               </tbody>
@@ -4738,15 +5089,24 @@ function TvcStoryboardCanvasPanel({
         ) : videoSchedulers.length ? (
           <section className="tvc-storyboard-prompt-units">
             {videoSchedulers.map((scheduler) => {
-              const unit = promptUnits?.find((item) => item.ref === scheduler.tvcUnitRef);
+              const unit = scheduler.storyRole === "tvc-logo-video-scheduler"
+                ? undefined
+                : promptUnits?.find((item) => item.ref === scheduler.tvcUnitRef);
+              const logoUnit = scheduler.storyRole === "tvc-logo-video-scheduler"
+                ? standaloneLogoUnit
+                : undefined;
               return (
                 <article key={scheduler.id}>
                   <h3>{scheduler.label || scheduler.tvcUnitRef || "最终提示词调度"}</h3>
                   <p>
-                    项目时间 {unit ? `${tvcTimecode(unit.startSecond)}–${tvcTimecode(unit.endSecond)}` : "历史任务"}
+                    {logoUnit
+                      ? `独立品牌 Logo 动效 · 实际时长 ${logoUnit.durationSeconds} 秒`
+                      : `项目时间 ${unit ? `${tvcTimecode(unit.startSecond)}–${tvcTimecode(unit.endSecond)}` : "历史任务"}`}
                     {unit ? ` · 实际时长 ${unit.endSecond - unit.startSecond} 秒 · 镜头 ${unit.shotNumbers.join("、")}` : ""}
                   </p>
-                  <p>参考资产：{unit?.referenceNodeIds.length ? unit.referenceNodeIds.join("、") : "未使用图片参考"}</p>
+                  <p>参考资产：{(unit?.referenceNodeIds ?? logoUnit?.referenceNodeIds ?? []).length
+                    ? (unit?.referenceNodeIds ?? logoUnit?.referenceNodeIds ?? []).join("、")
+                    : "未使用图片参考"}</p>
                   <pre>{scheduler.prompt}</pre>
                 </article>
               );

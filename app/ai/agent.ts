@@ -231,6 +231,18 @@ export type AgentTvcPromptPlanSegment = {
   referenceNodeIds: string[];
 };
 
+export type AgentTvcLogoPlacement = "opening" | "closing" | "standalone";
+
+export type AgentTvcLogoConfig = {
+  nodeId: string;
+  placement: AgentTvcLogoPlacement;
+  durationSeconds: number;
+};
+
+export type AgentTvcPromptOptions = {
+  narration: "include" | "omit";
+};
+
 export type AgentTvcSnapshot = {
   projectId: string;
   stage: AgentTvcStage;
@@ -239,6 +251,8 @@ export type AgentTvcSnapshot = {
   title?: string;
   targetModel?: string;
   targetMaxDuration?: number;
+  logo?: AgentTvcLogoConfig;
+  promptOptions?: AgentTvcPromptOptions;
   promptPlan?: AgentTvcPromptPlanSegment[];
 };
 
@@ -293,13 +307,22 @@ export type AgentTvcStoryboardRow = {
   composition: string;
   performance: string;
   narration: string;
+  dialogue?: string;
   sound: string;
   transition: string;
   constraints: string;
   referenceNodeIds: string[];
+  kind?: "logo-animation";
 };
 
 export type AgentTvcPromptUnit = AgentTvcPromptPlanSegment & {
+  prompt: string;
+};
+
+export type AgentTvcStandaloneLogoUnit = {
+  ref: "logo-animation";
+  durationSeconds: number;
+  referenceNodeIds: string[];
   prompt: string;
 };
 
@@ -334,6 +357,7 @@ export type AgentCreateTvcPromptPackageOperation = {
   projectId: string;
   sourceRevision: number;
   units: AgentTvcPromptUnit[];
+  standaloneLogoUnit?: AgentTvcStandaloneLogoUnit;
 };
 
 export type AgentCreateStoryAnalysisOperation = {
@@ -491,6 +515,10 @@ function readTvcReferenceRole(value: unknown): AgentTvcReferenceRole | null {
     : null;
 }
 
+function readTvcStoryboardKind(value: unknown): "logo-animation" | null {
+  return value === "logo-animation" ? value : null;
+}
+
 function parseTvcReferenceMap(value: unknown): AgentTvcReferenceMapping[] | null {
   if (!Array.isArray(value)) return null;
   const mappings = value.map((item) => {
@@ -592,6 +620,9 @@ function parseTvcStoryboardRows(value: unknown): AgentTvcStoryboardRow[] | null 
     const durationSeconds = readFinite(
       item.duration_seconds ?? item.durationSeconds,
     );
+    const rawKind = item.kind;
+    const kind = rawKind === undefined ? undefined : readTvcStoryboardKind(rawKind);
+    const dialogue = readString(item.dialogue).trim();
     const row = {
       shotNumber,
       startSecond,
@@ -608,19 +639,21 @@ function parseTvcStoryboardRows(value: unknown): AgentTvcStoryboardRow[] | null 
       composition: readString(item.composition).trim(),
       performance: readString(item.performance).trim(),
       narration: readString(item.narration).trim(),
+      ...(dialogue ? { dialogue } : {}),
       sound: readString(item.sound).trim(),
       transition: readString(item.transition).trim(),
       constraints: readString(item.constraints).trim(),
       referenceNodeIds: readNodeIds(
         item.reference_node_ids ?? item.referenceNodeIds,
       ),
+      ...(kind ? { kind } : {}),
     };
     const timeValues = [
       row.startSecond,
       row.endSecond,
       row.durationSeconds,
     ];
-    return row.shotNumber && timeValues.every(
+    return kind !== null && row.shotNumber && timeValues.every(
       (entry) => entry !== null && Number.isInteger(entry),
     ) &&
         row.startSecond! >= 0 &&
@@ -636,6 +669,37 @@ function parseTvcStoryboardRows(value: unknown): AgentTvcStoryboardRow[] | null 
   const parsed = rows as AgentTvcStoryboardRow[];
   return new Set(parsed.map((row) => row.shotNumber)).size === parsed.length
     ? parsed
+    : null;
+}
+
+function parseTvcStandaloneLogoUnit(
+  value: unknown,
+): AgentTvcStandaloneLogoUnit | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const durationSeconds = readFinite(
+    value.duration_seconds ?? value.durationSeconds,
+  );
+  const referenceNodeIds = readNodeIds(
+    value.reference_node_ids ?? value.referenceNodeIds,
+  );
+  const unit = {
+    ref: readString(value.ref).trim(),
+    durationSeconds,
+    referenceNodeIds,
+    prompt: readString(value.prompt).trim(),
+  };
+  return unit.ref === "logo-animation" && durationSeconds !== null &&
+      Number.isInteger(durationSeconds) && durationSeconds >= 4 &&
+      durationSeconds <= 30 && unit.referenceNodeIds.length > 0 &&
+      unit.referenceNodeIds.every(Boolean) &&
+      new Set(unit.referenceNodeIds).size === unit.referenceNodeIds.length &&
+      unit.prompt
+    ? {
+        ...unit,
+        ref: "logo-animation",
+        durationSeconds,
+      }
     : null;
 }
 
@@ -954,9 +1018,19 @@ function parseOperation(value: unknown): AgentOperation | null {
       value.source_revision ?? value.sourceRevision,
     );
     const units = parseTvcPromptUnits(value.units);
+    const standaloneLogoUnit = parseTvcStandaloneLogoUnit(
+      value.standalone_logo_unit ?? value.standaloneLogoUnit,
+    );
     return projectId && sourceRevision !== null &&
-        Number.isInteger(sourceRevision) && sourceRevision >= 0 && units
-      ? { type, projectId, sourceRevision, units }
+        Number.isInteger(sourceRevision) && sourceRevision >= 0 && units &&
+        standaloneLogoUnit !== null
+      ? {
+          type,
+          projectId,
+          sourceRevision,
+          units,
+          ...(standaloneLogoUnit ? { standaloneLogoUnit } : {}),
+        }
       : null;
   }
 
