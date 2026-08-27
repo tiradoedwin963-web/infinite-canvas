@@ -2095,3 +2095,37 @@
 - `tests/tvc-agent.test.mjs`、`tests/tvc-domain.test.mjs`、`tests/tvc-excel.test.mjs`、`tests/tvc-table-canvas.test.mjs`、`tests/tvc-ui.test.mjs`：覆盖协议、领域规则、Excel 投影和画布交互契约。
 - `docs/canvas.md`：说明 Logo 参考保真边界、三种用途、旁白/对白行为与导出结果。
 - `progress.md`：记录本轮实现和验证。当前改动尚未提交；回滚可执行 `git restore -- app/ai/agent.ts app/ai/agent-provider.ts app/globals.css app/workflow/graph.ts app/workflow/tvc-excel.ts app/workflow/tvc.ts components/canvas-agent-sidebar.tsx components/workflow/workflow-canvas.tsx docs/canvas.md tests/tvc-agent.test.mjs tests/tvc-domain.test.mjs tests/tvc-excel.test.mjs tests/tvc-table-canvas.test.mjs tests/tvc-ui.test.mjs tvc-director/core.md tvc-director/intake.md tvc-director/prompt-package.md tvc-director/storyboard.md progress.md`。
+
+## 2026-08-27 - Task: 移除生产入口 Caddy 基础认证
+
+### What was done
+- 移除画布生产入口的 Caddy Basic Auth，`https://82.157.204.208:3011` 现在直接反向代理到应用登录页；Caddy 内部 TLS、自签名证书、压缩和 `app:3000` 代理保持不变。
+- 删除 Compose 中不再使用的 `CANVAS_BASIC_AUTH_HASH` 强制环境变量，服务器 `.env.production` 无需再保存或轮换该外层访问密码哈希。
+- 更新部署说明，使健康检查、环境变量和访问控制描述与“仅使用应用账号登录”一致；应用管理员及普通应用账号的认证机制未改动。
+
+### Testing
+- 待执行：Caddyfile 与 Docker Compose 配置校验、`git diff --check`。本轮未部署、未重启容器、未修改应用认证或项目数据。
+
+### Notes
+- `deploy/canvas/Caddyfile`：删除 `basic_auth` 指令，保留 HTTPS 和反向代理。
+- `deploy/canvas/compose.production.yml`：删除已失效的 Caddy Basic Auth 哈希环境变量要求。
+- `docs/deployment.md`：更新部署、健康检查及认证边界说明。
+- `progress.md`：记录本轮变更、验证和回滚信息。
+- 回滚方式：在提交后执行 `git revert <本轮提交哈希>`，随后重建 `caddy` 容器，即可恢复外层 Basic Auth；也可在未提交时执行 `git restore -- deploy/canvas/Caddyfile deploy/canvas/compose.production.yml docs/deployment.md progress.md`。
+
+## 2026-08-27 - Task: 移除生产入口 Caddy 基础认证（验证补充）
+
+### What was done
+- 完成无外层认证配置的静态验证；未提交、推送或部署，生产 Caddy 与应用账号状态均未改变。
+
+### Testing
+- `docker run --rm -v "$PWD/deploy/canvas/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`：通过，输出 `Valid configuration`。
+- `docker compose -f deploy/canvas/compose.production.yml config --no-interpolate --quiet`：通过，确认 Compose 可解析且不再要求 `CANVAS_BASIC_AUTH_HASH`。
+- `git diff --check`：通过。
+
+### Notes
+- `deploy/canvas/Caddyfile`：已验证 HTTPS、压缩和反向代理配置在移除 `basic_auth` 后仍可加载。
+- `deploy/canvas/compose.production.yml`：已验证删除外层认证变量后 Compose 配置仍可解析。
+- `docs/deployment.md`：已同步新的入口访问及健康检查说明。
+- `progress.md`：追加验证证据；未修改此前日志。
+- 回滚方式：在提交后执行 `git revert <本轮提交哈希>`，随后重建 `caddy` 容器；未提交时执行 `git restore -- deploy/canvas/Caddyfile deploy/canvas/compose.production.yml docs/deployment.md progress.md`。

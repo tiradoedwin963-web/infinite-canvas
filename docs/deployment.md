@@ -1,6 +1,6 @@
 # 画布服务器部署
 
-当前北京服务器在备案完成前使用独立 Docker 项目部署画布，不接入现有 Python 项目的 Caddy，也不占用 80/443。画布入口固定为 `https://82.157.204.208:3011`，使用 Caddy 内部 CA签发的自签名证书；Caddy Basic Auth 是第一层保护，应用账号是第二层保护。
+当前北京服务器在备案完成前使用独立 Docker 项目部署画布，不接入现有 Python 项目的 Caddy，也不占用 80/443。画布入口固定为 `https://82.157.204.208:3011`，使用 Caddy 内部 CA 签发的自签名证书；入口直接显示应用登录页，由应用账号体系负责访问控制。
 
 ## 边界
 
@@ -12,7 +12,7 @@
 - 画布 PostgreSQL 使用独立数据卷且不发布端口，不连接现有 Python 项目的 PostgreSQL
 - 工作流图片和视频保存到北京地域的私有腾讯云 COS，匿名读取被拒绝
 - 工作流画布使用 COS 派生的 640px WebP 缩略图；详情、Agent 读图和生成参考仍读取原图
-- 模型密钥、Basic Auth 哈希、数据库密码、管理员哈希和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
+- 模型密钥、数据库密码、管理员哈希和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
 
 ## TRX 视频原图直签
 
@@ -42,7 +42,6 @@ LINGKE_BASE_URL=服务端模型地址
 LINGKE_API_KEY=服务端模型密钥
 TRX_VIDEO_BASE_URL=https://trxdoc.xin
 TRX_VIDEO_API_KEY=TRX 企业 API Key（ek- 前缀）
-CANVAS_BASIC_AUTH_HASH='Caddy bcrypt 哈希'
 CANVAS_DATABASE_PASSWORD=随机数据库强密码
 CANVAS_ADMIN_PASSWORD_HASH='scrypt 管理员密码哈希'
 COS_REGION=ap-beijing
@@ -51,7 +50,7 @@ COS_SECRET_ID=仅限画布桶的CAM子用户SecretId
 COS_SECRET_KEY=仅限画布桶的CAM子用户SecretKey
 ```
 
-Basic Auth 用户名固定为 `canvas`，应用管理员用户名固定为 `admin`。两个初始密码分别随机生成，服务端只保存 Caddy bcrypt 哈希和应用 scrypt 哈希，明文密码仅在交付时展示一次。应用不开放公众注册；管理员登录后可创建、停用账号和重置密码，停用或重置会撤销该账号已有会话。
+入口不再设置 Caddy Basic Auth；应用管理员用户名固定为 `admin`。服务端只保存应用 scrypt 密码哈希，明文密码仅在交付时展示一次。应用不开放公众注册；管理员登录后可创建、停用账号和重置密码，停用或重置会撤销该账号已有会话。
 
 启动并检查：
 
@@ -70,12 +69,10 @@ sudo docker compose --env-file .env.production \
 
 SD 2.5 只使用 TRX 原生视频接口：应用会先查询 `GET /v1/models`，再按需调用 `/v1/video/generate`。TRX 视频提交不幂等，部署或健康检查不得提交视频；部署后只允许进行无费用模型列表查询。
 
-未通过 Basic Auth 的请求应返回 `401`；通过 Basic Auth 后首页返回 `200` 并显示应用登录页：
+首页应返回 `200` 并显示应用登录页：
 
 ```bash
 curl -k -o /dev/null -s -w '%{http_code}\n' https://82.157.204.208:3011/
-curl -k -u 'canvas:访问密码' -o /dev/null -s -w '%{http_code}\n' \
-  https://82.157.204.208:3011/
 ```
 
 ## 更新
@@ -101,7 +98,7 @@ npm run assets:backfill-thumbnails
 
 生产构建仅在需要创建缺失缩略图时于 Node 运行时加载 Sharp，由镜像中的原生模块执行转换；读取已存在缩略图不会加载原生转换器。不要把 Sharp 的原生加载器打包进 Vinext 服务端产物，否则 Alpine 无法选择对应的原生二进制。
 
-更新后重新检查容器、未认证 `401`、认证 `200` 和日志：
+更新后重新检查容器、首页 `200` 和日志：
 
 ```bash
 sudo docker compose --env-file .env.production \

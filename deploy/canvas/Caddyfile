@@ -7,10 +7,6 @@ https://82.157.204.208:3011 {
 	tls internal
 	encode zstd gzip
 
-	basic_auth {
-		canvas {$CANVAS_BASIC_AUTH_HASH}
-	}
-
 	reverse_proxy app:3000 {
 		flush_interval -1
 	}

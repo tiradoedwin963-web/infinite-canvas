@@ -69,8 +69,6 @@ services:
     image: caddy:2.10-alpine
     restart: unless-stopped
     logging: *default-logging
-    environment:
-      CANVAS_BASIC_AUTH_HASH: ${CANVAS_BASIC_AUTH_HASH:?CANVAS_BASIC_AUTH_HASH is required}
     ports:
       - "3011:3011"
     volumes:
