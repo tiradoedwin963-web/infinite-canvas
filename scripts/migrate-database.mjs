@@ -29,13 +29,28 @@ try {
       `;
     }
     const username = process.env.CANVAS_ADMIN_USERNAME?.trim() || "admin";
-    const passwordHash = process.env.CANVAS_ADMIN_PASSWORD_HASH?.trim();
-    if (!passwordHash) throw new Error("CANVAS_ADMIN_PASSWORD_HASH is required");
-    await transaction`
-      INSERT INTO canvas_users (id, username, password_hash, is_admin)
-      VALUES (${randomUUID()}, ${username}, ${passwordHash}, true)
-      ON CONFLICT ((lower(username))) DO NOTHING
-    `;
+    if (process.env.CANVAS_AUTH_DISABLED === "true") {
+      const existingAdmin = await transaction`
+        SELECT id FROM canvas_users
+        WHERE lower(username) = lower(${username})
+          AND is_admin = true
+          AND disabled_at IS NULL
+        LIMIT 1
+      `;
+      if (!existingAdmin.length) {
+        throw new Error(
+          `CANVAS_AUTH_DISABLED=true requires an existing active admin user named ${username}`,
+        );
+      }
+    } else {
+      const passwordHash = process.env.CANVAS_ADMIN_PASSWORD_HASH?.trim();
+      if (!passwordHash) throw new Error("CANVAS_ADMIN_PASSWORD_HASH is required");
+      await transaction`
+        INSERT INTO canvas_users (id, username, password_hash, is_admin)
+        VALUES (${randomUUID()}, ${username}, ${passwordHash}, true)
+        ON CONFLICT ((lower(username))) DO NOTHING
+      `;
+    }
   });
 } finally {
   await sql.end();

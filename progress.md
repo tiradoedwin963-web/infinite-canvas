@@ -2129,3 +2129,35 @@
 - `docs/deployment.md`：已同步新的入口访问及健康检查说明。
 - `progress.md`：追加验证证据；未修改此前日志。
 - 回滚方式：在提交后执行 `git revert <本轮提交哈希>`，随后重建 `caddy` 容器；未提交时执行 `git restore -- deploy/canvas/Caddyfile deploy/canvas/compose.production.yml docs/deployment.md progress.md`。
+
+## 2026-08-27 - Task: 关闭应用账号登录
+
+### What was done
+- 生产画布新增明确的 `CANVAS_AUTH_DISABLED=true` 门禁。启用后，云端 API 不再读取浏览器会话，而是确定性地使用既有、启用状态的 `CANVAS_ADMIN_USERNAME`（生产为 `admin`）处理项目、素材、Agent 与媒体接口请求。
+- 登录页、退出与账号管理控件会在关闭模式下隐藏；登录接口明确返回“当前服务器已关闭应用登录”，旧会话 Cookie 被忽略且不会触发用户、项目、素材或数据库表的删除、重置或迁移。
+- 数据库启动脚本在关闭模式下只读验证既有管理员存在；缺失或停用时会停止启动，不会创建临时密码、修改用户或影响现有项目。生产 Compose 不再要求管理员密码哈希。
+- 部署说明已同步无应用登录的访问边界、既有 admin 身份、恢复登录的前提和公网暴露风险。
+
+### Testing
+- `node --test tests/auth-disabled.test.mjs tests/cloud-persistence.test.mjs`：8/8 通过，覆盖显式开关、固定管理员解析、UI 隐藏、迁移前提和 Compose 配置。
+- `npm run lint`：通过。
+- `npm run build`：通过；仅保留既有客户端包体积提示。
+- `npm test`：216/216 通过。
+- `docker compose -f deploy/canvas/compose.production.yml config --no-interpolate --quiet`：通过。
+- `git diff --check`：通过。
+- `npx tsc --noEmit`：未通过，仍由本轮前已有的 Agent、画布、素材响应、Sharp 与 Worker 环境类型诊断阻断；本轮鉴权文件未出现新增诊断。
+- 本轮未连接服务器、未部署、未执行数据库写操作、未提交任何媒体请求。
+
+### Notes
+- `app/server/config.ts`：新增显式应用登录关闭开关和固定管理员用户名读取。
+- `app/server/auth.ts`：关闭模式下将所有云端鉴权请求绑定到既有启用的固定管理员。
+- `components/cloud-session-gate.tsx`：依据会话响应隐藏登录和账号控件，同时保留云端用户上下文。
+- `app/api/auth/session/route.ts`：向前端公开当前是否需要应用登录。
+- `app/api/auth/login/route.ts`：关闭模式下拒绝创建新登录会话。
+- `app/api/auth/logout/route.ts`：关闭模式下仅清理旧 Cookie，不修改用户数据。
+- `scripts/migrate-database.mjs`：关闭模式下只校验既有管理员，正常认证模式仍保留原密码哈希初始化。
+- `deploy/canvas/compose.production.yml`：生产 app 显式启用无应用登录并移除管理员密码哈希要求。
+- `docs/deployment.md`：记录无应用登录的部署、风险和恢复步骤。
+- `tests/auth-disabled.test.mjs`：新增关闭模式的配置与静态接口契约覆盖。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：提交后执行 `git revert <本轮提交哈希>` 并仅重建 `app` 容器即可恢复此前的应用登录；提交前执行 `git restore -- app/server/config.ts app/server/auth.ts components/cloud-session-gate.tsx app/api/auth/session/route.ts app/api/auth/login/route.ts app/api/auth/logout/route.ts scripts/migrate-database.mjs deploy/canvas/compose.production.yml docs/deployment.md progress.md && rm -f tests/auth-disabled.test.mjs`。两种回滚均不删除用户、项目、数据库卷或 COS 素材。

@@ -5,12 +5,16 @@ import {
   responseFromError,
   sessionCookie,
 } from "@/app/server/auth";
+import { canvasAuthenticationDisabled } from "@/app/server/config";
 import { verifyPassword } from "@/app/server/password";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 
 export async function POST(request: Request) {
   try {
+    if (canvasAuthenticationDisabled()) {
+      return Response.json({ error: "当前服务器已关闭应用登录。" }, { status: 409 });
+    }
     assertSameOrigin(request);
     const address = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     const now = Date.now();

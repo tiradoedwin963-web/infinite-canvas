@@ -1,6 +1,6 @@
 # 画布服务器部署
 
-当前北京服务器在备案完成前使用独立 Docker 项目部署画布，不接入现有 Python 项目的 Caddy，也不占用 80/443。画布入口固定为 `https://82.157.204.208:3011`，使用 Caddy 内部 CA 签发的自签名证书；入口直接显示应用登录页，由应用账号体系负责访问控制。
+当前北京服务器在备案完成前使用独立 Docker 项目部署画布，不接入现有 Python 项目的 Caddy，也不占用 80/443。画布入口固定为 `https://82.157.204.208:3011`，使用 Caddy 内部 CA 签发的自签名证书；生产环境已关闭 Caddy 与应用两层登录，入口直接显示画布。
 
 ## 边界
 
@@ -12,7 +12,8 @@
 - 画布 PostgreSQL 使用独立数据卷且不发布端口，不连接现有 Python 项目的 PostgreSQL
 - 工作流图片和视频保存到北京地域的私有腾讯云 COS，匿名读取被拒绝
 - 工作流画布使用 COS 派生的 640px WebP 缩略图；详情、Agent 读图和生成参考仍读取原图
-- 模型密钥、数据库密码、管理员哈希和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
+- 模型密钥、数据库密码和 COS 密钥只保存在服务器 `.env.production`，权限固定为 `600`
+- 应用登录关闭时，所有云端请求均使用既有 `admin` 账号访问其已有项目和素材；不要将该公网入口提供给非受信任人员
 
 ## TRX 视频原图直签
 
@@ -43,14 +44,15 @@ LINGKE_API_KEY=服务端模型密钥
 TRX_VIDEO_BASE_URL=https://trxdoc.xin
 TRX_VIDEO_API_KEY=TRX 企业 API Key（ek- 前缀）
 CANVAS_DATABASE_PASSWORD=随机数据库强密码
-CANVAS_ADMIN_PASSWORD_HASH='scrypt 管理员密码哈希'
 COS_REGION=ap-beijing
 COS_BUCKET=infinite-canvas-腾讯云AppID
 COS_SECRET_ID=仅限画布桶的CAM子用户SecretId
 COS_SECRET_KEY=仅限画布桶的CAM子用户SecretKey
 ```
 
-入口不再设置 Caddy Basic Auth；应用管理员用户名固定为 `admin`。服务端只保存应用 scrypt 密码哈希，明文密码仅在交付时展示一次。应用不开放公众注册；管理员登录后可创建、停用账号和重置密码，停用或重置会撤销该账号已有会话。
+生产 Compose 固定设置 `CANVAS_AUTH_DISABLED=true`，入口不再设置 Caddy Basic Auth，也不再显示应用登录、退出或账号管理控件。服务端会把每个云端请求绑定到既有、未停用的 `CANVAS_ADMIN_USERNAME`（生产固定为 `admin`），不读取或重置任何密码、用户或项目。
+
+关闭登录前必须确认该管理员已经存在且处于启用状态。启动迁移会只读校验这项前提；如果找不到该账号，应用会停止启动而不会创建、删除或修改任何用户和项目。若要恢复应用登录，先在 Compose 中移除 `CANVAS_AUTH_DISABLED`，再恢复 `CANVAS_ADMIN_PASSWORD_HASH` 环境变量并重建 app 容器。
 
 启动并检查：
 
@@ -69,7 +71,7 @@ sudo docker compose --env-file .env.production \
 
 SD 2.5 只使用 TRX 原生视频接口：应用会先查询 `GET /v1/models`，再按需调用 `/v1/video/generate`。TRX 视频提交不幂等，部署或健康检查不得提交视频；部署后只允许进行无费用模型列表查询。
 
-首页应返回 `200` 并显示应用登录页：
+首页应返回 `200` 并直接显示画布：
 
 ```bash
 curl -k -o /dev/null -s -w '%{http_code}\n' https://82.157.204.208:3011/
@@ -109,7 +111,7 @@ sudo docker compose --env-file .env.production \
 
 ## 项目与素材迁移
 
-本地项目从工作流项目菜单导出为完整 `*.canvas.json` 后，可在已登录的云端项目菜单选择“导入本地项目到云端”。导入会创建一个新的同账号项目，逐张通过现有上传票据写入同一私有 COS 桶并完成大小、类型校验，再将图中的本地素材 ID 重写为云端资产 ID。
+本地项目从工作流项目菜单导出为完整 `*.canvas.json` 后，可在云端项目菜单选择“导入本地项目到云端”。导入会创建一个新的 admin 项目，逐张通过现有上传票据写入同一私有 COS 桶并完成大小、类型校验，再将图中的本地素材 ID 重写为云端资产 ID。
 
 导入要求文件携带全部被图引用的图片；TVC 分镜、锁稿、手动覆盖及 `submission-unknown` 证据会保留，批量队列不会恢复，也不会自动提交或轮询媒体。任一上传、素材重写、项目图或对话保存失败时，只删除本次新建的云端项目及其对象，本地原项目保持不变。
 
@@ -117,8 +119,8 @@ sudo docker compose --env-file .env.production \
 
 - 更新 `.env.production` 前创建权限为 `600` 的服务器本地备份，不输出变量值。
 - PostgreSQL 数据保存在独立 `postgres_data` 卷；代码回滚不会删除数据库和 COS 对象。
-- 素材读取必须经过应用账号鉴权；视频接口保留 `Range` 请求和 `206` 响应。
-- 图片缩略图与原图使用相同账号鉴权；删除素材或项目会同时清理两类 COS 对象。
+- COS 原图和缩略图仍保持私有；应用在关闭登录模式下以固定 admin 身份读取它们，视频接口保留 `Range` 请求和 `206` 响应。
+- 图片缩略图与原图使用相同的固定 admin 项目归属校验；删除素材或项目会同时清理两类 COS 对象。
 - 检查画布容器前后都应记录 `/opt/wecom-smart-service` 的 API、Worker、PostgreSQL、Redis 状态，禁止重启或修改它们。
 
 ## 回滚

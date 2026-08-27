@@ -27,18 +27,24 @@ async function safeError(response: Response) {
 export function CloudSessionGate({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<"loading" | "local" | "server">("loading");
   const [user, setUser] = useState<CloudUser | null>(null);
+  const [authenticationRequired, setAuthenticationRequired] = useState(true);
 
   useEffect(() => {
     let active = true;
     void fetch("/api/auth/session", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error(await safeError(response));
-        return response.json() as Promise<{ mode: "local" | "server"; user: CloudUser | null }>;
+        return response.json() as Promise<{
+          mode: "local" | "server";
+          user: CloudUser | null;
+          authenticationRequired: boolean;
+        }>;
       })
       .then((session) => {
         if (!active) return;
         setMode(session.mode);
         setUser(session.user);
+        setAuthenticationRequired(session.authenticationRequired !== false);
       })
       .catch(() => {
         if (active) setMode("server");
@@ -47,11 +53,13 @@ export function CloudSessionGate({ children }: { children: ReactNode }) {
   }, []);
 
   if (mode === "loading") return <div className="cloud-session-loading">正在连接画布…</div>;
-  if (mode === "server" && !user) return <CloudLogin onAuthenticated={setUser} />;
+  if (mode === "server" && authenticationRequired && !user) {
+    return <CloudLogin onAuthenticated={setUser} />;
+  }
   return (
     <CloudSessionContext.Provider value={{ remote: mode === "server", user }}>
       {children}
-      {mode === "server" && user ? (
+      {mode === "server" && authenticationRequired && user ? (
         <CloudAccount user={user} onLoggedOut={() => setUser(null)} />
       ) : null}
     </CloudSessionContext.Provider>

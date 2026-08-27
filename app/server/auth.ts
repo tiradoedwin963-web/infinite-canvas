@@ -1,6 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getDatabase, type AuthenticatedUser } from "./database";
-import { cloudPersistenceEnabled } from "./config";
+import {
+  canvasAdminUsername,
+  canvasAuthenticationDisabled,
+  cloudPersistenceEnabled,
+} from "./config";
 import { requestOrigin } from "./request-origin";
 
 export const SESSION_COOKIE = "canvas_session";
@@ -31,6 +35,7 @@ export function assertSameOrigin(request: Request) {
 }
 
 export async function readSessionUser(request: Request): Promise<AuthenticatedUser | null> {
+  if (canvasAuthenticationDisabled()) return readConfiguredAdminUser();
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
   const sql = getDatabase();
@@ -49,6 +54,27 @@ export async function readSessionUser(request: Request): Promise<AuthenticatedUs
   `;
   const user = rows[0];
   return user ? { id: user.id, username: user.username, isAdmin: user.is_admin } : null;
+}
+
+async function readConfiguredAdminUser(): Promise<AuthenticatedUser> {
+  const username = canvasAdminUsername();
+  const rows = await getDatabase()<{
+    id: string;
+    username: string;
+    is_admin: boolean;
+  }[]>`
+    SELECT id, username, is_admin
+    FROM canvas_users
+    WHERE lower(username) = lower(${username})
+      AND is_admin = true
+      AND disabled_at IS NULL
+    LIMIT 1
+  `;
+  const user = rows[0];
+  if (!user) {
+    throw new Error(`认证已关闭，但未找到可用管理员账号“${username}”。`);
+  }
+  return { id: user.id, username: user.username, isAdmin: user.is_admin };
 }
 
 export async function requireSessionUser(request: Request) {
