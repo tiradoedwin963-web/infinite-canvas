@@ -1,6 +1,6 @@
-# 画布服务器部署
+# Zora Star 服务器部署
 
-当前北京服务器在备案完成前使用独立 Docker 项目部署画布，不接入现有 Python 项目的 Caddy，也不占用 80/443。画布入口固定为 `https://82.157.204.208:3011`，使用 Caddy 内部 CA 签发的自签名证书；生产环境已关闭 Caddy 与应用两层登录，入口直接显示画布。
+当前北京服务器在备案完成前使用独立 Docker 项目部署 Zora Star，不接入现有 Python 项目的 Caddy，也不占用 80/443。产品入口固定为 `https://82.157.204.208:3011/image`，使用 Caddy 内部 CA 签发的自签名证书；生产环境已关闭 Caddy 与应用两层登录，入口直接显示生图工作区，画布位于 `/canvas`。
 
 ## 边界
 
@@ -71,10 +71,11 @@ sudo docker compose --env-file .env.production \
 
 SD 2.5 只使用 TRX 原生视频接口：应用会先查询 `GET /v1/models`，再按需调用 `/v1/video/generate`。TRX 视频提交不幂等，部署或健康检查不得提交视频；部署后只允许进行无费用模型列表查询。
 
-首页应返回 `200` 并直接显示画布：
+根路径应返回 `307` 并跳转到 `/image`，生图入口应返回 `200`：
 
 ```bash
 curl -k -o /dev/null -s -w '%{http_code}\n' https://82.157.204.208:3011/
+curl -k -o /dev/null -s -w '%{http_code}\n' https://82.157.204.208:3011/image
 ```
 
 ## 更新
@@ -100,7 +101,7 @@ npm run assets:backfill-thumbnails
 
 生产构建仅在需要创建缺失缩略图时于 Node 运行时加载 Sharp，由镜像中的原生模块执行转换；读取已存在缩略图不会加载原生转换器。不要把 Sharp 的原生加载器打包进 Vinext 服务端产物，否则 Alpine 无法选择对应的原生二进制。
 
-更新后重新检查容器、首页 `200` 和日志：
+更新后重新检查容器、根路径 `307`、`/image` 与 `/canvas` 的 `200` 和日志：
 
 ```bash
 sudo docker compose --env-file .env.production \

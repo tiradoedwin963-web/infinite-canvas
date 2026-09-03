@@ -4,13 +4,13 @@ import test from "node:test";
 
 const projectRoot = new URL("../", import.meta.url);
 
-async function render() {
+async function render(pathname = "/image") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${pathname}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -25,16 +25,61 @@ async function render() {
   );
 }
 
-test("server-renders the cloud session gate before exposing the canvas", async () => {
+test("server-renders the Zora Star session gate before exposing the product", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>LingkeAI 无限画布<\/title>/);
+  assert.match(html, /<title>Zora Star 创作空间<\/title>/);
   assert.match(html, /lang="zh-CN"/);
-  assert.match(html, /正在连接画布/);
+  assert.match(html, /正在连接 Zora Star/);
   assert.doesNotMatch(html, /codex-preview|Building your site/i);
+});
+
+test("defines the isolated Zora Star product routes and prototype sidebar", async () => {
+  const [rootPage, imagePage, videoPage, canvasPage, shell, prototype, layout, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/image/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/video/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/canvas/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/product-shell.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/media-prototype.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(rootPage, /redirect\("\/image"\)/);
+  assert.match(imagePage, /<MediaPrototype mode="image" \/>/);
+  assert.match(videoPage, /<MediaPrototype mode="video" \/>/);
+  assert.match(canvasPage, /components\/canvas-page/);
+  assert.match(layout, /Zora Star 创作空间/);
+  assert.match(layout, /<CloudSessionGate><ProductShell>/);
+  assert.match(shell, /src="\/zora-star\.png"/);
+  assert.match(shell, />\s*Zora Star\s*</);
+  assert.match(shell, /href: "\/image"/);
+  assert.match(shell, /href: "\/video"/);
+  assert.match(shell, /href: "\/canvas"/);
+  assert.match(shell, /width: open \? 240 : 60/);
+  assert.match(shell, /aria-expanded=\{open\}/);
+  assert.match(shell, /aria-label=\{open \? "收起产品侧栏" : "展开产品侧栏"\}/);
+  assert.match(shell, /onClick=\{\(\) => setOpen\(\(current\) => !current\)\}/);
+  assert.doesNotMatch(shell, /onMouseEnter|onMouseLeave|onFocusCapture|onBlurCapture/);
+  assert.match(prototype, /zora-star-prototype-image-tasks-v2/);
+  assert.match(prototype, /zora-star-prototype-video-tasks-v2/);
+  assert.doesNotMatch(prototype, /zora-star-prototype-(?:image|video)-tasks-v1/);
+  assert.match(prototype, /useState<PrototypeTask\[]>\(\[]\)/);
+  assert.doesNotMatch(prototype, /prototype-header|prototype-clear|清空记录|Trash2/);
+  assert.match(prototype, /"pending" \| "running" \| "success" \| "failed"/);
+  assert.match(prototype, /!isImage \? <label className="prototype-select"><span>时长<\/span>/);
+  assert.doesNotMatch(prototype, /\bfetch\s*\(|\/api\/ai\/generate|\/api\/ai\/status/);
+  assert.match(styles, /\.product-sidebar \{[\s\S]*?background: #f7f7f5;/);
+  assert.match(styles, /\.prototype-page \{[\s\S]*?background: #f7f7f5;/);
+  assert.match(styles, /\.prototype-feed \{[^\n]*inset: 0 0 164px;/);
+  assert.doesNotMatch(styles, /\.prototype-header|\.prototype-clear/);
+  assert.doesNotMatch(styles.match(/\.prototype-composer-toolbar \{[^\n]*\}/)?.[0] ?? "", /border-top/);
+  assert.match(styles, /\.product-main \.ai-chat-input-shell \{ position: absolute; \}/);
+  assert.doesNotMatch(styles.match(/\.product-sidebar \{[\s\S]*?\n\}/)?.[0] ?? "", /gradient|glow/);
 });
 
 test("loads the creation, workflow, and asset tool manuals through the agent route", async () => {
@@ -100,7 +145,7 @@ test("streams sanitized agent progress and keeps operations behind the final res
 
 test("removes the disposable starter surface", async () => {
   const [page, graph, packageJson, composer, agentSidebar, styles] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/canvas-page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/canvas/graph.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(
@@ -334,7 +379,7 @@ test("removes the disposable starter surface", async () => {
 
 test("exposes an isolated workflow mode without the bottom composer", async () => {
   const [page, workflow, workflowGraph, styles, viteConfig] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/canvas-page.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../components/workflow/workflow-canvas.tsx", import.meta.url),
       "utf8",

@@ -52,7 +52,7 @@ export function CloudSessionGate({ children }: { children: ReactNode }) {
     return () => { active = false; };
   }, []);
 
-  if (mode === "loading") return <div className="cloud-session-loading">正在连接画布…</div>;
+  if (mode === "loading") return <div className="cloud-session-loading">正在连接 Zora Star…</div>;
   if (mode === "server" && authenticationRequired && !user) {
     return <CloudLogin onAuthenticated={setUser} />;
   }
@@ -95,9 +95,9 @@ function CloudLogin({ onAuthenticated }: { onAuthenticated: (user: CloudUser) =>
   return (
     <main className="cloud-login-shell">
       <form className="cloud-login-card" onSubmit={submit}>
-        <span>LingkeAI Canvas</span>
-        <h1>登录画布</h1>
-        <p>项目与素材将按账号隔离并同步到云端。</p>
+        <span>Zora Star</span>
+        <h1>登录创作空间</h1>
+        <p>画布项目与素材将按账号隔离并同步到云端。</p>
         <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
         <label>密码<input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         {error ? <p className="cloud-login-error">{error}</p> : null}
