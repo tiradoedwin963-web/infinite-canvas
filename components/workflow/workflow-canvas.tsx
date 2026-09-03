@@ -2347,7 +2347,7 @@ export function WorkflowCanvas() {
       {!isAgentOpen ? (
         <button
           aria-label="打开工作流 Agent"
-          className="fixed top-4 right-4 z-40 inline-flex h-10 items-center gap-2 rounded-full border border-black/8 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
+          className="absolute top-4 right-4 z-40 inline-flex h-10 items-center gap-2 rounded-full border border-black/8 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
           data-workflow-isolated
           type="button"
           onPointerDown={(event) => event.stopPropagation()}

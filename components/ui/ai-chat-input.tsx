@@ -282,7 +282,7 @@ export function AIChatInput({
   return (
     <motion.div
       aria-hidden={hidden}
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-5 pb-5 text-black"
+      className="ai-chat-input-shell pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-5 pb-5 text-black"
       inert={hidden}
       initial={false}
       animate={{

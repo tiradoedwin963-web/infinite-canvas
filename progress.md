@@ -1716,3 +1716,85 @@
 - `progress.md`：记录本轮回退、生产迁移和验证证据。
 - 服务器备份：`/opt/infinite-canvas/backups/canvas-pre-video-20260821T094711Z.dump` 与同名 `.sha256`，权限为 `600`；临时迁移工具位于远端分支 `codex/pre-video-data-migrator`，不会合入 `main`。
 - 回滚方式：若需恢复当前视频开发版本，先在服务器停 App 后使用上述已校验的 PostgreSQL 备份进行受控恢复，再执行 `git revert <本回退提交哈希>` 并重建 App；禁止执行 `docker compose down -v`，不会删除 COS 原图或缩略图。
+
+## 2026-08-25 - Task: 建立 Zora Star canvas-c 三模块交互原型
+
+### What was done
+- 从已核对的 `main@bc468f3` 创建独立 `codex/canvas-c` worktree，增加 `/image`、`/video` 和 `/canvas` 三个桌面端入口，根路径跳转到 `/image`。
+- 将附件侧栏重做为 Zora Star 黑色产品导航：默认 60px，鼠标或键盘焦点进入时展开至 300px，并以正常布局同步压缩内容区；官方星标使用原始素材。
+- 生图与生视频页实现互相隔离的纯前端模拟任务流，覆盖等待、生成中、成功、失败、重试、清空和刷新恢复，不调用媒体接口；既有画布只做产品壳尺寸和控件落点适配。
+- 更新 Zora Star 标题、登录可见文案、产品说明和 A/B/C 分支边界；未发布、未修改数据库、鉴权、节点、Agent、工作流或媒体协议。
+
+### Testing
+- `npm run lint`：通过。
+- `npm test`：通过，包含 Vinext 生产构建及 138/138 项自动化测试。
+- 本地运行态：`/` 返回 `307` 并跳转 `/image`，`/image`、`/video`、`/canvas` 均返回 `200`。
+- `git diff --check`：通过。
+- 边界检查：`codex/canvas-a` 与 `codex/canvas-b` worktree 均无改动；C 保持独立安装、运行、测试和构建。
+
+### Notes
+- `AGENTS.md`：补充 `codex/canvas-c` 产品壳职责及 A/B/C 边界。
+- `README.md`：将项目入口说明更新为 Zora Star 三模块原型。
+- `app/globals.css`：增加黑色产品壳、任务流和响应内容区样式，并让画布宽度与外层内容区同步。
+- `app/layout.tsx`：更新 Zora Star 元数据，并在会话门禁内接入统一产品壳。
+- `app/page.tsx`：将根入口改为跳转 `/image`。
+- `app/canvas/page.tsx`：新增既有画布的 `/canvas` 路由入口。
+- `app/image/page.tsx`：新增生图原型路由。
+- `app/video/page.tsx`：新增生视频原型路由。
+- `components/canvas-page.tsx`：承接原画布页面，只调整外层入口、可见品牌和固定控件落点。
+- `components/cloud-session-gate.tsx`：更新登录与加载状态中的 Zora Star 可见文案。
+- `components/media-prototype.tsx`：实现两类独立的本地模拟任务状态、参数、重试、清空和恢复。
+- `components/product-shell.tsx`：实现可复用的 60px/300px Zora Star 产品侧栏及固定路由映射。
+- `components/ui/ai-chat-input.tsx`：增加产品壳内定位所需的根样式钩子。
+- `components/workflow/workflow-canvas.tsx`：让工作流画布的主要固定控件相对产品内容区定位。
+- `docs/canvas.md`：记录 C 的画布接入边界与三分支职责。
+- `docs/product-shell.md`：记录产品壳、模拟任务、画布接入和本地预览范围。
+- `public/zora-star.png`：保存用户提供的官方星标原始素材。
+- `tests/rendered-html.test.mjs`：覆盖 Zora Star 品牌、三个路由、侧栏交互、任务存储隔离和无真实媒体调用约束。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚点为 `main@bc468f3`。若尚未提交，可在 C worktree 执行 `git restore --source=bc468f3 -- AGENTS.md README.md app/globals.css app/layout.tsx app/page.tsx components/cloud-session-gate.tsx components/ui/ai-chat-input.tsx components/workflow/workflow-canvas.tsx docs/canvas.md tests/rendered-html.test.mjs progress.md`，再执行 `git clean -f -- app/canvas/page.tsx app/image/page.tsx app/video/page.tsx components/canvas-page.tsx components/media-prototype.tsx components/product-shell.tsx docs/product-shell.md public/zora-star.png`；不会影响 A/B worktree。
+
+## 2026-08-25 - Task: 优化 Zora Star 左侧产品栏点击展开交互
+
+### What was done
+- 将产品栏从鼠标悬停、离开和焦点自动控制改为顶部 Logo 明确点击切换，默认收起为 60px，展开为 240px，再次点击后收起。
+- 收起态继续只显示 Logo、导航图标和头像；展开态显示品牌、导航及账户文字，导航、路由高亮和主内容同步缩放行为保持不变。
+- 将 Logo 入口改为带动态说明和展开状态的原生按钮，生图导航继续承担首页入口。
+
+### Testing
+- `npm run lint`：通过。
+- `node --test tests/rendered-html.test.mjs`：通过，6/6 项定向测试成功。
+- `npm test`：通过，Vinext 生产构建及 138/138 项完整测试成功。
+- `git diff --check`：通过。
+- 本地浏览器验收：`/image` 悬停后保持收起；点击 Logo 展开到 240px；切换 `/video`、`/canvas` 后展开状态和当前路由高亮保持正确；再次点击后收起到 60px。
+
+### Notes
+- `components/product-shell.tsx`：用 Logo 按钮切换侧栏状态，删除鼠标与焦点自动展开监听，并将展开宽度调整为 240px。
+- `app/globals.css`：补充品牌切换按钮的无框样式和键盘焦点样式。
+- `tests/rendered-html.test.mjs`：更新宽度断言，覆盖点击切换语义并禁止旧自动展开监听回归。
+- `docs/product-shell.md`：更新侧栏尺寸、可见内容和点击展开规则。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚方式：待当前 canvas-c 原型整体形成提交后，执行 `git revert <包含本轮侧栏优化的提交哈希>`；提交前不要对上述文件执行整文件 `git restore`，以免覆盖其中原有的未提交 canvas-c 原型改动。
+
+## 2026-08-25 - Task: 将生图与生视频页面改为全屏无分区界面
+
+### What was done
+- 删除生图与生视频页面顶部的重复标题、说明、图标、清空记录入口和分割线，让任务区占满底部输入框之外的右侧空间。
+- 将产品侧栏与创作区统一为同一浅色背景，保留 Logo 点击展开和路由高亮，不再形成独立的左右视觉分区。
+- 移除默认示例任务并将图片、视频任务存储键升级到 `v2`，旧 `v1` 记录不迁移，新版首次进入显示居中空状态。
+- 删除输入框工具栏横线，保留任务状态、重试、参数选择、提交和刷新恢复行为。
+
+### Testing
+- `npm run lint`：通过。
+- `node --test tests/rendered-html.test.mjs`：通过，6/6 项定向测试成功。
+- `npm test`：通过，Vinext 生产构建及 138/138 项完整测试成功。
+- `git diff --check`：通过。
+- 本地浏览器验收：`/image` 与 `/video` 均无顶栏和清空入口、默认显示空状态；侧栏收起及展开至 240px 时与右侧背景色一致；输入框工具栏无横线；`/canvas` 入口和画布正常显示。
+
+### Notes
+- `components/media-prototype.tsx`：删除页面顶栏和默认示例，改用空任务初始状态及独立 `v2` 存储键。
+- `app/globals.css`：统一产品壳、侧栏与创作区浅色背景，调整导航及账户样式，并改为全高任务区和无横线输入框。
+- `tests/rendered-html.test.mjs`：覆盖空白初始状态、存储版本、顶栏移除、背景统一及分割线移除。
+- `docs/product-shell.md`：记录全屏无分区布局、空白初始状态和旧记录不迁移规则。
+- `progress.md`：追加本轮实施、验证和回滚记录。
+- 回滚方式：待当前 canvas-c 原型整体形成提交后，执行 `git revert <包含本轮全屏界面优化的提交哈希>`；提交前不要整文件回滚上述文件，以免覆盖同文件中的既有未提交 canvas-c 原型改动。

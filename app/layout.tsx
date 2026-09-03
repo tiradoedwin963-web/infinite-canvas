@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { CloudSessionGate } from "@/components/cloud-session-gate";
+import { ProductShell } from "@/components/product-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LingkeAI 无限画布",
-  description: "支持文本、图片和视频生成节点的可平移、可缩放无限画布。",
+  title: "Zora Star 创作空间",
+  description: "面向图片、视频与无限画布的创作工作空间。",
 };
 
 export default function RootLayout({
@@ -13,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body><CloudSessionGate><ProductShell>{children}</ProductShell></CloudSessionGate></body>
     </html>
   );
 }

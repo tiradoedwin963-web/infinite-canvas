@@ -1,6 +1,6 @@
-# 无限画布
+# Zora Star 创作空间
 
-一个接入 LingkeAI 文本、图片和视频模型的生成画布，使用 Vinext、React 和 TypeScript 构建。除底部生成输入外，右上角画布 Agent 会先通过问题明确需求，再读取节点与连线、整理画布或发起生成。Agent 支持本地历史对话，删除和模型生成仍需用户确认。
+Zora Star 的桌面端产品原型，使用 Vinext、React 和 TypeScript 构建。产品壳提供生图、生视频和画布三个独立入口；生图与生视频当前只运行本地模拟任务，不调用媒体接口，画布入口保留既有创作、工作流和 Agent 能力。
 
 ## 本地运行
 
@@ -20,6 +20,6 @@ npm run lint
 npm test
 ```
 
-详细交互与分支职责见 [`docs/canvas.md`](docs/canvas.md)。
+产品壳原型说明见 [`docs/product-shell.md`](docs/product-shell.md)，画布交互与分支职责见 [`docs/canvas.md`](docs/canvas.md)。
 
 北京服务器的 Docker 部署、更新和回滚流程见 [`docs/deployment.md`](docs/deployment.md)。
