@@ -2242,3 +2242,22 @@
 - `docs/product-shell.md`：记录全屏无分区布局、空白初始状态和旧记录不迁移规则。
 - `progress.md`：追加本轮实施、验证和回滚记录。
 - 回滚方式：待当前 canvas-c 原型整体形成提交后，执行 `git revert <包含本轮全屏界面优化的提交哈希>`；提交前不要整文件回滚上述文件，以免覆盖同文件中的既有未提交 canvas-c 原型改动。
+
+## 2026-09-03 - Task: 将 GitHub 仓库改为公开可见
+
+### What was done
+- 将 `tiradoedwin963-web/infinite-canvas` 从私有仓库切换为公开仓库，默认分支继续保持为 `main`。
+- 在公开前扫描全部 54 个 Git 提交；唯一命中为历史部署文档中的 `canvas:访问密码` 中文占位符，不是真实凭据，当前树未跟踪 `.env`、私钥或 PEM 文件。
+- 在项目说明中明确仓库已公开且当前未配置开源许可证。
+
+### Testing
+- Gitleaks `8.30.1` 全历史扫描：检查 54 个提交、约 2.87MB Git 内容；唯一规则命中已人工确认是中文占位符。
+- GitHub CLI 与匿名 API 验证：仓库 `visibility` 为 `public`、`private` 为 `false`、默认分支为 `main`。
+- 匿名访问 `https://github.com/tiradoedwin963-web/infinite-canvas`：返回 HTTP `200`。
+- `git diff --check`：通过。
+
+### Notes
+- `README.md`：增加公开可见和未配置开源许可证的说明。
+- `progress.md`：记录公开前安全检查、可见性变更和验证证据。
+- GitHub 仓库设置：可见性由 private 改为 public；未修改分支保护、协作者、代码、数据库、COS 或生产服务器。
+- 回滚方式：仓库所有者可在 GitHub Settings → General → Danger Zone 将可见性改回 private；已被第三方克隆的公开内容无法通过回滚可见性收回。
